@@ -549,6 +549,53 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 		if err := check(); err != nil {
 			return err
 		}
+		review.Phase = "priority"
+		if err := save("未確認項目の優先度を確認します"); err != nil {
+			return err
+		}
+	}
+	if review.Phase == "priority" {
+		for review.PriorityCursor < len(review.Unverified) {
+			if modelCalls >= 20 {
+				return errors.New("review_run_budget_resume")
+			}
+			end := review.PriorityCursor + 15
+			if end > len(review.Unverified) {
+				end = len(review.Unverified)
+			}
+			items := make([]priorityItem, 0, end-review.PriorityCursor)
+			for i := review.PriorityCursor; i < end; i++ {
+				items = append(items, priorityItem{Index: i, Text: review.Unverified[i]})
+			}
+			payload, _ := json.Marshal(map[string]any{"priorityTask": items, "title": domain.Clip(review.Title, 500), "body": domain.Clip(review.Body, 1500), "summary": domain.Clip(review.CrossSummary, 1500)})
+			if err := save("未確認項目の優先度を確認しています"); err != nil {
+				return err
+			}
+			modelCalls++
+			d, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, string(payload))
+			cp.Metrics.InputTokens += usage.InputTokens
+			cp.Metrics.OutputTokens += usage.OutputTokens
+			cp.Metrics.LastInputTokens += usage.InputTokens
+			cp.Metrics.LastOutputTokens += usage.OutputTokens
+			if usage.InputTokens != 0 || usage.OutputTokens != 0 {
+				cp.Metrics.HasLastUsage = true
+			}
+			if len(payload) > cp.Metrics.MaxInputBytes {
+				cp.Metrics.MaxInputBytes = len(payload)
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			answer := ""
+			if err == nil && !echoes(d.Answer, in) && d.Read == nil && d.StartReview == nil {
+				answer = d.Answer
+			}
+			savePriorities(review, items, answer)
+			review.PriorityCursor = end
+			if err := save("未確認項目の優先度を保存しました"); err != nil {
+				return err
+			}
+		}
 		review.Phase = "done"
 	}
 	cp.Summary = "PR #" + strconv.Itoa(in.Session.Target.Number) + " Base=" + review.Base + " Head=" + review.Head + "\n" + domain.Clip(review.CrossSummary, 800)

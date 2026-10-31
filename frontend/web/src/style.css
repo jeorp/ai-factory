@@ -20,3 +20,5 @@
 .repository-select{width:100%;padding:11px 12px}.manual-target{margin-top:14px}
 
 .unverified-list li{padding:9px 0;border-bottom:1px solid #e2e8e4}.investigate-button{padding:6px 10px;border:1px solid #ccd9c8;border-radius:5px;background:#f6faf3;color:#315b3d;font-size:11px}.investigation-status{margin-left:8px;font-size:10px;color:#748467}.investigation-result{margin-top:10px;padding:10px 12px;border-left:3px solid #91b590;background:#f4f8f1;font-size:11px;overflow-wrap:anywhere}.investigation-result p{margin-bottom:0}
+
+.priority-label{display:inline-block;margin-right:5px;padding:2px 6px;border-radius:4px;background:#e8efdf;color:#466a3d;font-size:10px}.priority-reason{font-size:10px;color:#6f8068}

@@ -34,6 +34,15 @@ async function closeFile() {
 }
 function escapeFile(event: KeyboardEvent) { if (event.key === 'Escape' && openedFile.value) { event.preventDefault(); void closeFile(); } }
 const current = computed(() => work.current); const running = computed(() => busy(current.value));
+const priorityLabels = { high: '高', medium: '中', low: '低', unknown: '未評価' } as const;
+const unverifiedItems = computed(() => {
+ const review = current.value?.review;
+ if (!review) return [];
+ const order = { high: 0, medium: 1, low: 2, unknown: 3 };
+ return review.unverified.map((text, index) => ({ text, index, priority: review.priorities?.[index] }))
+  .filter(item => !!item.priority || review.phase === 'done')
+  .sort((a, b) => (order[a.priority?.level || 'unknown'] ?? 3) - (order[b.priority?.level || 'unknown'] ?? 3) || a.index - b.index);
+});
 const sessionCost = computed(() => current.value ? estimateCost(config.value.aiProvider, current.value.model, current.value.metrics.inputTokens || 0, current.value.metrics.outputTokens || 0) : undefined);
 const sessionPricing = computed(() => current.value ? pricing(config.value.aiProvider, current.value.model) : undefined);
 const canSend = computed(() => !!text.value.trim() && work.connected && (mode.value === 'instruction' || (!running.value && (config.value.aiProvider === 'demo' || keyValid.value))));
@@ -181,7 +190,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
       <section v-if="current.review" class="review-results" aria-label="PRレビュー結果">
        <h2>{{ current.review.title }}</h2>
        <p class="review-commits">Base <code>{{ current.review.base.slice(0, 12) }}</code> → Head <code>{{ current.review.head.slice(0, 12) }}</code></p>
-       <p>{{ { planning: '計画作成中', diff: '差分を確認中', cross: 'ファイル間の整合性を確認中', done: '確認完了' }[current.review.phase] || current.review.phase }} · {{ current.review.steps.reduce((n, s) => n + s.files.filter(f => f.done).length, 0) }} / {{ current.review.totalFiles }} ファイルの処理済み（取得失敗・対象外を含む）</p>
+       <p>{{ { planning: '計画作成中', diff: '差分を確認中', cross: 'ファイル間の整合性を確認中', priority: '未確認項目の優先度を確認中', done: '確認完了' }[current.review.phase] || current.review.phase }} · {{ current.review.steps.reduce((n, s) => n + s.files.filter(f => f.done).length, 0) }} / {{ current.review.totalFiles }} ファイルの処理済み（取得失敗・対象外を含む）</p>
        <details><summary>レビュー計画と処理状況</summary><div v-for="(step, i) in current.review.steps" :key="i" class="review-step"><strong>{{ i + 1 }}. {{ step.directory }} · {{ { pending: '未処理', running: '確認中', done: '処理済み', partial: '未確認あり' }[step.state] || step.state }}</strong><ul><li v-for="file in step.files" :key="file.index">{{ file.path || `一覧取得失敗（${file.index + 1}番目）` }} · {{ file.done ? '処理済み' : file.offset ? '差分の途中まで処理済み' : '未処理' }}</li></ul><p v-if="step.summary">{{ step.summary }}</p></div></details>
        <ReviewDiffs :key="`${current.id}-${current.review.base}-${current.review.head}`" :session-id="current.id" :review="current.review" />
        <h3>指摘 {{ current.review.findings.length }} 件</h3>
@@ -193,8 +202,8 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
         <FindingIssue v-if="!config.demo && current.target.kind === 'pull' && current.target.number" :finding="finding" :repository="current.target.repository" :pull-number="current.target.number" :source-url="findingLink(finding)" />
        </article>
        <details v-if="current.review.unverified.length" open><summary>未確認の範囲・制限 {{ current.review.unverified.length }} 件</summary>
-        <p>追加調査では関連情報を再確認します。取得や実行の制限は解消できない場合があります。</p>
-        <ul class="unverified-list"><li v-for="(item, i) in current.review.unverified" :key="i"><p>{{ item }}</p><button type="button" class="investigate-button" :disabled="running || !work.connected || (config.aiProvider !== 'demo' && !keyValid)" @click="investigate(i)">{{ current.review.investigations?.[i] ? 'もう一度調査' : '追加調査' }}</button><span v-if="current.review.pendingInvestigation === i + 1" class="investigation-status">{{ running ? '調査中' : '調査が中断されています。保存済みの状態から再開できます。' }}</span><div v-if="current.review.investigations?.[i]" class="investigation-result"><strong>追加調査の結果</strong><p>{{ current.review.investigations[i] }}</p></div></li></ul>
+        <p>優先度はレビューへの影響の推定です。未評価の項目も残します。追加調査では関連情報を再確認します。</p><p v-if="unverifiedItems.length < current.review.unverified.length" role="status">未確認項目の優先度を確認しています。中断した場合は保存済みの状態から再開できます。</p>
+        <ul class="unverified-list"><li v-for="entry in unverifiedItems" :key="entry.index"><p><strong class="priority-label">優先度 {{ priorityLabels[entry.priority?.level || 'unknown'] }}</strong> {{ entry.text }}</p><p v-if="entry.priority?.reason" class="priority-reason">{{ entry.priority.reason }}</p><button type="button" class="investigate-button" :disabled="running || !work.connected || (config.aiProvider !== 'demo' && !keyValid)" @click="investigate(entry.index)">{{ current.review.investigations?.[entry.index] ? 'もう一度調査' : '追加調査' }}</button><span v-if="current.review.pendingInvestigation === entry.index + 1" class="investigation-status">{{ running ? '調査中' : '調査が中断されています。保存済みの状態から再開できます。' }}</span><div v-if="current.review.investigations?.[entry.index]" class="investigation-result"><strong>追加調査の結果</strong><p>{{ current.review.investigations[entry.index] }}</p></div></li></ul>
        </details>
       </section>
       <SourceFiles v-if="!current.review" :key="current.id" :session="current" @open="openFile" @clear="closeFile" />
@@ -217,7 +226,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
      <div class="context-block"><h3>コンテキストの利用状況</h3><div class="meter-label"><span>最大入力データ量</span><strong>{{ (current.metrics.maxInputBytes / 1024).toFixed(1) }}<small> / 24 KiB</small></strong></div><div class="meter"><span :style="{ width: Math.min(100, current.metrics.maxInputBytes / 24576 * 100) + '%' }"></span></div><dl class="metrics"><div><dt>GitHub取得回数</dt><dd>{{ current.metrics.toolCalls }} 回</dd></div><div><dt>取得サイズ</dt><dd>{{ (current.metrics.fetchedBytes / 1024).toFixed(1) }} KiB</dd></div><div><dt>重複取得の抑制</dt><dd>{{ current.metrics.cacheHits }} 回</dd></div><div><dt>直近の処理時間</dt><dd>{{ (current.metrics.durationMs / 1000).toFixed(1) }} 秒</dd></div><div><dt>プロセスのヒープ観測最大</dt><dd>{{ (current.metrics.heapPeakBytes / 1048576).toFixed(1) }} MiB</dd></div></dl><p>{{ current.runKind === 'review' ? 'PRは最大200ファイルを計画し、小さな差分ごとに確認します。3分で中断した場合も保存した区切りから再開できます。' : '1質問あたり最大6回・5ファイル。取得結果は一時保持し、履歴全体はAIに渡しません。' }}</p></div>
      <div class="context-block"><h3>参照元<span class="source-count">{{ current.sources?.length || 0 }}</span></h3><p v-if="!current.sources?.length">取得した情報の参照元が表示されます。</p><a v-for="source in current.sources" :key="source.url" class="source-link" :href="safeLink(source.url)" target="_blank" rel="noopener noreferrer"><Icon name="link" :size="13" /><span>{{ source.label }}</span><Icon name="external" :size="12" /></a></div>
      <details v-if="current.summary" class="context-block"><summary>引き継ぎ用の要点</summary><p class="summary-text">{{ current.summary }}</p></details>
-     <div v-if="current.limitations?.length" class="context-block limitations"><h3>未確認の範囲・制限</h3><p v-for="(limitation, i) in current.limitations" :key="i">{{ errors[limitation] || limitation }}</p></div>
+     <div v-if="!current.review && current.limitations?.length" class="context-block limitations"><h3>未確認の範囲・制限</h3><p v-for="(limitation, i) in current.limitations" :key="i">{{ errors[limitation] || limitation }}</p></div>
      <div class="retention"><Icon name="clock" :size="14" /><span>会話の保存期限 {{ date(current.expiresAt) }}<br />会話はいつでも削除できます。</span></div>
      <button class="plain-button context-delete" @click="deleteID = current.id"><Icon name="trash" :size="12" />このセッションを削除</button>
      <div v-if="deleteID === current.id" class="delete-confirm">会話と結果を削除します。<button @click="action(async () => { if (current) await work.remove(current.id); deleteID = ''; })">削除する</button></div>

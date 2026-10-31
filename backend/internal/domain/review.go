@@ -2,20 +2,27 @@ package domain
 
 // Review stores only the plan, cursors and conclusions. Patches and source code
 // live in a separate, expiring cache and are fetched again on a cache miss.
+type ReviewPriority struct {
+	Level  string `json:"level"`
+	Reason string `json:"reason"`
+}
+
 type Review struct {
-	Title                string            `json:"title"`
-	Body                 string            `json:"body"`
-	Base                 string            `json:"base"`
-	Head                 string            `json:"head"`
-	TotalFiles           int               `json:"totalFiles"`
-	Phase                string            `json:"phase"`
-	Steps                []ReviewStep      `json:"steps"`
-	Findings             []Finding         `json:"findings"`
-	Unverified           []string          `json:"unverified"`
-	Investigations       map[string]string `json:"investigations,omitempty"`
-	PendingInvestigation int               `json:"pendingInvestigation,omitempty"`
-	CrossCursor          int               `json:"crossCursor"`
-	CrossSummary         string            `json:"crossSummary"`
+	Title                string                    `json:"title"`
+	Body                 string                    `json:"body"`
+	Base                 string                    `json:"base"`
+	Head                 string                    `json:"head"`
+	TotalFiles           int                       `json:"totalFiles"`
+	Phase                string                    `json:"phase"`
+	Steps                []ReviewStep              `json:"steps"`
+	Findings             []Finding                 `json:"findings"`
+	Unverified           []string                  `json:"unverified"`
+	Investigations       map[string]string         `json:"investigations,omitempty"`
+	Priorities           map[string]ReviewPriority `json:"priorities,omitempty"`
+	PriorityCursor       int                       `json:"priorityCursor,omitempty"`
+	PendingInvestigation int                       `json:"pendingInvestigation,omitempty"`
+	CrossCursor          int                       `json:"crossCursor"`
+	CrossSummary         string                    `json:"crossSummary"`
 }
 type ReviewStep struct {
 	Directory string       `json:"directory"`

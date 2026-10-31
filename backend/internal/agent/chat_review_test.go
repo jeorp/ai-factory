@@ -62,6 +62,9 @@ func TestRetrievedPRIsRememberedAndCanBeReviewedInNextChatMessage(t *testing.T) 
 	s.Messages = append(s.Messages, domain.Message{Role: "user", Text: "このPRをレビューして"})
 	routed := false
 	r.AI = providerFunc(func(_ context.Context, _ string, _ string, input string) (Decision, Usage, error) {
+		if strings.Contains(input, `"priorityTask":`) {
+			return Decision{Answer: `[]`}, Usage{}, nil
+		}
 		if strings.Contains(input, `"reviewTask":`) {
 			return result(), Usage{InputTokens: 5}, nil
 		}
