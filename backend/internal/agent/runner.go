@@ -25,6 +25,7 @@ type Checkpoint struct {
 	RepositoryOverview *domain.RepositoryOverview
 	OverviewPending    bool
 	Review             *domain.Review
+	Implementation     *domain.Implementation
 	Progress           string
 	Summary            string
 	Answer             string
@@ -36,6 +37,7 @@ type Checkpoint struct {
 type Runner struct {
 	AI     Provider
 	GitHub Reader
+	Writer Writer
 }
 type evidence struct {
 	Read    github.Read `json:"read"`
@@ -67,6 +69,9 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 
 	if in.Session.RunKind == "review" {
 		return r.runReview(ctx, in, emit)
+	}
+	if in.Session.RunKind == "implement" {
+		return r.runImplementation(ctx, in, emit)
 	}
 	reviewCtx := ctx
 	ctx, cancelChat := context.WithTimeout(ctx, 3*time.Minute)
@@ -180,6 +185,17 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		}
 		if validIntent(decision.Intent) {
 			intent = decision.Intent
+		}
+		if decision.StartImplementation != nil {
+			if in.Session.RunKind == "investigation" {
+				return errors.New("investigation_implementation_blocked")
+			}
+			for _, m := range instructions {
+				if !in.Session.HasMessage(m.ID) {
+					in.Session.Messages = append(in.Session.Messages, m)
+				}
+			}
+			return r.implementFromChat(reviewCtx, in, cp, *decision.StartImplementation, emit)
 		}
 		if decision.StartReview != nil {
 			if in.Session.RunKind == "investigation" {

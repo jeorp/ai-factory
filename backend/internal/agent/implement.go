@@ -1,0 +1,674 @@
+package agent
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"ai-factory/backend/internal/domain"
+	"ai-factory/backend/internal/github"
+)
+
+// Writer is the guarded GitHub write side. The model never calls it: the
+// runner passes only server-validated change sets.
+type Writer interface {
+	Authorize(context.Context, string, string) (github.Repository, error)
+	Commit(context.Context, string, github.Repository) (string, error)
+	RawFile(context.Context, string, string, string, string) (string, bool, error)
+	PutChange(context.Context, string, int, domain.FileChange) error
+	GetChange(context.Context, string, int, string) (domain.FileChange, bool)
+	Publish(context.Context, string, github.PublishRequest, github.PublishState, func(github.PublishState) error) (github.PublishState, error)
+}
+
+// ImplementRequest is returned by the chat model to start the implementation workflow.
+type ImplementRequest struct {
+	Request string `json:"request"`
+}
+
+// ChangeProposal is one file change proposed by the model. Updates use
+// search/replace edits against the original; Content replaces the whole file
+// only for creates or when no edits are given.
+type ChangeProposal struct {
+	Path    string        `json:"path"`
+	Action  string        `json:"action"`
+	Content string        `json:"content"`
+	Edits   []domain.Edit `json:"edits"`
+}
+
+type ImplementResult struct {
+	Changes    []ChangeProposal `json:"changes"`
+	Unverified []string         `json:"unverified"`
+}
+
+const (
+	ImplementPlanCalls  = 8
+	ImplementPlanReads  = 6
+	ImplementStepCalls  = 5
+	ImplementStepReads  = 3
+	ImplementMaxCalls   = 100
+	ImplementOutputToks = 16384
+	ImplementRunTime    = 30 * time.Minute
+)
+
+type implementFile struct {
+	Path     string `json:"path"`
+	Action   string `json:"action"`
+	Approach string `json:"approach"`
+	Original string `json:"original,omitempty"`
+}
+
+type implementTask struct {
+	Mode        string                     `json:"mode"`
+	Request     string                     `json:"request"`
+	BaseBranch  string                     `json:"baseBranch"`
+	FollowUp    bool                       `json:"followUp,omitempty"`
+	Plan        *domain.ImplementationPlan `json:"plan,omitempty"`
+	Step        int                        `json:"step,omitempty"`
+	TotalSteps  int                        `json:"totalSteps,omitempty"`
+	Files       []implementFile            `json:"files,omitempty"`
+	Done        []domain.ChangeSummary     `json:"done,omitempty"`
+	ReadBudget  int                        `json:"readBudget"`
+	FinalAnswer bool                       `json:"finalAnswerOnly,omitempty"`
+	Correction  string                     `json:"correction,omitempty"`
+}
+
+// NewCacheID returns an unguessable key for one implementation's change cache.
+func NewCacheID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func cloneImplementation(v *domain.Implementation) (*domain.Implementation, error) {
+	if v == nil {
+		return nil, errors.New("implementation_missing")
+	}
+	raw, _ := json.Marshal(v)
+	var out domain.Implementation
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	// CacheID is hidden from JSON so that it never reaches the browser.
+	out.CacheID = v.CacheID
+	return &out, nil
+}
+
+func (r *Runner) implementFromChat(ctx context.Context, in Input, cp Checkpoint, req ImplementRequest, emit func(Checkpoint) error) error {
+	if strings.TrimSpace(req.Request) == "" {
+		cp.Answer = "どのような変更を実装するか、このチャットで具体的に教えてください。"
+		return emit(cp)
+	}
+	impl := domain.NextImplementation(in.Session.Implementation, req.Request, NewCacheID())
+	cp.RunKind, cp.Implementation = "implement", impl
+	cp.Progress = "実装の計画を作成します"
+	if err := emit(cp); err != nil {
+		return err
+	}
+	in.Session.RunKind, in.Session.Implementation = "implement", impl
+	in.Session.Summary, in.Session.Sources, in.Session.Limitations, in.Session.Metrics = cp.Summary, cp.Sources, cp.Limitations, cp.Metrics
+	in.ContinueMetrics = true
+	return r.runImplementation(ctx, in, emit)
+}
+
+type implementRun struct {
+	r            *Runner
+	in           Input
+	emit         func(Checkpoint) error
+	cp           Checkpoint
+	impl         *domain.Implementation
+	logger       *slog.Logger
+	instructions []domain.Message
+	calls        int
+}
+
+func (r *Runner) runImplementation(ctx context.Context, in Input, emit func(Checkpoint) error) error {
+	if r.Writer == nil {
+		return errors.New("implementation_unavailable")
+	}
+	ctx, cancel := context.WithTimeout(ctx, ImplementRunTime)
+	defer cancel()
+	impl, err := cloneImplementation(in.Session.Implementation)
+	if err != nil {
+		return err
+	}
+	run := &implementRun{r: r, in: in, emit: emit, impl: impl, logger: in.Logger}
+	if run.logger == nil {
+		run.logger = slog.Default()
+	}
+	run.cp = Checkpoint{Summary: in.Session.Summary, Sources: append([]domain.Source{}, in.Session.Sources...), Limitations: append([]string{}, in.Session.Limitations...), Metrics: in.Session.Metrics, Implementation: impl}
+	if !in.ContinueMetrics {
+		run.cp.Metrics.LastInputTokens, run.cp.Metrics.LastOutputTokens, run.cp.Metrics.HasLastUsage = 0, 0, false
+	}
+	for _, m := range in.Session.Messages {
+		if m.Role == "instruction" {
+			run.instructions = append(run.instructions, m)
+		}
+	}
+	switch impl.Status {
+	case "planning":
+		return run.plan(ctx)
+	case "editing":
+		return run.edit(ctx)
+	case "publishing":
+		return run.publish(ctx)
+	}
+	return errors.New("implementation_nothing_to_run")
+}
+
+func (run *implementRun) save(ctx context.Context, progress string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	run.cp.Progress = progress
+	run.cp.Implementation = run.impl
+	return run.emit(run.cp)
+}
+
+func (run *implementRun) drain() {
+	for {
+		select {
+		case m, open := <-run.in.Instructions:
+			if !open {
+				return
+			}
+			run.instructions = append(run.instructions, m)
+		default:
+			return
+		}
+	}
+}
+
+func (run *implementRun) pinned() string {
+	var b strings.Builder
+	for _, m := range run.instructions {
+		b.WriteString(m.Text + "\n")
+	}
+	return domain.Clip(b.String(), 4096)
+}
+
+func (run *implementRun) target() domain.Target {
+	return domain.Target{Repository: run.in.Session.Target.Repository, Commit: run.impl.BaseCommit, Kind: "repository"}
+}
+
+// call sends one bounded model request and records usage. Instructions sent
+// with the request are marked applied in the next checkpoint.
+func (run *implementRun) call(ctx context.Context, payload map[string]any) (Decision, error) {
+	if run.calls >= ImplementMaxCalls {
+		return Decision{}, errors.New("implementation_call_limit")
+	}
+	run.calls++
+	run.drain()
+	payload["instructions"] = run.pinned()
+	payload["target"] = run.target()
+	payload["repositoryOverview"] = run.in.Session.RepositoryOverview
+	body, _ := json.Marshal(payload)
+	if !implementInputFits(body) {
+		return Decision{}, errors.New("ai_input_limit")
+	}
+	run.cp.Applied = nil
+	for _, m := range run.instructions {
+		run.cp.Applied = append(run.cp.Applied, m.ID)
+	}
+	if len(body) > run.cp.Metrics.MaxInputBytes {
+		run.cp.Metrics.MaxInputBytes = len(body)
+	}
+	started := time.Now()
+	d, usage, err := run.r.AI.Next(ctx, run.in.Key, run.in.Session.Model, string(body))
+	run.logger.Info("implement_model_call", "duration_ms", time.Since(started).Milliseconds(), "outcome", outcome(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
+	run.cp.Metrics.InputTokens += usage.InputTokens
+	run.cp.Metrics.OutputTokens += usage.OutputTokens
+	run.cp.Metrics.LastInputTokens += usage.InputTokens
+	run.cp.Metrics.LastOutputTokens += usage.OutputTokens
+	if usage.InputTokens != 0 || usage.OutputTokens != 0 {
+		run.cp.Metrics.HasLastUsage = true
+	}
+	if err != nil {
+		return d, err
+	}
+	raw, _ := json.Marshal(d)
+	if (len(run.in.Key) > 0 && strings.Contains(string(raw), run.in.Key)) || (len(run.in.GitHubToken) > 0 && strings.Contains(string(raw), run.in.GitHubToken)) {
+		return d, errors.New("credential_echo_blocked")
+	}
+	return d, nil
+}
+
+// read performs a model-requested read pinned to the base commit.
+func (run *implementRun) read(ctx context.Context, read github.Read, ev *[]evidence) error {
+	if read.Kind != "file" && read.Kind != "repository" {
+		*ev = append(*ev, evidence{Read: read, Content: "この区切りではファイルとディレクトリだけ取得できます。"})
+		return nil
+	}
+	if err := read.Validate(); err != nil {
+		return err
+	}
+	if err := run.save(ctx, "GitHub: "+read.Kind+" "+read.Path); err != nil {
+		return err
+	}
+	run.cp.Metrics.ToolCalls++
+	content, source, n, err := run.r.GitHub.Read(ctx, run.in.GitHubToken, run.target(), read)
+	run.cp.Metrics.FetchedBytes += n
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		content = "取得できませんでした: " + err.Error()
+	} else {
+		if !containsSource(run.cp.Sources, source.URL) {
+			run.cp.Sources = append(run.cp.Sources, source)
+			if len(run.cp.Sources) > 40 {
+				run.cp.Sources = run.cp.Sources[len(run.cp.Sources)-40:]
+			}
+		}
+		if len(content) > 16000 {
+			content = domain.Clip(content, 16000) + "\n[入力サイズ制限により後半を省略]"
+		}
+	}
+	*ev = append(*ev, evidence{Read: read, Content: content})
+	if len(*ev) > 3 {
+		*ev = (*ev)[len(*ev)-3:]
+	}
+	return nil
+}
+
+func (run *implementRun) plan(ctx context.Context) error {
+	impl := run.impl
+	if impl.BaseCommit == "" {
+		repo, err := run.r.Writer.Authorize(ctx, run.in.GitHubToken, run.in.Session.Target.Repository)
+		if err != nil {
+			return err
+		}
+		sha, err := run.r.Writer.Commit(ctx, run.in.GitHubToken, repo)
+		if err != nil {
+			return err
+		}
+		impl.BaseBranch, impl.BaseCommit = repo.DefaultBranch, sha
+	}
+	if err := run.save(ctx, "依頼内容と関連コードを確認して実装計画を作成しています"); err != nil {
+		return err
+	}
+	ev := []evidence{}
+	reads := 0
+	correction := ""
+	for call := 0; call < ImplementPlanCalls; call++ {
+		final := reads >= ImplementPlanReads || call == ImplementPlanCalls-1
+		task := implementTask{Mode: "plan", Request: impl.Request, BaseBranch: impl.BaseBranch, FollowUp: impl.ExpectedHead != "", ReadBudget: ImplementPlanReads - reads, FinalAnswer: final, Correction: correction}
+		d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev})
+		if err != nil {
+			return err
+		}
+		correction = ""
+		if d.Read != nil && !final {
+			reads++
+			if err := run.read(ctx, *d.Read, &ev); err != nil {
+				return err
+			}
+			run.cp.Summary = domain.Clip(d.Summary, 2048)
+			continue
+		}
+		if d.Plan == nil {
+			if strings.TrimSpace(d.Answer) != "" {
+				// The model needs the user to clarify before planning.
+				impl.Status = "plan_ready"
+				impl.Plan = nil
+				run.cp.Answer = d.Answer
+				return run.save(ctx, "実装の前に確認が必要です")
+			}
+			correction = "planを返してください。"
+			continue
+		}
+		if err := domain.ValidatePlan(d.Plan); err != nil {
+			correction = "計画が無効です: " + err.Error() + "。変更対象は20ファイル以内、.github/workflows・バイナリ・ロックファイルは対象外です。"
+			continue
+		}
+		impl.Plan = d.Plan
+		impl.Steps = domain.PlanSteps(d.Plan.Files)
+		impl.NextStep = 0
+		impl.Status = "plan_ready"
+		impl.Summary = domain.Clip(d.Summary, 2048)
+		run.cp.Summary = impl.Summary
+		run.cp.Answer = formatPlan(impl)
+		return run.save(ctx, "実装計画を作成しました。承認を待っています")
+	}
+	return errors.New("implementation_plan_failed")
+}
+
+func (run *implementRun) edit(ctx context.Context) error {
+	impl := run.impl
+	if impl.Plan == nil || len(impl.Steps) == 0 || !domain.ValidCommit(impl.BaseCommit) {
+		return errors.New("implementation_plan_required")
+	}
+	approved := impl.ApprovedPaths()
+	for impl.NextStep < len(impl.Steps) {
+		step := impl.Steps[impl.NextStep].Files
+		if err := run.save(ctx, fmt.Sprintf("変更を作成しています（%d/%d）", impl.NextStep+1, len(impl.Steps))); err != nil {
+			return err
+		}
+		files := []implementFile{}
+		originals := map[string]string{}
+		for _, p := range step {
+			f := implementFile{Path: p, Action: impl.PlannedAction(p)}
+			for _, planned := range impl.Plan.Files {
+				if planned.Path == p {
+					f.Approach = planned.Approach
+				}
+			}
+			content, exists, err := run.r.Writer.RawFile(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, impl.BaseCommit, p)
+			if err != nil {
+				return err
+			}
+			if f.Action == "create" && exists {
+				return fmt.Errorf("change_file_exists")
+			}
+			if f.Action != "create" && !exists {
+				return fmt.Errorf("change_file_missing")
+			}
+			originals[p] = content
+			if f.Action == "update" {
+				f.Original = content
+			}
+			files = append(files, f)
+		}
+		ev := []evidence{}
+		reads := 0
+		correction := ""
+		var applied []domain.FileChange
+		var result *ImplementResult
+		split := false
+		for call := 0; call < ImplementStepCalls && result == nil; call++ {
+			final := reads >= ImplementStepReads || call == ImplementStepCalls-1
+			task := implementTask{Mode: "edit", Request: impl.Request, BaseBranch: impl.BaseBranch, Plan: impl.Plan, Step: impl.NextStep + 1, TotalSteps: len(impl.Steps), Files: files, Done: impl.Changes, ReadBudget: ImplementStepReads - reads, FinalAnswer: final, Correction: correction}
+			d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev})
+			if err != nil && err.Error() == "ai_input_limit" && len(ev) > 0 {
+				ev = nil
+				correction = "入力上限のため取得済みの関連コードを省略しました。"
+				continue
+			}
+			if err != nil && err.Error() == "ai_input_limit" && len(step) > 1 {
+				// Split the step and retry with fewer original files.
+				half := len(step) / 2
+				steps := append([]domain.ImplementationStep{}, impl.Steps[:impl.NextStep]...)
+				steps = append(steps, domain.ImplementationStep{Files: step[:half]}, domain.ImplementationStep{Files: step[half:]})
+				impl.Steps = append(steps, impl.Steps[impl.NextStep+1:]...)
+				split = true
+				break
+			}
+			if err != nil {
+				return err
+			}
+			correction = ""
+			if d.Read != nil && !final {
+				reads++
+				if err := run.read(ctx, *d.Read, &ev); err != nil {
+					return err
+				}
+				continue
+			}
+			if d.Implementation == nil {
+				correction = "implementationに変更を返してください。"
+				continue
+			}
+			changes, err := applyProposals(step, impl, originals, d.Implementation.Changes)
+			if err == nil {
+				err = domain.ValidateChangeSet(changes, approved)
+			}
+			if err != nil {
+				correction = "前回の変更は適用できませんでした: " + err.Error() + "。searchは元ファイル内で一意に一致する原文をそのまま指定し、計画どおりのpathとactionだけを返してください。"
+				continue
+			}
+			applied, result = changes, d.Implementation
+			run.cp.Summary = domain.Clip(d.Summary, 2048)
+		}
+		if split {
+			continue
+		}
+		if result == nil {
+			return errors.New("implementation_edit_failed")
+		}
+		covered := map[string]bool{}
+		for _, f := range applied {
+			if err := run.r.Writer.PutChange(ctx, impl.CacheID, impl.Version, f); err != nil {
+				return err
+			}
+			covered[f.Path] = true
+			summary := domain.ChangeSummary{Path: f.Path, Action: f.Action, Bytes: len(f.Content)}
+			replaced := false
+			for i := range impl.Changes {
+				if impl.Changes[i].Path == f.Path {
+					impl.Changes[i], replaced = summary, true
+				}
+			}
+			if !replaced {
+				impl.Changes = append(impl.Changes, summary)
+			}
+		}
+		for _, p := range step {
+			if !covered[p] {
+				impl.Unverified = append(impl.Unverified, "計画にあるが変更されなかったファイル: "+p)
+			}
+		}
+		for _, u := range result.Unverified {
+			impl.Unverified = append(impl.Unverified, domain.Clip(u, 512))
+		}
+		if len(impl.Unverified) > 20 {
+			impl.Unverified = impl.Unverified[len(impl.Unverified)-20:]
+		}
+		impl.Summary = run.cp.Summary
+		impl.NextStep++
+		if err := run.save(ctx, fmt.Sprintf("変更を保存しました（%d/%d）", impl.NextStep, len(impl.Steps))); err != nil {
+			return err
+		}
+	}
+	if len(impl.Changes) == 0 {
+		return errors.New("implementation_no_changes")
+	}
+	impl.Status = "ready"
+	if impl.Branch == "" {
+		impl.Branch = defaultBranchName(run.in.Session.ID, impl.Version)
+	}
+	if impl.Title == "" {
+		impl.Title = defaultTitle(impl)
+	}
+	impl.Body = defaultBody(impl)
+	run.cp.Answer = formatChanges(impl)
+	return run.save(ctx, "変更を作成しました。差分を確認してPRを作成してください")
+}
+
+// applyProposals turns model proposals into full file contents. Only files of
+// the current step with their approved action are accepted.
+func applyProposals(step []string, impl *domain.Implementation, originals map[string]string, proposals []ChangeProposal) ([]domain.FileChange, error) {
+	inStep := map[string]bool{}
+	for _, p := range step {
+		inStep[p] = true
+	}
+	out := []domain.FileChange{}
+	seen := map[string]bool{}
+	for _, p := range proposals {
+		if !inStep[p.Path] {
+			return nil, errors.New("change_path_not_in_step")
+		}
+		if seen[p.Path] {
+			return nil, errors.New("change_path_duplicate")
+		}
+		seen[p.Path] = true
+		if p.Action != impl.PlannedAction(p.Path) {
+			return nil, errors.New("change_action_not_planned")
+		}
+		switch p.Action {
+		case "delete":
+			out = append(out, domain.FileChange{Path: p.Path, Action: "delete"})
+		case "create":
+			if p.Content == "" || len(p.Edits) > 0 {
+				return nil, errors.New("create_requires_content")
+			}
+			out = append(out, domain.FileChange{Path: p.Path, Action: "create", Content: p.Content})
+		case "update":
+			content := p.Content
+			if len(p.Edits) > 0 {
+				var err error
+				if content, err = domain.ApplyEdits(originals[p.Path], p.Edits); err != nil {
+					return nil, fmt.Errorf("%s: %w", p.Path, err)
+				}
+			} else if content == "" {
+				return nil, errors.New("update_requires_edits")
+			}
+			if content == originals[p.Path] {
+				return nil, errors.New("update_without_change")
+			}
+			out = append(out, domain.FileChange{Path: p.Path, Action: "update", Content: content})
+		default:
+			return nil, errors.New("invalid_change_action")
+		}
+	}
+	return out, nil
+}
+
+func (run *implementRun) publish(ctx context.Context) error {
+	impl := run.impl
+	files := []domain.FileChange{}
+	for _, c := range impl.Changes {
+		f, ok := run.r.Writer.GetChange(ctx, impl.CacheID, impl.Version, c.Path)
+		if !ok {
+			return errors.New("implementation_changes_expired")
+		}
+		files = append(files, f)
+	}
+	if err := run.save(ctx, "GitHubにブランチとPRを作成しています"); err != nil {
+		return err
+	}
+	req := github.PublishRequest{
+		Repository: run.in.Session.Target.Repository, BaseBranch: impl.BaseBranch, BaseCommit: impl.BaseCommit,
+		Branch: impl.Branch, Title: impl.Title, Body: impl.Body, Message: impl.Title,
+		Files: files, Approved: impl.ApprovedPaths(), ExpectedHead: impl.ExpectedHead,
+	}
+	state := github.PublishState{Commit: impl.Commit, RefUpdated: impl.RefUpdated, PullNumber: impl.PullNumber, PullURL: impl.PullURL}
+	if impl.ExpectedHead != "" {
+		// A follow-up adds a commit; the PR fields belong to the earlier cycle.
+		state.PullNumber, state.PullURL = 0, ""
+	}
+	final, err := run.r.Writer.Publish(ctx, run.in.GitHubToken, req, state, func(s github.PublishState) error {
+		impl.Commit, impl.RefUpdated = s.Commit, s.RefUpdated
+		if s.PullNumber > 0 {
+			impl.PullNumber, impl.PullURL = s.PullNumber, s.PullURL
+		}
+		return run.save(ctx, "GitHubへの書き込みを記録しました")
+	})
+	if err != nil {
+		return err
+	}
+	impl.Commit, impl.RefUpdated = final.Commit, final.RefUpdated
+	if final.PullNumber > 0 {
+		impl.PullNumber, impl.PullURL = final.PullNumber, final.PullURL
+	}
+	impl.Status = "published"
+	if impl.ExpectedHead != "" {
+		run.cp.Answer = fmt.Sprintf("ブランチ `%s` に追加の変更をコミットしました（%s）。\n%s", impl.Branch, impl.Commit[:7], impl.PullURL)
+	} else {
+		run.cp.Answer = fmt.Sprintf("Draft PRを作成しました: %s\n\nブランチ: `%s`\nCIの結果を確認してください。アプリ内ではコードやテストを実行していません。", impl.PullURL, impl.Branch)
+	}
+	return run.save(ctx, "PRを作成しました")
+}
+
+func defaultBranchName(sessionID string, version int) string {
+	id := strings.ToLower(sessionID)
+	clean := strings.Builder{}
+	for _, c := range id {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			clean.WriteRune(c)
+		}
+		if clean.Len() >= 12 {
+			break
+		}
+	}
+	if clean.Len() == 0 {
+		clean.WriteString("change")
+	}
+	return fmt.Sprintf("ai-factory/%s-%d", clean.String(), version+1)
+}
+
+func defaultTitle(impl *domain.Implementation) string {
+	title := strings.TrimSpace(strings.SplitN(impl.Plan.Summary, "\n", 2)[0])
+	if title == "" {
+		title = strings.TrimSpace(strings.SplitN(impl.Request, "\n", 2)[0])
+	}
+	return domain.Clip(title, 120)
+}
+
+func defaultBody(impl *domain.Implementation) string {
+	var b strings.Builder
+	b.WriteString("このPRはAIファクトリーのAIが作成しました。内容を確認してからマージしてください。\n\n## 依頼\n\n")
+	b.WriteString(domain.Clip(impl.Request, 2000))
+	b.WriteString("\n\n## 変更内容\n\n")
+	b.WriteString(impl.Plan.Summary + "\n\n")
+	for _, f := range impl.Plan.Files {
+		b.WriteString(fmt.Sprintf("- `%s`（%s）: %s\n", f.Path, actionLabel(f.Action), f.Approach))
+	}
+	b.WriteString("\n## 検証\n\nアプリ内ではコード・ビルド・テストを実行していません。このリポジトリのCIの結果を確認してください。\n")
+	if len(impl.Plan.Tests) > 0 {
+		b.WriteString("\n確認してほしい点:\n")
+		for _, t := range impl.Plan.Tests {
+			b.WriteString("- " + t + "\n")
+		}
+	}
+	if len(impl.Unverified) > 0 {
+		b.WriteString("\n## 未確認事項\n\n")
+		for _, u := range impl.Unverified {
+			b.WriteString("- " + u + "\n")
+		}
+	}
+	return domain.Clip(b.String(), 60000)
+}
+
+func actionLabel(a string) string {
+	switch a {
+	case "create":
+		return "追加"
+	case "delete":
+		return "削除"
+	}
+	return "変更"
+}
+
+func formatPlan(impl *domain.Implementation) string {
+	p := impl.Plan
+	var b strings.Builder
+	b.WriteString("実装計画を作成しました（ベース: `" + impl.BaseBranch + "` " + impl.BaseCommit[:7] + "）。\n\n" + p.Summary + "\n\n**変更するファイル**\n")
+	for _, f := range p.Files {
+		b.WriteString(fmt.Sprintf("- `%s`（%s）: %s\n", f.Path, actionLabel(f.Action), f.Approach))
+	}
+	list := func(title string, items []string) {
+		if len(items) == 0 {
+			return
+		}
+		b.WriteString("\n**" + title + "**\n")
+		for _, v := range items {
+			b.WriteString("- " + v + "\n")
+		}
+	}
+	list("対象外", p.OutOfScope)
+	list("リスク", p.Risks)
+	list("確認すべきテスト", p.Tests)
+	b.WriteString("\n計画を承認すると変更を作成します。修正したい場合はチャットで追加の依頼を送ってください。")
+	return b.String()
+}
+
+func formatChanges(impl *domain.Implementation) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("%dファイルの変更を作成しました。差分を確認し、ブランチ名・PRタイトル・本文を確認してからPRを作成してください。\n\n", len(impl.Changes)))
+	for _, c := range impl.Changes {
+		b.WriteString(fmt.Sprintf("- `%s`（%s）\n", c.Path, actionLabel(c.Action)))
+	}
+	if len(impl.Unverified) > 0 {
+		b.WriteString("\n**未確認事項**\n")
+		for _, u := range impl.Unverified {
+			b.WriteString("- " + u + "\n")
+		}
+	}
+	b.WriteString("\nコードやテストは実行していません。作成後のCIで確認してください。")
+	return b.String()
+}

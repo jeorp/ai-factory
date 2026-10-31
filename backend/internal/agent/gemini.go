@@ -31,10 +31,14 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	}, "required": []string{"kind", "path", "number", "detail"}, "additionalProperties": false}
 	schema := map[string]any{"type": "object", "properties": map[string]any{"intent": intentSchema(), "answer": map[string]any{"type": "string"}, "summary": map[string]any{"type": "string"}, "read": read}, "required": []string{"intent", "answer", "summary", "read"}, "additionalProperties": false}
 	addReviewSchema(schema)
+	addImplementationSchema(schema)
 	instructions := decisionInstructions(schema, input)
 	maxOutput := 4096
 	if reviewWorkflow(input) {
 		maxOutput = 8192
+	}
+	if implementWorkflow(input) {
+		maxOutput = ImplementOutputToks
 	}
 	body, err := json.Marshal(map[string]any{"systemInstruction": map[string]any{"parts": []any{map[string]string{"text": instructions}}}, "contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": input}}}}, "generationConfig": geminiGenerationConfig(model, maxOutput, schema)})
 	if err != nil || len(body) > aiRequestLimit(input) {
@@ -58,8 +62,8 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	if resp.StatusCode != http.StatusOK {
 		return Decision{}, Usage{}, geminiError(resp)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024+1))
-	if err != nil || len(raw) > 128*1024 {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(aiResponseLimit(input))+1))
+	if err != nil || len(raw) > aiResponseLimit(input) {
 		return Decision{}, Usage{}, errors.New("gemini_response_limit")
 	}
 	var out struct {
@@ -114,6 +118,9 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	}
 	if !validPriorityDecision(input, d) {
 		return d, usage, errors.New("invalid_priority_result")
+	}
+	if !validImplementationDecision(d) {
+		return d, usage, errors.New("invalid_implementation_result")
 	}
 	return d, usage, nil
 }

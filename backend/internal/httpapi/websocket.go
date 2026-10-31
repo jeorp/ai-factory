@@ -23,6 +23,9 @@ type command struct {
 	APIKey          string `json:"apiKey"`
 	KeyExpiresAt    int64  `json:"keyExpiresAt"`
 	UnverifiedIndex *int   `json:"unverifiedIndex"`
+	Branch          string `json:"branch"`
+	Title           string `json:"title"`
+	Body            string `json:"body"`
 }
 type update struct {
 	Checkpoint agent.Checkpoint
@@ -165,6 +168,9 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				session.Review = cp.Review
 				session.Target.Commit = cp.Review.Head
 			}
+			if cp.Implementation != nil {
+				session.Implementation = cp.Implementation
+			}
 			session.Sources = cp.Sources
 			session.Metrics = cp.Metrics
 			session.Limitations = cp.Limitations
@@ -292,7 +298,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				if send("session", session) != nil {
 					return
 				}
-			case "message", "resume", "review", "investigate":
+			case "message", "resume", "review", "investigate", "implement", "implement_approve", "implement_publish":
 				if cancelRun != nil {
 					problem("run_in_progress")
 					continue
@@ -304,15 +310,19 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					}
 					cmd.Text = fmt.Sprintf("PR #%d のレビューの未確認項目を追加調査してください。対象: %s\n関連コードや差分を必要に応じて確認し、確認できた事実と根拠、問題の有無、引き続き未確認の点を区別してください。確認できないことを推測で確定しないでください。", session.Target.Number, session.Review.Unverified[*cmd.UnverifiedIndex])
 				}
+				if problemText := implementCommandProblem(session, &cmd); problemText != "" {
+					problem(problemText)
+					continue
+				}
 				if cmd.Type == "review" && session.Target.Kind != "pull" {
 					problem("pull_request_required")
 					continue
 				}
-				if (cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate") && (!idPattern.MatchString(cmd.ID) || !safeText(cmd.Text) || (cmd.APIKey != "" && strings.Contains(cmd.Text, cmd.APIKey))) {
+				if (cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate" || cmd.Type == "implement") && (!idPattern.MatchString(cmd.ID) || !safeText(cmd.Text) || (cmd.APIKey != "" && strings.Contains(cmd.Text, cmd.APIKey))) {
 					problem("invalid_message_no_secrets")
 					continue
 				}
-				if (cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate") && session.HasMessage(cmd.ID) {
+				if (cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate" || cmd.Type == "implement") && session.HasMessage(cmd.ID) {
 					send("session", session)
 					continue
 				}
@@ -323,8 +333,18 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					problem("nothing_to_resume")
 					continue
 				}
-				deadline := minTime(time.Now().Add(agent.ReviewRunDuration), time.UnixMilli(cmd.KeyExpiresAt))
-				if s.Config.AIProvider != "demo" && (!validAIKey(cmd.APIKey) || !deadline.After(time.Now())) {
+				runDuration := agent.ReviewRunDuration
+				if strings.HasPrefix(cmd.Type, "implement") || (cmd.Type == "resume" && session.RunKind == "implement") {
+					runDuration = agent.ImplementRunTime
+				}
+				deadline := minTime(time.Now().Add(runDuration), time.UnixMilli(cmd.KeyExpiresAt))
+				// Publishing writes the saved change set and calls no AI model.
+				publishOnly := cmd.Type == "implement_publish" || (cmd.Type == "resume" && session.RunKind == "implement" && session.Implementation != nil && session.Implementation.Status == "publishing")
+				if publishOnly {
+					deadline = time.Now().Add(5 * time.Minute)
+					cmd.APIKey = ""
+				}
+				if s.Config.AIProvider != "demo" && !publishOnly && (!validAIKey(cmd.APIKey) || !deadline.After(time.Now())) {
 					session.State = "auth_wait"
 					save()
 					problem("ai_key_required")
@@ -332,14 +352,14 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if s.Config.AIProvider == "demo" {
-					deadline = time.Now().Add(agent.ReviewRunDuration)
+					deadline = time.Now().Add(runDuration)
 					cmd.APIKey = ""
 				}
 				if session.HistoryBytes() > domain.MaxHistoryBytes-24*1024 || len(session.Messages) > 196 {
 					problem("history_limit_create_new_session")
 					continue
 				}
-				if cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate" {
+				if cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate" || cmd.Type == "implement" {
 					if err = session.Add("user", cmd.Text, cmd.ID); err != nil {
 						problem(err.Error())
 						continue
@@ -361,6 +381,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				if resumeReview {
 					session.RunKind = "review"
 				}
+				applyImplementCommand(session, cmd)
 				session.State = "accepted"
 				if save() != nil {
 					return
@@ -443,4 +464,62 @@ func minTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
+}
+
+// implementCommandProblem validates implementation commands before any state changes.
+func implementCommandProblem(session *domain.Session, cmd *command) string {
+	impl := session.Implementation
+	switch cmd.Type {
+	case "implement":
+		if strings.TrimSpace(cmd.Text) == "" {
+			return "implementation_request_required"
+		}
+		// A half-written branch must be finished (or retried) before a new cycle.
+		if impl != nil && impl.Status == "publishing" && impl.RefUpdated {
+			return "implementation_publish_incomplete"
+		}
+	case "implement_approve":
+		if impl == nil || impl.Status != "plan_ready" || impl.Plan == nil {
+			return "implementation_plan_required"
+		}
+	case "implement_publish":
+		if impl == nil || (impl.Status != "ready" && impl.Status != "publishing") || len(impl.Changes) == 0 {
+			return "implementation_not_ready"
+		}
+		cmd.Title, cmd.Body, cmd.Branch = strings.TrimSpace(cmd.Title), strings.TrimSpace(cmd.Body), strings.TrimSpace(cmd.Branch)
+		if impl.ExpectedHead != "" {
+			cmd.Branch = impl.Branch
+		}
+		if !domain.ValidBranchName(cmd.Branch) {
+			return "invalid_branch"
+		}
+		if cmd.Title == "" || len(cmd.Title) > 256 || len(cmd.Body) > 12000 || !safeText(cmd.Title) || domain.ContainsSecret(cmd.Title+"\n"+cmd.Body) {
+			return "invalid_pull_request_no_secrets"
+		}
+		if impl.Status == "publishing" && impl.Commit != "" && impl.RefUpdated && cmd.Branch != impl.Branch {
+			return "branch_already_written"
+		}
+	}
+	return ""
+}
+
+// applyImplementCommand moves the durable implementation state before a run starts.
+func applyImplementCommand(session *domain.Session, cmd command) {
+	switch cmd.Type {
+	case "implement":
+		session.RunKind = "implement"
+		session.Implementation = domain.NextImplementation(session.Implementation, cmd.Text, agent.NewCacheID())
+	case "implement_approve":
+		impl := session.Implementation
+		session.RunKind = "implement"
+		impl.Status, impl.NextStep = "editing", 0
+		impl.Changes, impl.Unverified = []domain.ChangeSummary{}, []string{}
+	case "implement_publish":
+		impl := session.Implementation
+		session.RunKind = "implement"
+		if impl.Status == "ready" {
+			impl.Commit, impl.RefUpdated = "", false
+		}
+		impl.Status, impl.Branch, impl.Title, impl.Body = "publishing", cmd.Branch, cmd.Title, cmd.Body
+	}
 }
