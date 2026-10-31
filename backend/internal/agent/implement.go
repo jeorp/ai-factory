@@ -344,6 +344,17 @@ func (run *implementRun) plan(ctx context.Context) error {
 			correction = "計画が無効です: " + err.Error() + "。変更対象は20ファイル以内、.github/workflows・バイナリ・ロックファイルは対象外です。"
 			continue
 		}
+		problems, err := run.checkPlanPaths(ctx, d.Plan)
+		if err != nil {
+			return err
+		}
+		if len(problems) > 0 {
+			// The model sometimes plans an update for a path it never read. Catch
+			// it here so the user only approves plans that can be applied.
+			run.logger.Info("implement_plan_path_mismatch", "count", len(problems))
+			correction = "計画のパスがベースコミットと一致しません: " + strings.Join(problems, " / ") + "。変更・削除は実在するファイルだけ、追加は存在しないパスだけにしてください。パスが不明ならrepositoryまたはfileで確認してください。"
+			continue
+		}
 		impl.Plan = d.Plan
 		impl.Steps = domain.PlanSteps(d.Plan.Files)
 		impl.NextStep = 0
@@ -354,6 +365,31 @@ func (run *implementRun) plan(ctx context.Context) error {
 		return run.save(ctx, "実装計画を作成しました。承認を待っています")
 	}
 	return errors.New("implementation_plan_failed")
+}
+
+// checkPlanPaths confirms that planned updates and deletes exist at the base
+// commit and planned creates do not. Problems are returned for the model to fix;
+// an error is returned only when GitHub itself could not be read.
+func (run *implementRun) checkPlanPaths(ctx context.Context, plan *domain.ImplementationPlan) ([]string, error) {
+	problems := []string{}
+	for _, f := range plan.Files {
+		_, exists, err := run.r.Writer.RawFile(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, run.impl.BaseCommit, f.Path)
+		if err != nil {
+			switch err.Error() {
+			case "change_file_size_limit", "change_not_text", "invalid_change_path", "protected_change_path", "binary_or_generated_file_excluded":
+				problems = append(problems, f.Path+" は変更できません（"+err.Error()+"）")
+				continue
+			}
+			return nil, err
+		}
+		switch {
+		case f.Action == "create" && exists:
+			problems = append(problems, f.Path+" は既に存在します（updateにしてください）")
+		case f.Action != "create" && !exists:
+			problems = append(problems, f.Path+" は存在しません")
+		}
+	}
+	return problems, nil
 }
 
 func (run *implementRun) edit(ctx context.Context) error {
