@@ -58,3 +58,22 @@ func TestChatContextKeepsFindingsWithinInputCap(t *testing.T) {
 		t.Fatalf("index should be bounded with an explicit omission: %+v", got)
 	}
 }
+
+func TestReferencedFindingsIgnoresPullRequestNumbersAndLooseWords(t *testing.T) {
+	findings := []domain.Finding{{Path: "a/x.go"}, {Path: "b/y.go"}, {Path: "c/z.go"}, {Path: "d/w.go"}}
+	cases := map[string][]int{
+		"PR #1 の4件目の指摘を詳しく":  {3},
+		"Issue #2 と指摘3の関係は？": {2},
+		"#2 はどういう意味？":        {1},
+		"最新のmainと比べてどう？":     {},
+		"最後に全体をまとめて":         {},
+		"最新の指摘を説明して":         {3},
+		"最初の件は？":             {0},
+	}
+	for q, want := range cases {
+		got := referencedFindings(findings, q)
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("%q: got %v want %v", q, got, want)
+		}
+	}
+}

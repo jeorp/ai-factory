@@ -45,8 +45,12 @@ type reviewFindingsContext struct {
 }
 
 var (
-	findingNumberPattern  = regexp.MustCompile(`(?:指摘|#|No\.?\s*)\s*(\d{1,3})`)
+	// "PR #1" or "Issue #3" names a pull request or issue, not a finding.
+	findingNumberPattern  = regexp.MustCompile(`((?i:pr|pull|issue)\s*|プルリク(?:エスト)?\s*)?(指摘|#|No\.?\s*)\s*(\d{1,3})`)
 	findingOrdinalPattern = regexp.MustCompile(`(\d{1,3})\s*(?:件目|番目|つ目)`)
+	// Words such as 最新 or 最後 refer to a finding only next to a noun for one.
+	lastFindingPattern  = regexp.MustCompile(`(?:最後|最新)の?(?:指摘|件|もの|やつ|項目)`)
+	firstFindingPattern = regexp.MustCompile(`最初の?(?:指摘|件|もの|やつ|項目)`)
 )
 
 func latestUserText(s domain.Session) string {
@@ -68,17 +72,23 @@ func referencedFindings(findings []domain.Finding, question string) []int {
 			refs = append(refs, i)
 		}
 	}
-	for _, pattern := range []*regexp.Regexp{findingNumberPattern, findingOrdinalPattern} {
-		for _, m := range pattern.FindAllStringSubmatch(question, -1) {
-			if n, err := strconv.Atoi(m[1]); err == nil {
-				add(n - 1)
-			}
+	for _, m := range findingNumberPattern.FindAllStringSubmatch(question, -1) {
+		if m[1] != "" && m[2] != "指摘" {
+			continue
+		}
+		if n, err := strconv.Atoi(m[3]); err == nil {
+			add(n - 1)
 		}
 	}
-	if strings.Contains(question, "最後") || strings.Contains(question, "最新") {
+	for _, m := range findingOrdinalPattern.FindAllStringSubmatch(question, -1) {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			add(n - 1)
+		}
+	}
+	if lastFindingPattern.MatchString(question) {
 		add(len(findings) - 1)
 	}
-	if strings.Contains(question, "最初") {
+	if firstFindingPattern.MatchString(question) {
 		add(0)
 	}
 	for i, f := range findings {

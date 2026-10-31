@@ -81,6 +81,7 @@ func savePriorities(review *domain.Review, items []priorityItem, response []Prio
 	}
 	for _, item := range items {
 		priority := domain.ReviewPriority{Level: "unknown", Reason: "優先度を評価できませんでした。"}
+		assessed := false
 		count := 0
 		for _, value := range response {
 			if value.Index != item.Index {
@@ -89,11 +90,18 @@ func savePriorities(review *domain.Review, items []priorityItem, response []Prio
 			count++
 			if validPriorityResponse(value) {
 				priority = domain.ReviewPriority{Level: value.Level, Reason: value.Reason}
+				assessed = true
 			}
 		}
 		if count != 1 {
 			priority = domain.ReviewPriority{Level: "unknown", Reason: "優先度を評価できませんでした。"}
+			assessed = false
 		}
-		review.Priorities[strconv.Itoa(item.Index)] = priority
+		key := strconv.Itoa(item.Index)
+		// A failed re-assessment must not erase a valid earlier assessment.
+		if previous, ok := review.Priorities[key]; ok && !assessed && previous.Level != "unknown" {
+			continue
+		}
+		review.Priorities[key] = priority
 	}
 }
