@@ -81,30 +81,45 @@ type Message struct {
 	Applied bool      `json:"applied"`
 }
 type Metrics struct {
-	InputTokens   int   `json:"inputTokens"`
-	OutputTokens  int   `json:"outputTokens"`
-	MaxInputBytes int   `json:"maxInputBytes"`
-	FetchedBytes  int   `json:"fetchedBytes"`
-	ToolCalls     int   `json:"toolCalls"`
-	CacheHits     int   `json:"cacheHits"`
-	DurationMS    int64 `json:"durationMs"`
-	HeapPeakBytes int64 `json:"heapPeakBytes"`
+	InputTokens      int   `json:"inputTokens"`
+	LastInputTokens  int   `json:"lastInputTokens"`
+	LastOutputTokens int   `json:"lastOutputTokens"`
+	HasLastUsage     bool  `json:"hasLastUsage"`
+	OutputTokens     int   `json:"outputTokens"`
+	MaxInputBytes    int   `json:"maxInputBytes"`
+	FetchedBytes     int   `json:"fetchedBytes"`
+	ToolCalls        int   `json:"toolCalls"`
+	CacheHits        int   `json:"cacheHits"`
+	DurationMS       int64 `json:"durationMs"`
+	HeapPeakBytes    int64 `json:"heapPeakBytes"`
 }
+type RepositoryOverview struct {
+	Text      string `json:"text"`
+	Commit    string `json:"commit"`
+	Truncated bool   `json:"truncated"`
+}
+
 type Session struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Target      Target    `json:"target"`
-	Model       string    `json:"model"`
-	State       string    `json:"state"`
-	Messages    []Message `json:"messages"`
-	Summary     string    `json:"summary"`
-	Sources     []Source  `json:"sources"`
-	Limitations []string  `json:"limitations"`
-	Metrics     Metrics   `json:"metrics"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-	ExpiresAt   time.Time `json:"expiresAt"`
-	Lease       string    `json:"-"`
-	LeaseUntil  time.Time `json:"-"`
+	ID                 string              `json:"id"`
+	Title              string              `json:"title"`
+	Target             Target              `json:"target"`
+	Model              string              `json:"model"`
+	RunKind            string              `json:"runKind"`
+	ReviewScope        string              `json:"reviewScope,omitempty"`
+	ActivePullRequest  int                 `json:"activePullRequest"`
+	Review             *Review             `json:"review,omitempty"`
+	State              string              `json:"state"`
+	Messages           []Message           `json:"messages"`
+	Summary            string              `json:"summary"`
+	RepositoryOverview *RepositoryOverview `json:"-"`
+	OverviewPending    bool                `json:"-"`
+	Sources            []Source            `json:"sources"`
+	Limitations        []string            `json:"limitations"`
+	Metrics            Metrics             `json:"metrics"`
+	UpdatedAt          time.Time           `json:"updatedAt"`
+	ExpiresAt          time.Time           `json:"expiresAt"`
+	Lease              string              `json:"-"`
+	LeaseUntil         time.Time           `json:"-"`
 }
 
 func (s *Session) Normalize() {
@@ -116,6 +131,22 @@ func (s *Session) Normalize() {
 	}
 	if s.Limitations == nil {
 		s.Limitations = []string{}
+	}
+	if r := s.Review; r != nil {
+		if r.Steps == nil {
+			r.Steps = []ReviewStep{}
+		}
+		if r.Findings == nil {
+			r.Findings = []Finding{}
+		}
+		if r.Unverified == nil {
+			r.Unverified = []string{}
+		}
+		for i := range r.Steps {
+			if r.Steps[i].Files == nil {
+				r.Steps[i].Files = []ReviewFile{}
+			}
+		}
 	}
 }
 

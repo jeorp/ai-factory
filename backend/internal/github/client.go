@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,8 +17,9 @@ import (
 )
 
 type Client struct {
-	HTTP *http.Client
-	Demo bool
+	HTTP  *http.Client
+	Demo  bool
+	Cache ReadCache
 }
 type Repository struct {
 	FullName      string `json:"full_name"`
@@ -237,10 +239,21 @@ func (c *Client) Read(ctx context.Context, token string, t domain.Target, a Read
 	if _, err = c.Authorize(ctx, token, t.Repository); err != nil {
 		return "", source, 0, err
 	}
+	cacheable := a.Kind == "repository" || a.Kind == "file"
+	key := readCacheKey(t, a, c.Demo)
+	if cacheable && c.Cache != nil {
+		if content, ok := c.Cache.Get(ctx, key); ok {
+			slog.Info("github_persistent_cache_hit", "kind", a.Kind)
+			return content, source, 0, nil
+		}
+	}
 	if c.Demo {
 		v := `{"name":"AI Factory demo","description":"固定デモのGitHub読み取り結果。実在するリポジトリを参照していません。","files":["README.md","backend/cmd/api/main.go","frontend/web/src/App.vue"],"note":"GitHub MCP → bounded context → OpenAI → WebSocket という構成です。"}`
 		if a.Kind == "file" {
 			v = "# AI Factory\nGo API と Vue 3 の GitHub 読み取りチャット。"
+		}
+		if cacheable && c.Cache != nil {
+			c.Cache.Put(ctx, key, v)
 		}
 		return v, source, len(v), nil
 	}
@@ -301,7 +314,11 @@ func (c *Client) Read(ctx context.Context, token string, t domain.Target, a Read
 			return "", source, result.bytes, errors.New("binary_content_excluded")
 		}
 	}
-	return b.String(), source, result.bytes, nil
+	content := b.String()
+	if cacheable && c.Cache != nil {
+		c.Cache.Put(ctx, key, content)
+	}
+	return content, source, result.bytes, nil
 }
 
 type rpcResult struct {

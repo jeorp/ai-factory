@@ -1,3 +1,7 @@
+## Gemini Developer API（無料枠）
+
+`.env` に `AI_PROVIDER=gemini`、`GEMINI_MODELS=gemini-3.5-flash-lite` を設定し、Composeを再ビルドして起動する。Google AI Studioで取得したキーを画面から入力する。`PROVIDER=demo` と組み合わせるとGitHubはサンプル、AIは実際のGeminiとなる。無料枠の制限はGoogleのプロジェクトとモデルに依存し、課金済みプロジェクトでは料金が発生し得る。無料枠で送信したデータはGoogleのサービス改善に使われる場合がある。
+
 # 開発・実接続
 
 ## 実データを読む
@@ -48,9 +52,27 @@ WebSocket最初のフレームは `{type:"auth",token:"Firebase ID token"}`。�
 
 受信イベント: `session`（保存済み状態）、`progress`（処理説明）、`error`、`ended`。ブラウザーは指数バックオフで再接続する。切断したメッセージの自動再送・自動AI再実行は行わない。
 
+## 会話処理の追跡
+
+各質問・再開に追跡 ID を発行し、画面と WebSocket の `trace` イベントに表示する。API の標準出力には JSON ログが出力され、`trace_id` で一回の実行、`session_id` で同じ会話の複数の実行を関連付けられる。`run_started` / `run_finished`、`model_call_started` / `model_call_finished`、`github_read_started` / `github_read_finished`、キャッシュ利用を記録する。終了イベントには所要時間と結果、モデル呼び出しにはトークン数を含む。通常チャットの取得・キャッシュ利用・拒否ログには `kind`、`path`、`number`（PR・Issue番号）、`detail` と、その判断時点の `remaining_reads`・`remaining_files`・`remaining_model_calls` を含める。質問や回答、取得内容、キー、外部サービスのエラー本文は記録しない。ID は実行中のブラウザーに表示され、再読み込み後には復元されない。
+
+通常チャットでは、最終判断に切り替えたときに `chat_final_answer_required`、回答完了時に `chat_answer_completed` を記録する。AIが枠を超えた取得を要求した場合は `github_read_rejected` に対象と `reason`（`read_limit`・`file_limit`・`model_call_limit`）を記録し、取得を実行しない。最終判断でも取得を要求した場合は、保存済みの調査メモと未確認の案内で終了し、`chat_answer_fallback` を記録する。ファイル上限だけに達した場合は、残りの判断枠で回答を続ける。
+
+ローカルの Compose では `docker compose logs api` で確認する。本番では API の標準出力を収集するログ基盤で `trace_id` または `session_id` を検索する。これは構造化ログによる相関であり、外部サービス内部までの分散トレースではない。
+
 ## 参照した公式資料
 
 - [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
 - [GPT-5 mini](https://developers.openai.com/api/docs/models/gpt-5-mini)
 - [GitHub App user access tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
 - [GitHub MCP configuration](https://github.com/github/github-mcp-server/blob/main/docs/server-configuration.md)
+
+## PRレビューの確認
+
+固定デモでは `demo/ai-factory` の通常セッションで「PRを取得して」と送ったあと、「このPRをレビューして」と送る。同じ会話で2ディレクトリの計画、ベース／ヘッド、処理状況、未確認範囲を確認できる。デモは実コードを判定せず、指摘は0件とする。
+
+実接続ではGitHub Appに対象リポジトリのContents・Pull requestsの読み取り権限を付与する。PRメタデータとページごとの差分はREST、周辺コードとコメントはMCPで読む。利用するAIはチャットと同じOpenAIまたはGemini。停止・切断・時間上限後は再接続して「保存済みの状態から再開」を押す。20回のモデル呼び出しに達した場合も同じ操作で続行する。PR更新時にはチャットで再レビューを依頼して計画を作り直す。
+
+単体テストは大きな差分の分割・元行番号・カーソル再開・保存失敗・PR更新・根拠不足の指摘・重複・取得上限・認証情報のエコー拒否を確認する。Emulator統合テストは実WebSocket経由のレビュー停止／再開とFirestore復元も確認する。実GitHubと実AIを組み合わせたレビュー品質・大規模PRのレート制限／負荷は別途検証する。
+
+PR取得に成功した番号は `activePullRequest` に保存する。通常メッセージのAI判断が `startReview` を返すと、対象・実行モードを先に保存してから分割レビューへ進む。番号0は会話内で最後に取得したPRを参照する。古いセッションは保存済みのPR参照元も使用する。明示的なPR番号の指定も可能で、リポジトリは会話の接続先に固定する。取得失敗時に対象番号は変更しない。専用セッションの作成・レビュー開始ボタンは不要。

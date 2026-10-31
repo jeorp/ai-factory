@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -26,10 +27,15 @@ type controlledAI struct {
 	Gate    chan struct{}
 	Started chan struct{}
 	Calls   atomic.Int32
+	Fail    atomic.Bool
 }
 
 func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agent.Decision, agent.Usage, error) {
 	p.Calls.Add(1)
+	// Overview preparation must finish before the review plan is saved.
+	if strings.Contains(input, `"overviewTask":`) {
+		return agent.Decision{Summary: "テスト用リポジトリの概要"}, agent.Usage{InputTokens: 12}, nil
+	}
 	select {
 	case p.Started <- struct{}{}:
 	default:
@@ -39,9 +45,46 @@ func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agen
 		return agent.Decision{}, agent.Usage{}, ctx.Err()
 	case <-p.Gate:
 	}
+	if p.Fail.Load() {
+		return agent.Decision{}, agent.Usage{}, errors.New("review_read_not_allowed")
+	}
 	text := "取得内容を確認しました"
 	if strings.Contains(input, "認証を優先") {
 		text = "認証を優先して確認しました"
+	}
+	var priority struct {
+		Items []struct {
+			Index int `json:"index"`
+		} `json:"priorityTask"`
+	}
+	if json.Unmarshal([]byte(input), &priority) == nil && len(priority.Items) > 0 {
+		d := agent.Decision{}
+		for _, item := range priority.Items {
+			d.Priorities = append(d.Priorities, agent.PriorityAssessment{Index: item.Index, Level: "low", Reason: "確認範囲に関する注記"})
+		}
+		return d, agent.Usage{InputTokens: 42}, nil
+	}
+	if strings.Contains(input, `"reviewTask":`) {
+		return agent.Decision{Summary: "レビュー区切りの要点", Review: &domain.ReviewResult{Findings: []domain.Finding{}, Unverified: []string{"関連コードを確認できませんでした"}}}, agent.Usage{InputTokens: 42}, nil
+	}
+	var chat struct {
+		Active  int              `json:"activePullRequest"`
+		History []domain.Message `json:"recentHistory"`
+	}
+	if json.Unmarshal([]byte(input), &chat) == nil && len(chat.History) > 0 {
+		latest := ""
+		for i := len(chat.History) - 1; i >= 0; i-- {
+			if chat.History[i].Role == "user" {
+				latest = chat.History[i].Text
+				break
+			}
+		}
+		if latest == "PRを取得して" && chat.Active == 0 {
+			return agent.Decision{Read: &github.Read{Kind: "pull_request", Number: 7, Detail: "summary"}}, agent.Usage{InputTokens: 42}, nil
+		}
+		if latest == "このPRをレビューして。バックエンドだけ" {
+			return agent.Decision{StartReview: &agent.ReviewRequest{Scope: "backend"}}, agent.Usage{InputTokens: 42}, nil
+		}
 	}
 	return agent.Decision{Answer: text, Summary: "確認済みの要点"}, agent.Usage{InputTokens: 42}, nil
 }
@@ -65,7 +108,7 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	}
 	defer db.Close()
 	ai := &controlledAI{Gate: make(chan struct{}), Started: make(chan struct{}, 5)}
-	gh := &github.Client{Demo: true}
+	gh := &github.Client{Demo: true, Cache: &github.FirestoreReadCache{DB: db}}
 	storage := &store.Store{DB: db}
 	cfg := Config{Local: true, Demo: false, Project: project, Origin: "http://app.test", Models: []string{"gpt-5-mini"}, CookieKey: []byte(strings.Repeat("a", 32))}
 	api := New(cfg, auth, storage, gh, &agent.Runner{AI: ai, GitHub: gh}, http.DefaultClient)
@@ -119,7 +162,38 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	if resp.StatusCode != 201 {
 		t.Fatalf("create failed %d", resp.StatusCode)
 	}
-	t.Cleanup(func() { storage.Delete(ctx, one.uid, session.ID) })
+	initialID := session.ID
+	// The browser uses the same authorized, pinned read cache as the AI.
+	filePath := "/api/v1/sessions/" + initialID + "/file?path=src/" + randomID() + ".go"
+	for i := 0; i < 2; i++ {
+		resp = request(one, "GET", filePath, nil)
+		var file struct {
+			Repository, Commit, Path, Content string
+			Cached                            bool
+		}
+		err := json.NewDecoder(resp.Body).Decode(&file)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != 200 || file.Repository != session.Target.Repository || file.Commit != session.Target.Commit || file.Content == "" || file.Cached != (i == 1) {
+			t.Fatalf("file cache retrieval %d: %+v status=%d err=%v", i, file, resp.StatusCode, err)
+		}
+	}
+	for _, test := range []struct {
+		who    identity
+		path   string
+		status int
+	}{
+		{two, filePath, 404},
+		{one, filePath + "&commit=" + strings.Repeat("b", 40), 422},
+		{one, "/api/v1/sessions/" + initialID + "/file?path=../secret", 422},
+		{one, "/api/v1/sessions/" + initialID + "/file?path=image.png", 422},
+	} {
+		resp = request(test.who, "GET", test.path, nil)
+		resp.Body.Close()
+		if resp.StatusCode != test.status {
+			t.Fatalf("file boundary: status %d, want %d", resp.StatusCode, test.status)
+		}
+	}
+	t.Cleanup(func() { storage.Delete(ctx, one.uid, initialID) })
 	resp = request(two, "GET", "/api/v1/sessions/"+session.ID, nil)
 	resp.Body.Close()
 	if resp.StatusCode != 404 {
@@ -235,5 +309,135 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	if strings.Contains(string(raw), "APIKey") || strings.Contains(string(raw), "sk-test-private-key-123456") || strings.Contains(string(raw), "demo-github") {
 		t.Fatal("credentials persisted")
 	}
-	t.Log(fmt.Sprintf("verified: user isolation, exclusive lease, directives, cancellation, reconnect (%d model calls)", ai.Calls.Load()))
+	// A PR run persists a plan, stops, and resumes through the real socket and Firestore.
+	three := user()
+	resp = request(three, "POST", "/api/v1/sessions", map[string]string{"target": "https://github.com/demo/ai-factory/pull/7", "model": "gpt-5-mini"})
+	var prSession domain.Session
+	json.NewDecoder(resp.Body).Decode(&prSession)
+	resp.Body.Close()
+	if resp.StatusCode != 201 {
+		t.Fatal("PR session creation failed")
+	}
+	t.Cleanup(func() { storage.Delete(ctx, three.uid, prSession.ID) })
+	session = prSession
+	ws = dial(three)
+	defer ws.Close()
+	wait(ws, func(s domain.Session) bool { return s.ID == prSession.ID })
+	before = ai.Calls.Load()
+	ws.WriteJSON(command{Type: "review", ID: randomID(), Text: "PRをレビュー", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	plan := wait(ws, func(s domain.Session) bool { return s.Review != nil && s.Review.Phase == "diff" })
+	if plan.RunKind != "review" || plan.Review.Base == plan.Review.Head || len(plan.Review.Steps) != 2 {
+		t.Fatal("review plan not saved")
+	}
+	for ai.Calls.Load() == before {
+		time.Sleep(time.Millisecond)
+	}
+	ws.WriteJSON(command{Type: "stop"})
+	stopped = wait(ws, func(s domain.Session) bool { return s.State == "stopped" })
+	if stopped.Review == nil || stopped.Review.Phase != "diff" {
+		t.Fatal("stopped review lost its plan")
+	}
+	close(ai.Gate)
+	// Investigating an unverified item must not make the interrupted review unresumable.
+	stoppedIndex := 0
+	ws.WriteJSON(command{Type: "investigate", ID: randomID(), UnverifiedIndex: &stoppedIndex, APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	midInvestigation := wait(ws, func(s domain.Session) bool {
+		return s.State == "done" && s.RunKind == "investigation" && s.Review != nil && s.Review.Investigations["0"] != ""
+	})
+	if midInvestigation.Review.Phase != "diff" {
+		t.Fatalf("investigation changed the interrupted review phase: %s", midInvestigation.Review.Phase)
+	}
+	ws.WriteJSON(command{Type: "resume", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	reviewed := wait(ws, func(s domain.Session) bool { return s.State == "done" && s.Review != nil && s.Review.Phase == "done" })
+	if reviewed.RunKind != "review" || reviewed.Review.Investigations["0"] != midInvestigation.Review.Investigations["0"] {
+		t.Fatal("resumed review lost its kind or the investigation result")
+	}
+	if reviewed.Review == nil || reviewed.Review.Phase != "done" || reviewed.Target.Commit != reviewed.Review.Head || reviewed.Review.CrossCursor != 2 {
+		t.Fatal("review did not resume to completion")
+	}
+	persisted, e := storage.Get(ctx, three.uid, prSession.ID)
+	if e != nil || persisted.Review == nil || persisted.Review.Phase != "done" {
+		t.Fatalf("review not restored from Firestore: %v", e)
+	}
+	raw, _ = json.Marshal(persisted)
+	if strings.Contains(string(raw), "sk-test-private-key") || strings.Contains(string(raw), "@@ -") {
+		t.Fatal("credentials or patches persisted")
+	}
+	// Retrieve a PR from a repository chat, then review it in the same chat.
+	ws.Close()
+	four := user()
+	resp = request(four, "POST", "/api/v1/sessions", map[string]string{"target": "demo/ai-factory", "model": "gpt-5-mini"})
+	var chatSession domain.Session
+	json.NewDecoder(resp.Body).Decode(&chatSession)
+	resp.Body.Close()
+	if resp.StatusCode != 201 {
+		t.Fatal("chat session creation failed")
+	}
+	t.Cleanup(func() { storage.Delete(ctx, four.uid, chatSession.ID) })
+	session = chatSession
+	ws = dial(four)
+	defer ws.Close()
+	wait(ws, func(s domain.Session) bool { return s.ID == chatSession.ID })
+	ws.WriteJSON(command{Type: "message", ID: randomID(), Text: "PRを取得して", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	retrieved := wait(ws, func(s domain.Session) bool { return s.State == "done" })
+	if retrieved.Target.Kind != "repository" || retrieved.ActivePullRequest != 7 {
+		t.Fatal("retrieved PR was not retained in the repository chat")
+	}
+	retained, e := storage.Get(ctx, four.uid, chatSession.ID)
+	if e != nil || retained.ActivePullRequest != 7 {
+		t.Fatal("PR selection was not persisted")
+	}
+	ws.WriteJSON(command{Type: "message", ID: randomID(), Text: "このPRをレビューして。バックエンドだけ", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	chatReviewed := wait(ws, func(s domain.Session) bool { return s.State == "done" && s.Review != nil })
+	if chatReviewed.ID != chatSession.ID || chatReviewed.RunKind != "review" || chatReviewed.Target.Number != 7 || chatReviewed.Review.Phase != "done" || len(chatReviewed.Messages) != 4 {
+		t.Fatalf("chat review handoff failed: %+v", chatReviewed)
+	}
+	if chatReviewed.Review.Scope != "backend" || chatReviewed.ReviewScope != "backend" {
+		t.Fatal("review scope was lost in the WebSocket handoff")
+	}
+	resp = request(four, "GET", "/api/v1/sessions/"+chatSession.ID, nil)
+	var restoredReview domain.Session
+	err = json.NewDecoder(resp.Body).Decode(&restoredReview)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != 200 || restoredReview.Review == nil || restoredReview.Review.Findings == nil || restoredReview.Review.Unverified == nil || len(restoredReview.Review.Steps) != len(chatReviewed.Review.Steps) {
+		t.Fatalf("review reload cannot render empty findings: %+v %v", restoredReview.Review, err)
+	}
+	if restoredReview.Review.Scope != "backend" || restoredReview.ReviewScope != "backend" {
+		t.Fatal("review scope was not persisted in Firestore")
+	}
+	if len(restoredReview.Review.Priorities) != len(restoredReview.Review.Unverified) {
+		t.Fatal("priority results were not persisted")
+	}
+	for _, value := range restoredReview.Review.Priorities {
+		if value.Level != "low" {
+			t.Fatal("structured priorities became unassessed")
+		}
+	}
+	index := 0
+	if len(chatReviewed.Review.Unverified) == 0 {
+		t.Fatal("missing unverified item")
+	}
+	ws.WriteJSON(command{Type: "investigate", ID: randomID(), UnverifiedIndex: &index, APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	investigated := wait(ws, func(s domain.Session) bool {
+		return s.State == "done" && s.RunKind == "investigation" && s.Review != nil && s.Review.Investigations["0"] != ""
+	})
+	if investigated.Review.PendingInvestigation != 0 || investigated.Review.Unverified[0] != chatReviewed.Review.Unverified[0] {
+		t.Fatal("investigation did not preserve the original item")
+	}
+	persistedInvestigation, e := storage.Get(ctx, four.uid, chatSession.ID)
+	if e != nil || persistedInvestigation.Review.Investigations["0"] != investigated.Review.Investigations["0"] {
+		t.Fatalf("investigation not persisted: %v", e)
+	}
+	// A non-provider error must reach the browser even when a review is present.
+	ai.Fail.Store(true)
+	ws.WriteJSON(command{Type: "message", ID: randomID(), Text: "失敗通知の確認", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	failed := wait(ws, func(s domain.Session) bool { return s.State == "failed" })
+	if failed.Review == nil || failed.Limitations[len(failed.Limitations)-1] != "review_read_not_allowed" {
+		t.Fatal("review failure reason was not retained")
+	}
+	var failure envelope
+	if err := ws.ReadJSON(&failure); err != nil || failure.Type != "error" || !strings.Contains(string(failure.Data), "review_read_not_allowed") {
+		t.Fatalf("review failure was silent: %+v %v", failure, err)
+	}
+	t.Log(fmt.Sprintf("verified: isolation, directives, stop/resume, PR retrieval and full review in one conversation (%d model calls)", ai.Calls.Load()))
 }

@@ -30,3 +30,18 @@ func TestClipAndHistoryLimit(t *testing.T) {
 		t.Fatal("unbounded history")
 	}
 }
+
+func TestReviewUnfinishedIgnoresLaterRunKinds(t *testing.T) {
+	s := Session{Target: Target{Kind: "pull", Number: 1}, RunKind: "investigation", State: "done", Review: &Review{Phase: "diff"}}
+	if !s.ReviewUnfinished() {
+		t.Fatal("interrupted review hidden by investigation")
+	}
+	s.Review.Phase = "done"
+	if s.ReviewUnfinished() {
+		t.Fatal("completed review reported unfinished")
+	}
+	s.Review = nil
+	if s.ReviewUnfinished() {
+		t.Fatal("missing review reported unfinished")
+	}
+}
