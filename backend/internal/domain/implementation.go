@@ -21,6 +21,7 @@ type Implementation struct {
 	Changes      []ChangeSummary      `json:"changes"`
 	Unverified   []string             `json:"unverified"`
 	Summary      string               `json:"summary"`
+	ContextFiles []string             `json:"contextFiles,omitempty"` // files read while planning, given to every step
 	CacheID      string               `json:"-"`
 	Version      int                  `json:"version"`
 	Branch       string               `json:"branch,omitempty"`

@@ -38,6 +38,13 @@ func (w *fakeWriter) RawFile(ctx context.Context, token, repo, commit, p string)
 	v, ok := w.files[p]
 	return v, ok, nil
 }
+func (w *fakeWriter) FileList(ctx context.Context, token, repo, commit string) ([]string, bool, error) {
+	paths := []string{}
+	for p := range w.files {
+		paths = append(paths, p)
+	}
+	return paths, false, nil
+}
 func (w *fakeWriter) PutChange(ctx context.Context, id string, version int, f domain.FileChange) error {
 	if w.failPut {
 		return errors.New("change_store_failed")
@@ -360,5 +367,62 @@ func TestPlanWithMissingPathIsCorrectedBeforeApproval(t *testing.T) {
 	impl := last.Implementation
 	if impl.Status != "plan_ready" || impl.Plan == nil || len(impl.Plan.Files) != 1 || impl.Plan.Files[0].Path != "src/a.go" {
 		t.Fatalf("corrected plan not kept: %+v", impl)
+	}
+}
+
+func TestImplementationPassesFileListContextAndEarlierDiffs(t *testing.T) {
+	writer := newFakeWriter()
+	writer.files["src/types.go"] = "package src\n\ntype T struct{}\n"
+	var stepInputs []string
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		task := implementTaskOf(t, input)
+		switch task.Mode {
+		case "plan":
+			if !strings.Contains(input, `"repositoryFiles":"`) || !strings.Contains(input, "src/types.go") {
+				t.Fatal("plan input lacks the repository file list")
+			}
+			if !strings.Contains(input, `"evidence":[{`) {
+				return Decision{Read: &github.Read{Kind: "file", Path: "src/types.go", Detail: "summary"}}, Usage{}, nil
+			}
+			return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}, {Path: "lib/b.go", Action: "create", Approach: "y"}}}}, Usage{}, nil
+		case "edit":
+			stepInputs = append(stepInputs, input)
+			if task.Files[0].Path == "src/a.go" {
+				return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "src/a.go", Action: "update", Edits: []domain.Edit{{Search: "return 1", Replace: "return Two()"}}}}}}, Usage{}, nil
+			}
+			return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "lib/b.go", Action: "create", Content: "package src\n\nfunc Two() int { return 2 }\n"}}}}, Usage{}, nil
+		}
+		return Decision{}, Usage{}, errors.New("unexpected mode")
+	})
+	session := baseSession()
+	session.RunKind = "implement"
+	session.Implementation = &domain.Implementation{Status: "planning", Request: "r", CacheID: "0123456789abcdef"}
+	reader := readerFunc(func(ctx context.Context, token string, target domain.Target, read github.Read) (string, domain.Source, int, error) {
+		return "type T", domain.Source{Label: read.Path, URL: "https://github.com/a/b/blob/" + implBase + "/" + read.Path}, 6, nil
+	})
+	runner := &Runner{AI: ai, GitHub: reader, Writer: writer}
+	var last Checkpoint
+	if err := runner.Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	impl := last.Implementation
+	if len(impl.ContextFiles) != 1 || impl.ContextFiles[0] != "src/types.go" {
+		t.Fatalf("plan reads not recorded: %v", impl.ContextFiles)
+	}
+	// Approve and edit in two steps, as a larger plan would be split.
+	impl.Status = "editing"
+	impl.Steps = []domain.ImplementationStep{{Files: []string{"src/a.go"}}, {Files: []string{"lib/b.go"}}}
+	session.Implementation = impl
+	if err := runner.Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(stepInputs) != 2 {
+		t.Fatalf("expected two edit steps, got %d", len(stepInputs))
+	}
+	if !strings.Contains(stepInputs[0], `"path":"src/types.go","content":"package src`) {
+		t.Fatal("first step lacks planning context")
+	}
+	if !strings.Contains(stepInputs[1], `"previousChanges":[{"path":"src/a.go","action":"update","diff":"`) || !strings.Contains(stepInputs[1], `+func A() int { return Two() }`) {
+		t.Fatalf("second step lacks the earlier diff: %s", stepInputs[1])
 	}
 }
