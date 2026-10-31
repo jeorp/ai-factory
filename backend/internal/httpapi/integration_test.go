@@ -30,6 +30,10 @@ type controlledAI struct {
 
 func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agent.Decision, agent.Usage, error) {
 	p.Calls.Add(1)
+	// Overview preparation must finish before the review plan is saved.
+	if strings.Contains(input, `"overviewTask":`) {
+		return agent.Decision{Summary: "テスト用リポジトリの概要"}, agent.Usage{InputTokens: 12}, nil
+	}
 	select {
 	case p.Started <- struct{}{}:
 	default:
