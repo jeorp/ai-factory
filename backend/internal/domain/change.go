@@ -37,7 +37,9 @@ var secretPattern = regexp.MustCompile(`\b(?:AIza|sk-|github_pat_|gh[opusr]_|xox
 func ContainsSecret(text string) bool { return secretPattern.MatchString(text) }
 
 // MaskSecrets replaces credential-like tokens, for example in CI logs shown to the model.
-func MaskSecrets(text string) string { return secretPattern.ReplaceAllString(text, "***MASKED_SECRET***") }
+func MaskSecrets(text string) string {
+	return secretPattern.ReplaceAllString(text, "***MASKED_SECRET***")
+}
 
 // ApplyEdits applies search/replace edits in order. Each search text must match
 // exactly once in the current content so that the model cannot change an
