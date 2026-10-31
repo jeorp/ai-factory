@@ -333,3 +333,32 @@ func TestImplementationStopsWhenTotalSizeExceeded(t *testing.T) {
 		t.Fatalf("total size not enforced during editing: %v stored=%d", err, len(writer.cache))
 	}
 }
+
+func TestPlanWithMissingPathIsCorrectedBeforeApproval(t *testing.T) {
+	writer := newFakeWriter()
+	corrections := []string{}
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		task := implementTaskOf(t, input)
+		if task.Correction != "" {
+			corrections = append(corrections, task.Correction)
+			return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
+		}
+		// A guessed path that does not exist at the base commit, and a create
+		// for a file that already exists.
+		return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "frontend/src/App.vue", Action: "update", Approach: "x"}, {Path: "src/old.go", Action: "create", Approach: "x"}}}}, Usage{}, nil
+	})
+	session := baseSession()
+	session.RunKind = "implement"
+	session.Implementation = &domain.Implementation{Status: "planning", Request: "r", CacheID: "0123456789abcdef"}
+	var last Checkpoint
+	if err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(corrections) != 1 || !strings.Contains(corrections[0], "frontend/src/App.vue は存在しません") || !strings.Contains(corrections[0], "src/old.go は既に存在します") {
+		t.Fatalf("missing path not reported to the model: %q", corrections)
+	}
+	impl := last.Implementation
+	if impl.Status != "plan_ready" || impl.Plan == nil || len(impl.Plan.Files) != 1 || impl.Plan.Files[0].Path != "src/a.go" {
+		t.Fatalf("corrected plan not kept: %+v", impl)
+	}
+}
