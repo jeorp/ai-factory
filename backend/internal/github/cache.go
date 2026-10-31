@@ -53,3 +53,35 @@ func (c *FirestoreReadCache) Put(ctx context.Context, key, content string) {
 	defer cancel()
 	_, _ = c.DB.Collection("githubReadCache").Doc(key).Set(ctx, cacheEntry{Content: content, ExpiresAt: time.Now().Add(time.Hour)})
 }
+
+// GetOverview checks current repository access before returning a shared summary.
+func (c *Client) GetOverview(ctx context.Context, token string, target domain.Target) (*domain.RepositoryOverview, bool) {
+	if c.Cache == nil || !domain.ValidCommit(target.Commit) {
+		return nil, false
+	}
+	if _, err := c.Authorize(ctx, token, target.Repository); err != nil {
+		return nil, false
+	}
+	key := readCacheKey(target, Read{Path: "\x00overview-v1"}, c.Demo)
+	value, ok := c.Cache.Get(ctx, key)
+	if !ok {
+		return nil, false
+	}
+	var overview domain.RepositoryOverview
+	if json.Unmarshal([]byte(value), &overview) != nil || overview.Commit != target.Commit || overview.Text == "" || len(overview.Text) > 1400 {
+		return nil, false
+	}
+	return &overview, true
+}
+
+// PutOverview is called only after a successful authorized README read and summary.
+func (c *Client) PutOverview(ctx context.Context, target domain.Target, overview domain.RepositoryOverview) {
+	if c.Cache == nil {
+		return
+	}
+	value, err := json.Marshal(overview)
+	if err != nil {
+		return
+	}
+	c.Cache.Put(ctx, readCacheKey(target, Read{Path: "\x00overview-v1"}, c.Demo), string(value))
+}
