@@ -16,13 +16,15 @@ type Reader interface {
 	Read(context.Context, string, domain.Target, github.Read) (string, domain.Source, int, error)
 }
 type Checkpoint struct {
-	Progress    string
-	Summary     string
-	Answer      string
-	Applied     []string
-	Sources     []domain.Source
-	Limitations []string
-	Metrics     domain.Metrics
+	RepositoryOverview *domain.RepositoryOverview
+	OverviewPending    bool
+	Progress           string
+	Summary            string
+	Answer             string
+	Applied            []string
+	Sources            []domain.Source
+	Limitations        []string
+	Metrics            domain.Metrics
 }
 type Runner struct {
 	AI     Provider
@@ -41,6 +43,18 @@ type Input struct {
 
 // Run owns only transient evidence. Each emitted checkpoint must be durably saved before continuing.
 func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error) error {
+	if in.Session.OverviewPending {
+		if err := r.initializeOverview(ctx, &in, emit); err != nil {
+			return err
+		}
+	}
+	originalEmit := emit
+	emit = func(cp Checkpoint) error {
+		cp.RepositoryOverview = in.Session.RepositoryOverview
+		cp.OverviewPending = in.Session.OverviewPending
+		return originalEmit(cp)
+	}
+
 	start := time.Now()
 	cp := Checkpoint{Summary: in.Session.Summary, Metrics: in.Session.Metrics, Sources: append([]domain.Source{}, in.Session.Sources...)}
 	ev := []evidence{}
@@ -227,11 +241,11 @@ func BuildContext(s domain.Session, summary string, instructions []domain.Messag
 		}
 	}
 	limitText := strings.Join(limits, "\n")
-	body, _ := json.Marshal(map[string]any{"target": s.Target, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 2048)})
+	body, _ := json.Marshal(map[string]any{"target": s.Target, "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 2048)})
 	// Drop oldest evidence to enforce a hard serialized-input cap; explicitly record the omission.
 	for len(body) > domain.MaxInputBytes && len(ev) > 0 {
 		ev = ev[1:]
-		body, _ = json.Marshal(map[string]any{"target": s.Target, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 1024) + " 古い取得情報を入力上限のため省略しました。必要なら再取得してください。"})
+		body, _ = json.Marshal(map[string]any{"target": s.Target, "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 1024) + " 古い取得情報を入力上限のため省略しました。必要なら再取得してください。"})
 	}
 	return string(body)
 }

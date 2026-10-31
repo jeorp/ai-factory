@@ -142,6 +142,8 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			session.Summary = cp.Summary
+			session.RepositoryOverview = cp.RepositoryOverview
+			session.OverviewPending = cp.OverviewPending
 			session.Sources = cp.Sources
 			session.Metrics = cp.Metrics
 			session.Limitations = cp.Limitations

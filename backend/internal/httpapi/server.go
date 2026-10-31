@@ -187,7 +187,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, c credential) {
 		fail(w, 502, "commit_lookup_failed")
 		return
 	}
-	v := domain.Session{ID: randomID(), Title: target.Repository, Target: target, Model: body.Model, State: "auth_wait", Messages: []domain.Message{}, Sources: []domain.Source{}, Limitations: []string{}, UpdatedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(30 * 24 * time.Hour)}
+	v := domain.Session{OverviewPending: true, ID: randomID(), Title: target.Repository, Target: target, Model: body.Model, State: "auth_wait", Messages: []domain.Message{}, Sources: []domain.Source{}, Limitations: []string{}, UpdatedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(30 * 24 * time.Hour)}
 	if target.Kind != "repository" {
 		v.Title = body.Target
 	}

@@ -37,7 +37,7 @@ func main() {
 	}
 	defer db.Close()
 	client := &http.Client{Timeout: 60 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
-	gh := &github.Client{HTTP: client, Demo: c.Demo}
+	gh := &github.Client{HTTP: client, Demo: c.Demo, Cache: &github.FirestoreReadCache{DB: db}}
 	var ai agent.Provider = &agent.OpenAI{HTTP: client}
 	if c.Demo {
 		ai = agent.Demo{}

@@ -90,21 +90,29 @@ type Metrics struct {
 	DurationMS    int64 `json:"durationMs"`
 	HeapPeakBytes int64 `json:"heapPeakBytes"`
 }
+type RepositoryOverview struct {
+	Text      string `json:"text"`
+	Commit    string `json:"commit"`
+	Truncated bool   `json:"truncated"`
+}
+
 type Session struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Target      Target    `json:"target"`
-	Model       string    `json:"model"`
-	State       string    `json:"state"`
-	Messages    []Message `json:"messages"`
-	Summary     string    `json:"summary"`
-	Sources     []Source  `json:"sources"`
-	Limitations []string  `json:"limitations"`
-	Metrics     Metrics   `json:"metrics"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-	ExpiresAt   time.Time `json:"expiresAt"`
-	Lease       string    `json:"-"`
-	LeaseUntil  time.Time `json:"-"`
+	ID                 string              `json:"id"`
+	Title              string              `json:"title"`
+	Target             Target              `json:"target"`
+	Model              string              `json:"model"`
+	State              string              `json:"state"`
+	Messages           []Message           `json:"messages"`
+	Summary            string              `json:"summary"`
+	RepositoryOverview *RepositoryOverview `json:"-"`
+	OverviewPending    bool                `json:"-"`
+	Sources            []Source            `json:"sources"`
+	Limitations        []string            `json:"limitations"`
+	Metrics            Metrics             `json:"metrics"`
+	UpdatedAt          time.Time           `json:"updatedAt"`
+	ExpiresAt          time.Time           `json:"expiresAt"`
+	Lease              string              `json:"-"`
+	LeaseUntil         time.Time           `json:"-"`
 }
 
 func (s *Session) Normalize() {
