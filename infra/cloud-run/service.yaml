@@ -1,0 +1,44 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+ name: ai-factory-api
+spec:
+ template:
+  metadata:
+   annotations:
+    autoscaling.knative.dev/maxScale: "3"
+  spec:
+   serviceAccountName: ai-factory-api@REPLACE_PROJECT_ID.iam.gserviceaccount.com
+   timeoutSeconds: 3600
+   containerConcurrency: 16
+   containers:
+    - image: asia-northeast1-docker.pkg.dev/REPLACE_PROJECT_ID/ai-factory/api:REPLACE_TAG
+      resources:
+       limits:
+        cpu: "1"
+        memory: 512Mi
+      env:
+       - name: APP_ENV
+         value: production
+       - name: PROVIDER
+         value: live
+       - name: GCP_PROJECT_ID
+         value: REPLACE_PROJECT_ID
+       - name: WEB_ORIGIN
+         value: https://REPLACE_APP_DOMAIN
+       - name: GITHUB_CLIENT_ID
+         value: REPLACE_GITHUB_APP_CLIENT_ID
+       - name: GITHUB_APP_SLUG
+         value: REPLACE_GITHUB_APP_SLUG
+       - name: OPENAI_MODELS
+         value: gpt-5-mini
+       - name: GITHUB_CLIENT_SECRET
+         valueFrom:
+          secretKeyRef:
+           name: github-client-secret
+           key: latest
+       - name: COOKIE_KEY
+         valueFrom:
+          secretKeyRef:
+           name: cookie-key
+           key: latest

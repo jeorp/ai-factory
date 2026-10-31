@@ -1,0 +1,1 @@
+{"indexes":[],"fieldOverrides":[{"collectionGroup":"sessions","fieldPath":"ExpiresAt","ttl":true,"indexes":[]},{"collectionGroup":"sessions","fieldPath":"Messages","indexes":[]},{"collectionGroup":"sessions","fieldPath":"Summary","indexes":[]}]}

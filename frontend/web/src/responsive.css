@@ -1,0 +1,17 @@
+/* Keep session history and the context inspector usable in narrow desktop panes and on mobile. */
+.conversation-layout { position: relative; }
+.context-delete { margin-top: 12px; font-size: 9px; }
+@media (max-width: 950px) {
+ .context-panel { display: block; position: absolute; right: 0; top: 0; bottom: 0; z-index: 5; width: 277px; box-shadow: -8px 0 24px #3143230c; }
+}
+@media (max-width: 650px) {
+ .sidebar .new-chat { display: flex; font-size: 0; padding: 11px 0; margin-top: 30px; width: 44px; gap: 0; }
+ .sidebar .session-list { display: block; margin-top: 18px; }
+ .sidebar .session-select { padding: 12px; justify-content: center; }
+ .sidebar .session-select > span { display: none; }
+ .sidebar .delete-button, .sidebar .empty-sidebar { display: none; }
+ .sidebar .sidebar-bottom { display: block; margin-top: auto; }
+ .sidebar .readonly-note, .sidebar .profile > .avatar, .sidebar .profile > div { display: none; }
+ .sidebar .profile { padding: 15px 5px; }
+ .sidebar .profile .icon-button { margin: 0; }
+}

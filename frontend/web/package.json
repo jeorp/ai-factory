@@ -1,0 +1,8 @@
+{
+ "name":"ai-factory-web","version":"0.1.0","private":true,"type":"module",
+ "engines":{"node":">=22.12.0"},
+ "scripts":{"dev":"vite --host 127.0.0.1 --port 5175 --strictPort","build":"vue-tsc --noEmit && vite build","build:local":"vue-tsc --noEmit && vite build --mode emulator","preview":"vite preview --host 127.0.0.1 --port 4175","test":"vitest run"},
+ "dependencies":{"firebase":"^12.19.0","pinia":"^4.0.3","vue":"^3.5.43","vue-router":"^5.3.1"},
+ "devDependencies":{"@types/node":"^24.13.6","@vitejs/plugin-vue":"^6.0.9","typescript":"~5.9","vite":"^8.3.0","vitest":"^5.0.1","vue-tsc":"^3.3.11"},
+ "overrides":{"@grpc/grpc-js":"^1.13.6"}
+}

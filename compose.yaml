@@ -1,0 +1,47 @@
+name: ai-factory
+services:
+ firebase-emulator:
+  build:
+   context: .
+   dockerfile: infra/firebase-emulator/Dockerfile
+  ports:
+   - "127.0.0.1:4101:4000"
+   - "127.0.0.1:4501:4400"
+   - "127.0.0.1:8186:8085"
+   - "127.0.0.1:9197:9099"
+  volumes:
+   - emulator-data:/data
+   - emulator-cache:/home/node/.cache/firebase/emulators
+  healthcheck:
+   test: ["CMD", "node", "-e", "Promise.all(['http://127.0.0.1:4400/emulators','http://127.0.0.1:8085/','http://127.0.0.1:9099/'].map(u=>fetch(u))).then(()=>process.exit(0)).catch(()=>process.exit(1))"]
+   interval: 5s
+   timeout: 3s
+   retries: 40
+  stop_grace_period: 45s
+ api:
+  build:
+   context: .
+   dockerfile: backend/Dockerfile
+   args:
+    WEB_BUILD_MODE: emulator
+  environment:
+   APP_ENV: local
+   PROVIDER: ${PROVIDER:-demo}
+   PORT: 8080
+   GCP_PROJECT_ID: demo-ai-factory
+   WEB_ORIGIN: http://127.0.0.1:5175
+   FIREBASE_AUTH_EMULATOR_HOST: firebase-emulator:9099
+   FIRESTORE_EMULATOR_HOST: firebase-emulator:8085
+   GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+   GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+   GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+   COOKIE_KEY: ${COOKIE_KEY:-}
+   OPENAI_MODELS: ${OPENAI_MODELS:-gpt-5-mini}
+  ports:
+   - "127.0.0.1:8181:8080"
+  depends_on:
+   firebase-emulator:
+    condition: service_healthy
+volumes:
+ emulator-data:
+ emulator-cache:
