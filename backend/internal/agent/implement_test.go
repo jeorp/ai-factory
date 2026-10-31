@@ -54,6 +54,12 @@ func (w *fakeWriter) FileList(ctx context.Context, token, repo, commit string) (
 	}
 	return paths, false, nil
 }
+func (w *fakeWriter) PullRequestTarget(ctx context.Context, token, repo string, number int) (github.PullRequestTarget, error) {
+	if number != 7 {
+		return github.PullRequestTarget{}, errors.New("pull_request_not_ai_branch")
+	}
+	return github.PullRequestTarget{Branch: "ai-factory/fix-7", Head: implBase, Base: "main", URL: "https://github.com/a/b/pull/7", Title: "Seven"}, nil
+}
 func (w *fakeWriter) PutChange(ctx context.Context, id string, version int, f domain.FileChange) error {
 	if w.failPut {
 		return errors.New("change_store_failed")
@@ -593,5 +599,56 @@ func TestEditInputLimitRetriesKeepCallBudget(t *testing.T) {
 	}
 	if modelCalls != ImplementStepCalls || len(last.Implementation.Changes) != 1 {
 		t.Fatalf("model calls %d, changes %+v", modelCalls, last.Implementation.Changes)
+	}
+}
+
+func TestFixRequestForExistingPRPushesToItsBranch(t *testing.T) {
+	writer := newFakeWriter()
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		task := implementTaskOf(t, input)
+		switch task.Mode {
+		case "plan":
+			if !task.FollowUp {
+				t.Fatal("fix request not treated as a follow-up")
+			}
+			return Decision{Plan: &domain.ImplementationPlan{Summary: "fix", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
+		case "edit":
+			return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "src/a.go", Action: "update", Edits: []domain.Edit{{Search: "return 1", Replace: "return 2"}}}}}}, Usage{}, nil
+		}
+		return Decision{}, Usage{}, errors.New("unexpected mode")
+	})
+	reader := readerFunc(func(ctx context.Context, token string, target domain.Target, read github.Read) (string, domain.Source, int, error) {
+		return `{"check_runs":[]}`, domain.Source{Label: "checks", URL: "https://github.com/a/b/pull/7/checks"}, 10, nil
+	})
+	runner := &Runner{AI: ai, GitHub: reader, Writer: writer}
+	session := baseSession()
+	session.RunKind = "implement"
+	// The session previously published a different PR; the fix targets #7.
+	prev := &domain.Implementation{Status: "published", BaseBranch: "main", BaseCommit: implBase, Commit: strings.Repeat("f", 40), Branch: "ai-factory/other-1", PullNumber: 3, Version: 2}
+	session.Implementation = StartImplementation(prev, ImplementRequest{Request: "CIの失敗を直して", PullNumber: 7}, "0123456789abcdef")
+	var last Checkpoint
+	run := func() {
+		t.Helper()
+		if err := runner.Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		session.Implementation = last.Implementation
+	}
+	run()
+	impl := last.Implementation
+	if impl.Branch != "ai-factory/fix-7" || impl.ExpectedHead != implBase || impl.PullNumber != 7 || impl.Version != 3 || impl.Status != "plan_ready" {
+		t.Fatalf("not attached to PR #7: %+v", impl)
+	}
+	impl.Status = "editing"
+	run()
+	session.Implementation.Status = "publishing"
+	run()
+	if len(writer.published) != 1 || writer.published[0].Branch != "ai-factory/fix-7" || writer.published[0].ExpectedHead != implBase {
+		t.Fatalf("fix not pushed to the PR branch: %+v", writer.published)
+	}
+	// Branches AI Factory did not create are refused.
+	session.Implementation = StartImplementation(nil, ImplementRequest{Request: "x", PullNumber: 8}, "0123456789abcdef")
+	if err := runner.Run(context.Background(), Input{Session: session}, func(Checkpoint) error { return nil }); err == nil || err.Error() != "pull_request_not_ai_branch" {
+		t.Fatalf("foreign branch accepted: %v", err)
 	}
 }

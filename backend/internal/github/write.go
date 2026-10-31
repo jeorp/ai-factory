@@ -381,3 +381,58 @@ func (c *Client) PullRequestOpen(ctx context.Context, token, repository string, 
 	}
 	return v.State == "open" && !v.Merged && v.Head.Ref == branch && v.Head.SHA == head, nil
 }
+
+// PullRequestTarget is an open AI Factory PR that a fix request can push to.
+type PullRequestTarget struct {
+	Branch string
+	Head   string
+	Base   string
+	URL    string
+	Title  string
+}
+
+// PullRequestTarget checks that a PR can take follow-up commits: it is open,
+// its branch lives in the same repository, and the branch is one AI Factory
+// created (ai-factory/ prefix). Other branches are never written.
+func (c *Client) PullRequestTarget(ctx context.Context, token, repository string, number int) (PullRequestTarget, error) {
+	if number < 1 {
+		return PullRequestTarget{}, errors.New("pull_request_not_found")
+	}
+	if c.Demo {
+		return PullRequestTarget{Branch: "ai-factory/demo-1", Head: strings.Repeat("e", 40), Base: "main", URL: fmt.Sprintf("https://github.com/%s/pull/%d", repository, number), Title: "Demo"}, nil
+	}
+	var v struct {
+		State   string `json:"state"`
+		Merged  bool   `json:"merged"`
+		HTMLURL string `json:"html_url"`
+		Title   string `json:"title"`
+		Head    struct {
+			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
+			Repo *struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+	}
+	if err := c.send(ctx, token, "GET", fmt.Sprintf("/repos/%s/pulls/%d", repository, number), nil, &v); err != nil {
+		var api apiError
+		if errors.As(err, &api) && api.Status == 404 {
+			return PullRequestTarget{}, errors.New("pull_request_not_found")
+		}
+		return PullRequestTarget{}, err
+	}
+	switch {
+	case v.State != "open" || v.Merged:
+		return PullRequestTarget{}, errors.New("pull_request_closed")
+	case v.Head.Repo == nil || !strings.EqualFold(v.Head.Repo.FullName, repository):
+		return PullRequestTarget{}, errors.New("pull_request_from_fork")
+	case !domain.ValidBranchName(v.Head.Ref):
+		return PullRequestTarget{}, errors.New("pull_request_not_ai_branch")
+	case !domain.ValidCommit(v.Head.SHA):
+		return PullRequestTarget{}, errors.New("invalid_commit")
+	}
+	return PullRequestTarget{Branch: v.Head.Ref, Head: v.Head.SHA, Base: v.Base.Ref, URL: v.HTMLURL, Title: v.Title}, nil
+}

@@ -24,6 +24,7 @@ type command struct {
 	KeyExpiresAt    int64  `json:"keyExpiresAt"`
 	UnverifiedIndex *int   `json:"unverifiedIndex"`
 	Branch          string `json:"branch"`
+	PullNumber      int    `json:"pullNumber"`
 	Title           string `json:"title"`
 	Body            string `json:"body"`
 }
@@ -474,6 +475,9 @@ func implementCommandProblem(session *domain.Session, cmd *command) string {
 		if strings.TrimSpace(cmd.Text) == "" {
 			return "implementation_request_required"
 		}
+		if cmd.PullNumber < 0 || cmd.PullNumber > 100000000 {
+			return "invalid_number"
+		}
 		// A half-written branch must be finished (or retried) before a new cycle.
 		if impl != nil && impl.Status == "publishing" && (impl.RefUpdated || impl.RefBranch != "") {
 			return "implementation_publish_incomplete"
@@ -508,7 +512,7 @@ func applyImplementCommand(session *domain.Session, cmd command) {
 	switch cmd.Type {
 	case "implement":
 		session.RunKind = "implement"
-		session.Implementation = domain.NextImplementation(session.Implementation, cmd.Text, agent.NewCacheID())
+		session.Implementation = agent.StartImplementation(session.Implementation, agent.ImplementRequest{Request: cmd.Text, PullNumber: cmd.PullNumber}, agent.NewCacheID())
 	case "implement_approve":
 		impl := session.Implementation
 		session.RunKind = "implement"

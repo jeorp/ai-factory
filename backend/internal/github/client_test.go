@@ -103,7 +103,7 @@ func TestCheckRunsAndJobLogTool(t *testing.T) {
 	}
 
 	name, args, src, err = Tool(target, Read{Kind: "job_log", Number: 12345})
-	if err != nil || name != "get_job_logs" || args["jobId"] != 12345 {
+	if err != nil || name != "get_job_logs" || args["job_id"] != 12345 {
 		t.Fatalf("job_log mapping failed: %s %v %v", name, args, err)
 	}
 	if !strings.Contains(src.URL, "/actions/jobs/12345") {
@@ -128,5 +128,24 @@ func TestSanitizeJobLog(t *testing.T) {
 	}
 	if !strings.Contains(sanitized, "***MASKED_SECRET***") {
 		t.Fatalf("masked indicator missing: %s", sanitized)
+	}
+}
+
+func TestJobLogReadsRESTTailAndMasksSecrets(t *testing.T) {
+	var path string
+	c := &Client{HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		path = r.URL.Path
+		body := strings.Repeat("ok\n", 500) + "FAIL TestX token=ghp_" + strings.Repeat("y", 20) + "\n"
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})}}
+	got, _, err := c.jobLog(context.Background(), "t", "owner/repo", 124628312411)
+	if err != nil || path != "/repos/owner/repo/actions/jobs/124628312411/logs" {
+		t.Fatalf("unexpected request: %s %v", path, err)
+	}
+	if !strings.HasSuffix(got, "FAIL TestX token=***MASKED_SECRET***") || strings.Count(got, "\n") != 199 {
+		t.Fatalf("tail not kept or secret not masked: %q", got[len(got)-60:])
+	}
+	if (Read{Kind: "job_log", Number: 124628312411}).Validate() != nil {
+		t.Fatal("real job IDs must be accepted")
 	}
 }
