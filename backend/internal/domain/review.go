@@ -8,6 +8,7 @@ type ReviewPriority struct {
 }
 
 type Review struct {
+	Scope                string                    `json:"scope,omitempty"`
 	Title                string                    `json:"title"`
 	Body                 string                    `json:"body"`
 	Base                 string                    `json:"base"`
@@ -31,6 +32,7 @@ type ReviewStep struct {
 	Summary   string       `json:"summary"`
 }
 type ReviewFile struct {
+	Excluded     bool   `json:"excluded,omitempty"`
 	Path         string `json:"path"`
 	PreviousPath string `json:"previousPath"`
 	Status       string `json:"status"`

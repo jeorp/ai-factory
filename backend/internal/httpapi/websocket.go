@@ -154,6 +154,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			}
 			if cp.ResetReview {
 				session.Review = nil
+				session.ReviewScope = cp.ReviewScope
 			}
 			if cp.ActivePullRequest > 0 {
 				session.ActivePullRequest = cp.ActivePullRequest
@@ -347,6 +348,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				} else if cmd.Type == "review" {
 					session.RunKind = "review"
 					session.Review = nil
+					session.ReviewScope = ""
 				} else if cmd.Type == "message" {
 					if session.Review != nil {
 						session.Review.PendingInvestigation = 0

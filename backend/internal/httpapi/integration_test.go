@@ -52,6 +52,18 @@ func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agen
 	if strings.Contains(input, "認証を優先") {
 		text = "認証を優先して確認しました"
 	}
+	var priority struct {
+		Items []struct {
+			Index int `json:"index"`
+		} `json:"priorityTask"`
+	}
+	if json.Unmarshal([]byte(input), &priority) == nil && len(priority.Items) > 0 {
+		d := agent.Decision{}
+		for _, item := range priority.Items {
+			d.Priorities = append(d.Priorities, agent.PriorityAssessment{Index: item.Index, Level: "low", Reason: "確認範囲に関する注記"})
+		}
+		return d, agent.Usage{InputTokens: 42}, nil
+	}
 	if strings.Contains(input, `"reviewTask":`) {
 		return agent.Decision{Summary: "レビュー区切りの要点", Review: &domain.ReviewResult{Findings: []domain.Finding{}, Unverified: []string{"関連コードを確認できませんでした"}}}, agent.Usage{InputTokens: 42}, nil
 	}
@@ -70,8 +82,8 @@ func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agen
 		if latest == "PRを取得して" && chat.Active == 0 {
 			return agent.Decision{Read: &github.Read{Kind: "pull_request", Number: 7, Detail: "summary"}}, agent.Usage{InputTokens: 42}, nil
 		}
-		if latest == "このPRをレビューして" {
-			return agent.Decision{StartReview: &agent.ReviewRequest{}}, agent.Usage{InputTokens: 42}, nil
+		if latest == "このPRをレビューして。バックエンドだけ" {
+			return agent.Decision{StartReview: &agent.ReviewRequest{Scope: "backend"}}, agent.Usage{InputTokens: 42}, nil
 		}
 	}
 	return agent.Decision{Answer: text, Summary: "確認済みの要点"}, agent.Usage{InputTokens: 42}, nil
@@ -363,10 +375,13 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	if e != nil || retained.ActivePullRequest != 7 {
 		t.Fatal("PR selection was not persisted")
 	}
-	ws.WriteJSON(command{Type: "message", ID: randomID(), Text: "このPRをレビューして", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	ws.WriteJSON(command{Type: "message", ID: randomID(), Text: "このPRをレビューして。バックエンドだけ", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
 	chatReviewed := wait(ws, func(s domain.Session) bool { return s.State == "done" && s.Review != nil })
 	if chatReviewed.ID != chatSession.ID || chatReviewed.RunKind != "review" || chatReviewed.Target.Number != 7 || chatReviewed.Review.Phase != "done" || len(chatReviewed.Messages) != 4 {
 		t.Fatalf("chat review handoff failed: %+v", chatReviewed)
+	}
+	if chatReviewed.Review.Scope != "backend" || chatReviewed.ReviewScope != "backend" {
+		t.Fatal("review scope was lost in the WebSocket handoff")
 	}
 	resp = request(four, "GET", "/api/v1/sessions/"+chatSession.ID, nil)
 	var restoredReview domain.Session
@@ -374,6 +389,17 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	resp.Body.Close()
 	if err != nil || resp.StatusCode != 200 || restoredReview.Review == nil || restoredReview.Review.Findings == nil || restoredReview.Review.Unverified == nil || len(restoredReview.Review.Steps) != len(chatReviewed.Review.Steps) {
 		t.Fatalf("review reload cannot render empty findings: %+v %v", restoredReview.Review, err)
+	}
+	if restoredReview.Review.Scope != "backend" || restoredReview.ReviewScope != "backend" {
+		t.Fatal("review scope was not persisted in Firestore")
+	}
+	if len(restoredReview.Review.Priorities) != len(restoredReview.Review.Unverified) {
+		t.Fatal("priority results were not persisted")
+	}
+	for _, value := range restoredReview.Review.Priorities {
+		if value.Level != "low" {
+			t.Fatal("structured priorities became unassessed")
+		}
 	}
 	index := 0
 	if len(chatReviewed.Review.Unverified) == 0 {

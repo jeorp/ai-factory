@@ -112,6 +112,9 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 			return d, usage, err
 		}
 	}
+	if !validPriorityDecision(input, d) {
+		return d, usage, errors.New("invalid_priority_result")
+	}
 	return d, usage, nil
 }
 

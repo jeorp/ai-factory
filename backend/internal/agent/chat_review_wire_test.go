@@ -10,7 +10,7 @@ import (
 func TestProvidersExposeAndDecodeChatReviewAction(t *testing.T) {
 	for _, name := range []string{"openai", "gemini"} {
 		t.Run(name, func(t *testing.T) {
-			decision := Decision{Intent: IntentPlan{Goal: "PRをレビュー", Investigation: "分割して確認", Response: "指摘を提示"}, StartReview: &ReviewRequest{Number: 42}}
+			decision := Decision{Intent: IntentPlan{Goal: "PRをレビュー", Investigation: "分割して確認", Response: "指摘を提示"}, StartReview: &ReviewRequest{Number: 42, Scope: "backend"}}
 			decisionJSON, _ := json.Marshal(decision)
 			client := fakeClient(func(req *http.Request) string {
 				var body map[string]any
@@ -49,7 +49,7 @@ func TestProvidersExposeAndDecodeChatReviewAction(t *testing.T) {
 				provider = &Gemini{HTTP: client, Endpoint: "https://example.test"}
 			}
 			d, _, err := provider.Next(context.Background(), "test-key", "test-model", "input")
-			if err != nil || d.StartReview == nil || d.StartReview.Number != 42 {
+			if err != nil || d.StartReview == nil || d.StartReview.Number != 42 || d.StartReview.Scope != "backend" {
 				t.Fatalf("review action was not decoded: %+v %v", d, err)
 			}
 		})

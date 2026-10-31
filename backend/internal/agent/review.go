@@ -127,6 +127,9 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 		}
 	}
 	if review == nil {
+		if !validReviewScope(in.Session.ReviewScope) {
+			return errors.New("invalid_review_scope")
+		}
 		if err := save("PRの概要と対象コミットを取得しています"); err != nil {
 			return err
 		}
@@ -135,6 +138,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			return err
 		}
 		review = &domain.Review{Title: domain.Clip(pr.Title, 512), Body: domain.Clip(pr.Body, 2048), Base: pr.Base.SHA, Head: pr.Head.SHA, TotalFiles: pr.ChangedFiles, Phase: "planning", Steps: []domain.ReviewStep{}, Findings: []domain.Finding{}, Unverified: []string{"コード・テストの実行による検証は行っていません。"}}
+		review.Scope = in.Session.ReviewScope
 		if len(pr.Body) > 2048 {
 			limit("PR本文の後半を入力上限のため省略しました。")
 		}
@@ -192,7 +196,21 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 					review.Steps = append(review.Steps, domain.ReviewStep{Directory: dir, State: "pending", Files: []domain.ReviewFile{}})
 					idx = len(review.Steps) - 1
 				}
+				if review.Steps[idx].State == "excluded" {
+					review.Steps[idx].State = "pending"
+				}
 				review.Steps[idx].Files = append(review.Steps[idx].Files, domain.ReviewFile{Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status, Index: count})
+				if excludedReviewFile(review.Scope, f.Filename, f.PreviousFilename) {
+					file := &review.Steps[idx].Files[len(review.Steps[idx].Files)-1]
+					file.Excluded, file.Done = true, true
+					allExcluded := true
+					for _, planned := range review.Steps[idx].Files {
+						allExcluded = allExcluded && planned.Excluded
+					}
+					if allExcluded {
+						review.Steps[idx].State = "excluded"
+					}
+				}
 			}
 			count++
 			if err := check(); err != nil {
@@ -248,7 +266,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 					break
 				}
 			}
-			payload := map[string]any{"reviewTask": task, "repositoryOverview": in.Session.RepositoryOverview, "target": map[string]any{"repository": in.Session.Target.Repository, "number": in.Session.Target.Number, "base": review.Base, "head": review.Head}, "title": review.Title, "body": review.Body, "focus": focus, "instructions": pinned, "evidence": ev, "readBudget": domain.MaxFiles - call}
+			payload := map[string]any{"reviewTask": task, "repositoryOverview": in.Session.RepositoryOverview, "target": map[string]any{"repository": in.Session.Target.Repository, "number": in.Session.Target.Number, "base": review.Base, "head": review.Head}, "title": review.Title, "body": review.Body, "scope": review.Scope, "focus": focus, "instructions": pinned, "evidence": ev, "readBudget": domain.MaxFiles - call}
 			if readCorrection != "" {
 				payload["readCorrection"] = readCorrection
 			}
@@ -340,6 +358,10 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 					limit(u)
 				}
 				for _, f := range d.Review.Findings {
+					if nonIssueFinding(f) || excludedReviewFinding(review, f.Path) {
+						logger.Info("review_finding_rejected", "reason", "non_issue_or_out_of_scope", "path", f.Path)
+						continue
+					}
 					supported := false
 					if task.Mode == "diff" {
 						for _, patch := range task.Patches {
@@ -470,7 +492,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				for _, f := range step.Files {
 					complete = complete && f.Done
 				}
-				if complete && step.State != "partial" {
+				if complete && step.State != "partial" && step.State != "excluded" {
 					step.State = "done"
 				}
 			}
@@ -600,7 +622,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			for _, file := range step.Files {
 				complete = complete && file.Done
 			}
-			if complete && step.State != "partial" {
+			if complete && step.State != "partial" && step.State != "excluded" {
 				step.State = "done"
 			}
 		}
@@ -630,7 +652,15 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 					}
 				}
 			}
-			d, err := analyze(reviewTask{Mode: "cross", Steps: review.Steps[review.CrossCursor:end], Prior: prior})
+			steps := reviewCrossSteps(review.Steps[review.CrossCursor:end])
+			if len(steps) == 0 {
+				review.CrossCursor = end
+				if err := save("対象外の全体照合をスキップしました"); err != nil {
+					return err
+				}
+				continue
+			}
+			d, err := analyze(reviewTask{Mode: "cross", Steps: steps, Prior: prior})
 			if err != nil {
 				return err
 			}
@@ -671,6 +701,9 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			modelCalls++
 			logger.Info("model_call_started", "step", modelCalls, "review_phase", "priority", "input_bytes", len(payload))
 			d, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, string(payload))
+			if err == nil && !validPriorityDecision(string(payload), d) {
+				err = errors.New("invalid_priority_result")
+			}
 			logger.Info("model_call_finished", "step", modelCalls, "review_phase", "priority", "outcome", outcome(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 			runInputTokens += usage.InputTokens
 			runOutputTokens += usage.OutputTokens
@@ -687,11 +720,14 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			answer := ""
-			if err == nil && !echoes(d.Answer, in) && d.Read == nil && d.StartReview == nil {
-				answer = d.Answer
+			var priorities []PriorityAssessment
+			encoded, _ := json.Marshal(d.Priorities)
+			if err == nil && !echoes(string(encoded), in) {
+				priorities = d.Priorities
+			} else {
+				logger.Warn("review_priority_failed", "error_code", "priority_assessment_unavailable", "outcome", outcome(err), "items", len(items))
 			}
-			savePriorities(review, items, answer)
+			savePriorities(review, items, priorities)
 			review.PriorityCursor = end
 			if err := save("未確認項目の優先度を保存しました"); err != nil {
 				return err

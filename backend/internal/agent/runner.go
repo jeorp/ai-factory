@@ -20,6 +20,7 @@ type Checkpoint struct {
 	Target             *domain.Target
 	RunKind            string
 	ResetReview        bool
+	ReviewScope        string
 	ActivePullRequest  int
 	RepositoryOverview *domain.RepositoryOverview
 	OverviewPending    bool

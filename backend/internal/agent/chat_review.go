@@ -13,11 +13,12 @@ import (
 // ReviewRequest selects a workflow, never a GitHub endpoint or repository.
 // A zero number refers to the PR most recently retrieved in this conversation.
 type ReviewRequest struct {
-	Number int `json:"number"`
+	Number int    `json:"number"`
+	Scope  string `json:"scope"`
 }
 
 func validReviewAction(d Decision) bool {
-	return d.StartReview == nil || (d.StartReview.Number >= 0 && d.StartReview.Number <= 100000000 && d.Read == nil && d.Review == nil && strings.TrimSpace(d.Answer) == "")
+	return d.StartReview == nil || (validReviewScope(d.StartReview.Scope) && d.StartReview.Number >= 0 && d.StartReview.Number <= 100000000 && d.Read == nil && d.Review == nil && strings.TrimSpace(d.Answer) == "")
 }
 
 func activePullRequest(s domain.Session) int {
@@ -87,6 +88,7 @@ func (r *Runner) reviewFromChat(ctx context.Context, in Input, cp Checkpoint, re
 	target := in.Session.Target
 	target.Kind, target.Number = "pull", number
 	cp.Target, cp.RunKind, cp.ResetReview, cp.ActivePullRequest = &target, "review", true, number
+	cp.ReviewScope = request.Scope
 	cp.Review = nil
 	cp.Progress = fmt.Sprintf("会話中のPR #%d の分割レビューを開始します", number)
 	if err := emit(cp); err != nil {
@@ -96,6 +98,7 @@ func (r *Runner) reviewFromChat(ctx context.Context, in Input, cp Checkpoint, re
 		in.Logger.Info("review_requested", "source", "chat", "pull_number", number)
 	}
 	in.Session.Target, in.Session.RunKind, in.Session.Review = target, "review", nil
+	in.Session.ReviewScope = request.Scope
 	in.Session.ActivePullRequest = number
 	in.Session.Summary, in.Session.Sources, in.Session.Limitations = cp.Summary, cp.Sources, cp.Limitations
 	in.Session.Metrics = cp.Metrics
