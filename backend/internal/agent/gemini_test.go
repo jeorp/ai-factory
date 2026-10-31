@@ -95,3 +95,47 @@ func TestGeminiErrorUsesOnlyAllowlistedCodes(t *testing.T) {
 		}
 	}
 }
+
+func TestGeminiThinkingConfigPerModel(t *testing.T) {
+	cases := []struct {
+		model string
+		level any
+	}{
+		{"gemini-3.5-flash-lite", "low"},
+		{"gemini-3.8-flash", "low"},
+		{"gemini-3.1-pro-preview", "low"},
+		{"gemini-4-argon", "low"},
+		{"gemini-2.5-pro", nil},
+		{"gemini-2.5-flash", nil},
+	}
+	for _, tc := range cases {
+		var config map[string]any
+		var path string
+		client := fakeClient(func(r *http.Request) string {
+			path = r.URL.Path
+			var body map[string]any
+			if json.NewDecoder(r.Body).Decode(&body) != nil {
+				t.Fatal("invalid request")
+			}
+			config = body["generationConfig"].(map[string]any)
+			return `{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"intent\":{\"goal\":\"g\",\"investigation\":\"i\",\"response\":\"r\"},\"answer\":\"ok\",\"summary\":\"s\",\"read\":null}"}]}}]}`
+		})
+		p := Gemini{HTTP: client}
+		if _, _, err := p.Next(context.Background(), "AIza-test-secret", tc.model, "input"); err != nil {
+			t.Fatalf("%s: %v", tc.model, err)
+		}
+		if path != "/v1beta/models/"+tc.model+":generateContent" {
+			t.Fatalf("%s: unexpected endpoint %s", tc.model, path)
+		}
+		var level any
+		if thinking, ok := config["thinkingConfig"].(map[string]any); ok {
+			level = thinking["thinkingLevel"]
+		}
+		if level != tc.level {
+			t.Fatalf("%s: thinkingLevel = %v, want %v", tc.model, level, tc.level)
+		}
+		if config["maxOutputTokens"].(float64) <= 4096 {
+			t.Fatalf("%s: no headroom for thinking tokens: %v", tc.model, config["maxOutputTokens"])
+		}
+	}
+}
