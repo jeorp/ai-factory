@@ -140,7 +140,7 @@ type Read struct {
 
 func (a Read) Validate() error {
 	switch a.Kind {
-	case "repository", "file", "pull_request", "issue", "pull_requests", "issues":
+	case "repository", "file", "pull_request", "issue", "pull_requests", "issues", "check_runs", "job_log":
 	default:
 		return errors.New("read_tool_not_allowed")
 	}
@@ -154,7 +154,11 @@ func (a Read) Validate() error {
 			}
 		}
 	}
-	if (a.Kind == "pull_request" || a.Kind == "issue") && (a.Number < 1 || a.Number > 100000000) {
+	if (a.Kind == "pull_request" || a.Kind == "issue" || a.Kind == "check_runs") && (a.Number < 1 || a.Number > 100000000) {
+		return errors.New("invalid_number")
+	}
+	// Actions job IDs are large, but stay within the range JSON numbers keep exactly.
+	if a.Kind == "job_log" && (a.Number < 1 || a.Number > 1<<53) {
 		return errors.New("invalid_number")
 	}
 	if a.Detail != "" && a.Detail != "summary" && a.Detail != "files" && a.Detail != "comments" {
@@ -219,6 +223,18 @@ func Tool(t domain.Target, a Read) (string, map[string]any, domain.Source, error
 		args["state"] = "OPEN"
 		args["perPage"] = 10
 		link += "/issues"
+	case "check_runs":
+		name = "pull_request_read"
+		args["method"] = "get_check_runs"
+		args["pullNumber"] = a.Number
+		link += fmt.Sprintf("/pull/%d/checks", a.Number)
+		label = fmt.Sprintf("PR #%d チェック結果", a.Number)
+	case "job_log":
+		// Read through REST by Client.Read; the MCP name is kept for the source label only.
+		name = "get_job_logs"
+		args["job_id"] = a.Number
+		link += fmt.Sprintf("/actions/jobs/%d", a.Number)
+		label = fmt.Sprintf("Job #%d ログ", a.Number)
 	}
 	return name, args, domain.Source{Label: label, URL: link}, nil
 }
@@ -238,6 +254,12 @@ func (c *Client) Read(ctx context.Context, token string, t domain.Target, a Read
 	}
 	if _, err = c.Authorize(ctx, token, t.Repository); err != nil {
 		return "", source, 0, err
+	}
+	if a.Kind == "job_log" {
+		// The read-only MCP endpoint does not include the Actions toolset, so job
+		// logs come from REST (requires the App's Actions read permission).
+		content, n, err := c.jobLog(ctx, token, t.Repository, a.Number)
+		return content, source, n, err
 	}
 	cacheable := a.Kind == "repository" || a.Kind == "file"
 	key := readCacheKey(t, a, c.Demo)
@@ -319,6 +341,80 @@ func (c *Client) Read(ctx context.Context, token string, t domain.Target, a Read
 		c.Cache.Put(ctx, key, content)
 	}
 	return content, source, result.bytes, nil
+}
+
+// maxJobLogDownload bounds how much of a job log is downloaded before taking its tail.
+const maxJobLogDownload = 8 << 20
+
+func (c *Client) jobLog(ctx context.Context, token, repository string, id int) (string, int, error) {
+	if c.Demo {
+		v := sanitizeJobLog("demo job log\nFAIL TestDemo")
+		return v, len(v), nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://api.github.com/repos/%s/actions/jobs/%d/logs", repository, id), nil)
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", 0, errors.New("github_unavailable")
+	}
+	defer resp.Body.Close()
+	// GitHub answers with a redirect to a short-lived signed URL. The server's
+	// HTTP client does not follow redirects, so follow this one explicitly and
+	// without the GitHub token.
+	if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusTemporaryRedirect {
+		loc, err := url.Parse(resp.Header.Get("Location"))
+		if err != nil || loc.Scheme != "https" || !jobLogHost(loc.Hostname()) {
+			return "", 0, errors.New("job_log_redirect_invalid")
+		}
+		dl, err := http.NewRequestWithContext(ctx, http.MethodGet, loc.String(), nil)
+		if err != nil {
+			return "", 0, err
+		}
+		resp.Body.Close()
+		if resp, err = c.HTTP.Do(dl); err != nil {
+			return "", 0, errors.New("github_unavailable")
+		}
+		defer resp.Body.Close()
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, apiError{resp.StatusCode}
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxJobLogDownload))
+	if err != nil {
+		return "", 0, err
+	}
+	return sanitizeJobLog(string(b)), len(b), nil
+}
+
+// jobLogHost accepts the hosts GitHub serves signed Actions log URLs from.
+func jobLogHost(host string) bool {
+	host = strings.ToLower(host)
+	for _, suffix := range []string{".actions.githubusercontent.com", ".blob.core.windows.net"} {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeJobLog keeps the last 200 lines (16 KiB at most) and masks credentials.
+func sanitizeJobLog(raw string) string {
+	const maxLines = 200
+	const maxBytes = 16 * 1024
+	lines := strings.Split(strings.TrimRight(raw, "\n"), "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	text := strings.Join(lines, "\n")
+	if len(text) > maxBytes {
+		text = text[len(text)-maxBytes:] // a cut rune is dropped by ToValidUTF8 below
+	}
+	return domain.MaskSecrets(strings.ToValidUTF8(text, ""))
 }
 
 type rpcResult struct {

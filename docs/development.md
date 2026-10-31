@@ -15,7 +15,7 @@
 
 ## 実データを読む
 
-1. GitHub Appを作成し、Repository permissionsを **Metadata / Issues: Read-only**、**Contents / Pull requests: Read and write** に設定する。書き込み権限は実装・PR作成（利用者が確認して実行した場合のみ）に使う。読み取りだけで使う場合はRead-onlyでもよく、その場合PR作成は `repository_write_forbidden` で拒否される。Workflowsの権限は付けない。User access tokenの有効期限を有効にする。
+1. GitHub Appを作成し、Repository permissionsを **Metadata / Issues: Read-only**、**Contents / Pull requests: Read and write**、**Checks / Actions: Read-only** に設定する。ChecksとActionsは既存PRへの修正依頼でCIの失敗ログを読むために使う。書き込み権限は実装・PR作成（利用者が確認して実行した場合のみ）に使う。読み取りだけで使う場合はRead-onlyでもよく、その場合PR作成は `repository_write_forbidden` で拒否される。Workflowsの権限は付けない。User access tokenの有効期限を有効にする。
 2. Callback URLを `http://127.0.0.1:5175/auth/callback` にする。OAuth AppではなくGitHub AppのClient ID / Client secretを使う。サーバーはGitHub Appの `ghu_` user access tokenだけを受け付ける。
 3. 利用するリポジトリにGitHub Appをインストールする。Appと本人の両方がアクセスできる範囲だけを参照できる。
 4. ルートの `.env.example` を `.env` にコピーし、`PROVIDER=live`、`GITHUB_CLIENT_ID`、`GITHUB_CLIENT_SECRET`、`GITHUB_APP_SLUG` を設定する。実キーをソース管理しない。

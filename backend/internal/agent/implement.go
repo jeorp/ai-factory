@@ -26,11 +26,14 @@ type Writer interface {
 	GetChange(context.Context, string, int, string) (domain.FileChange, bool)
 	Publish(context.Context, string, github.PublishRequest, github.PublishState, func(github.PublishState) error) (github.PublishState, error)
 	PullRequestOpen(context.Context, string, string, int, string, string) (bool, error)
+	PullRequestTarget(context.Context, string, string, int) (github.PullRequestTarget, error)
 }
 
 // ImplementRequest is returned by the chat model to start the implementation workflow.
 type ImplementRequest struct {
 	Request string `json:"request"`
+	// PullNumber is an existing AI Factory PR to push the fix to; 0 starts a new PR.
+	PullNumber int `json:"pullNumber"`
 }
 
 // ChangeProposal is one file change proposed by the model. Updates use
@@ -115,7 +118,7 @@ func (r *Runner) implementFromChat(ctx context.Context, in Input, cp Checkpoint,
 		cp.Answer = "どのような変更を実装するか、このチャットで具体的に教えてください。"
 		return emit(cp)
 	}
-	impl := domain.NextImplementation(in.Session.Implementation, req.Request, NewCacheID())
+	impl := StartImplementation(in.Session.Implementation, req, NewCacheID())
 	cp.RunKind, cp.Implementation = "implement", impl
 	cp.Progress = "実装の計画を作成します"
 	if err := emit(cp); err != nil {
@@ -125,6 +128,21 @@ func (r *Runner) implementFromChat(ctx context.Context, in Input, cp Checkpoint,
 	in.Session.Summary, in.Session.Sources, in.Session.Limitations, in.Session.Metrics = cp.Summary, cp.Sources, cp.Limitations, cp.Metrics
 	in.ContinueMetrics = true
 	return r.runImplementation(ctx, in, emit)
+}
+
+// StartImplementation begins a new implementation cycle. With a PullNumber for
+// a PR other than the one this session is already following, the cycle starts
+// fresh and the plan step attaches it to that PR's branch.
+func StartImplementation(prev *domain.Implementation, req ImplementRequest, cacheID string) *domain.Implementation {
+	impl := domain.NextImplementation(prev, req.Request, cacheID)
+	if req.PullNumber > 0 && req.PullNumber != impl.PullNumber {
+		impl = domain.NextImplementation(nil, req.Request, cacheID)
+		if prev != nil {
+			impl.Version = prev.Version + 1
+		}
+		impl.PullNumber, impl.FixTarget = req.PullNumber, true
+	}
+	return impl
 }
 
 type implementRun struct {
@@ -295,15 +313,41 @@ func (run *implementRun) read(ctx context.Context, read github.Read, ev *[]evide
 
 func (run *implementRun) plan(ctx context.Context) error {
 	impl := run.impl
+	if impl.PullNumber > 0 && (impl.Branch == "" || impl.FixTarget) {
+		// A fix request for an existing PR: build on its current head and push
+		// to its branch. Only open ai-factory/ branches in this repository qualify.
+		// The head is re-read on every plan so that a named PR is never replaced
+		// by a new one; a closed PR stops with an error instead.
+		pr, err := run.r.Writer.PullRequestTarget(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, impl.PullNumber)
+		if err != nil {
+			return err
+		}
+		impl.BaseBranch, impl.BaseCommit, impl.ExpectedHead = pr.Base, pr.Head, pr.Head
+		impl.Branch, impl.PullURL, impl.Title = pr.Branch, pr.URL, pr.Title
+		if err := run.save(ctx, fmt.Sprintf("PR #%d のブランチに修正を追加します", impl.PullNumber)); err != nil {
+			return err
+		}
+	}
 	if impl.ExpectedHead != "" {
 		open, err := run.r.Writer.PullRequestOpen(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, impl.PullNumber, impl.Branch, impl.ExpectedHead)
 		if err != nil {
 			return err
 		}
 		if !open {
-			previous := impl.PullNumber
-			impl.DetachFollowUp()
-			impl.Unverified = append(impl.Unverified, fmt.Sprintf("PR #%d はマージ・クローズ済み、またはブランチが更新されているため、最新のデフォルトブランチから新しいブランチで作成します。", previous))
+			// Only a merged or closed PR starts over on a new branch. If the PR is
+			// still open and someone pushed to it, build on its new head instead.
+			pr, err := run.r.Writer.PullRequestTarget(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, impl.PullNumber)
+			switch {
+			case err == nil && pr.Branch == impl.Branch:
+				impl.BaseCommit, impl.ExpectedHead = pr.Head, pr.Head
+				impl.Unverified = append(impl.Unverified, fmt.Sprintf("PR #%d のブランチが更新されていたため、最新のコミットを基準にしました。", impl.PullNumber))
+			case err == nil || err.Error() == "pull_request_closed" || err.Error() == "pull_request_not_found":
+				previous := impl.PullNumber
+				impl.DetachFollowUp()
+				impl.Unverified = append(impl.Unverified, fmt.Sprintf("PR #%d はマージ・クローズ済みのため、最新のデフォルトブランチから新しいブランチで作成します。", previous))
+			default:
+				return err
+			}
 		}
 	}
 	if impl.BaseCommit == "" {
@@ -326,6 +370,12 @@ func (run *implementRun) plan(ctx context.Context) error {
 	}
 	impl.ContextFiles = nil
 	ev := []evidence{}
+	if impl.ExpectedHead != "" && impl.PullNumber > 0 {
+		ciEv := run.collectCIFailureLogs(ctx, impl.PullNumber)
+		if len(ciEv) > 0 {
+			ev = append(ev, ciEv...)
+		}
+	}
 	reads := 0
 	correction := ""
 	for call := 0; call < ImplementPlanCalls; call++ {
@@ -415,6 +465,52 @@ func (run *implementRun) checkPlanPaths(ctx context.Context, plan *domain.Implem
 		}
 	}
 	return problems, nil
+}
+
+func (run *implementRun) collectCIFailureLogs(ctx context.Context, pullNumber int) []evidence {
+	if run.r.GitHub == nil {
+		return nil
+	}
+	checkRead := github.Read{Kind: "check_runs", Number: pullNumber}
+	raw, source, _, err := run.r.GitHub.Read(ctx, run.in.GitHubToken, run.target(), checkRead)
+	if err != nil {
+		run.logger.Info("implement_ci_check_runs_failed", "error", err.Error())
+		return nil
+	}
+	var checksResult struct {
+		CheckRuns []struct {
+			ID         int64  `json:"id"`
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"check_runs"`
+	}
+	var out []evidence
+	out = append(out, evidence{Read: checkRead, Content: domain.MaskSecrets(domain.Clip(raw, 8000))})
+	if !containsSource(run.cp.Sources, source.URL) {
+		run.cp.Sources = append(run.cp.Sources, source)
+	}
+	if json.Unmarshal([]byte(raw), &checksResult) != nil {
+		return out
+	}
+	failedJobs := 0
+	for _, cr := range checksResult.CheckRuns {
+		if cr.Conclusion == "failure" || cr.Conclusion == "timed_out" {
+			failedJobs++
+			if failedJobs > 3 {
+				break
+			}
+			jobRead := github.Read{Kind: "job_log", Number: int(cr.ID)}
+			logContent, jobSource, _, jobErr := run.r.GitHub.Read(ctx, run.in.GitHubToken, run.target(), jobRead)
+			if jobErr == nil {
+				out = append(out, evidence{Read: jobRead, Content: fmt.Sprintf("Job %s (#%d) 失敗ログ末尾:\n%s", cr.Name, cr.ID, logContent)})
+				if !containsSource(run.cp.Sources, jobSource.URL) {
+					run.cp.Sources = append(run.cp.Sources, jobSource)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (run *implementRun) edit(ctx context.Context) error {
@@ -872,7 +968,11 @@ func actionLabel(a string) string {
 func formatPlan(impl *domain.Implementation) string {
 	p := impl.Plan
 	var b strings.Builder
-	b.WriteString("実装計画を作成しました（ベース: " + impl.BaseBranch + " " + impl.BaseCommit[:7] + "）。\n\n" + p.Summary + "\n\n【変更するファイル】\n")
+	base := "ベース: " + impl.BaseBranch + " " + impl.BaseCommit[:7]
+	if impl.ExpectedHead != "" && impl.PullNumber > 0 {
+		base = fmt.Sprintf("PR #%d のブランチ %s の %s に追加", impl.PullNumber, impl.Branch, impl.BaseCommit[:7])
+	}
+	b.WriteString("実装計画を作成しました（" + base + "）。\n\n" + p.Summary + "\n\n【変更するファイル】\n")
 	for _, f := range p.Files {
 		b.WriteString(fmt.Sprintf("- %s（%s）: %s\n", f.Path, actionLabel(f.Action), f.Approach))
 	}

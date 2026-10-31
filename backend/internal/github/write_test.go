@@ -270,3 +270,37 @@ func TestPublishRecordsBranchBeforeCreatingRef(t *testing.T) {
 		t.Fatalf("branch not recorded before ref creation: %+v", states)
 	}
 }
+
+func TestPullRequestTargetAcceptsOnlyOpenAIBranchesInSameRepo(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	pr := func(state, ref, repo string) string {
+		return `{"state":"` + state + `","merged":false,"html_url":"https://github.com/o/r/pull/7","title":"T","head":{"ref":"` + ref + `","sha":"` + head + `","repo":{"full_name":"` + repo + `"}},"base":{"ref":"main"}}`
+	}
+	cases := []struct {
+		body, want string
+	}{
+		{pr("open", "ai-factory/x-1", "o/r"), ""},
+		{pr("closed", "ai-factory/x-1", "o/r"), "pull_request_closed"},
+		{pr("open", "feature/x", "o/r"), "pull_request_not_ai_branch"},
+		{pr("open", "ai-factory/x-1", "fork/r"), "pull_request_from_fork"},
+	}
+	for _, c := range cases {
+		body := c.body
+		client := &Client{HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/repos/o/r/pulls/7" {
+				t.Fatalf("unexpected path %s", r.URL.Path)
+			}
+			return response(body), nil
+		})}}
+		got, err := client.PullRequestTarget(context.Background(), "t", "o/r", 7)
+		if c.want == "" {
+			if err != nil || got.Branch != "ai-factory/x-1" || got.Head != head || got.Base != "main" {
+				t.Fatalf("valid PR rejected: %+v %v", got, err)
+			}
+			continue
+		}
+		if err == nil || err.Error() != c.want {
+			t.Fatalf("want %s, got %v", c.want, err)
+		}
+	}
+}

@@ -22,6 +22,7 @@ type Implementation struct {
 	Unverified   []string             `json:"unverified"`
 	Summary      string               `json:"summary"`
 	ContextFiles []string             `json:"contextFiles,omitempty"` // files read while planning, given to every step
+	FixTarget    bool                 `json:"fixTarget,omitempty"`    // the user named PullNumber; never fall back to a new PR
 	CacheID      string               `json:"-"`
 	Version      int                  `json:"version"`
 	Branch       string               `json:"branch,omitempty"`
