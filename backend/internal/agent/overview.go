@@ -12,7 +12,7 @@ import (
 // initializeOverview uses the session's original commit. Only the compact result is saved
 // in the session; the bounded README excerpt is sent to the model once.
 func (r *Runner) initializeOverview(ctx context.Context, in *Input, emit func(Checkpoint) error) error {
-	cp := Checkpoint{RepositoryOverview: in.Session.RepositoryOverview, OverviewPending: true, Summary: in.Session.Summary, Sources: append([]domain.Source{}, in.Session.Sources...), Limitations: append([]string{}, in.Session.Limitations...), Metrics: in.Session.Metrics, Progress: "READMEからリポジトリの概要を整理しています"}
+	cp := Checkpoint{RepositoryOverview: in.Session.RepositoryOverview, OverviewPending: true, Summary: in.Session.Summary, Review: in.Session.Review, Sources: append([]domain.Source{}, in.Session.Sources...), Limitations: append([]string{}, in.Session.Limitations...), Metrics: in.Session.Metrics, Progress: "READMEからリポジトリの概要を整理しています"}
 	if err := emit(cp); err != nil {
 		return err
 	}
@@ -40,7 +40,7 @@ func (r *Runner) initializeOverview(ctx context.Context, in *Input, emit func(Ch
 			return ctx.Err()
 		}
 		summary := strings.TrimSpace(decision.Summary)
-		if aiErr == nil && summary != "" && !(in.Key != "" && strings.Contains(summary, in.Key)) && !(in.GitHubToken != "" && strings.Contains(summary, in.GitHubToken)) {
+		if aiErr == nil && summary != "" && !echoes(summary, *in) {
 			cp.RepositoryOverview = &domain.RepositoryOverview{Text: domain.Clip(summary, 1400), Commit: in.Session.Target.Commit, Truncated: truncated || len(summary) > 1400}
 			if !containsSource(cp.Sources, source.URL) {
 				cp.Sources = append(cp.Sources, source)

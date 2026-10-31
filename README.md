@@ -1,8 +1,8 @@
 # AI Factory
 
-GitHubの情報を読み取り専用で参照し、根拠と未確認範囲を示すチャットアプリです。[AIファクトリー PRレビュー MVP 仕様書](https://chatgpt.com/space/page_fac25bd05bb48191a477ebdc827f840f)の**第一段階（MVP）**を実装しています。
+GitHubの情報を読み取り専用で参照し、PRの差分を分割レビューするチャットアプリです。[AIファクトリー PRレビュー MVP 仕様書](https://chatgpt.com/space/page_fac25bd05bb48191a477ebdc827f840f)の第一段階（GitHubチャット）と第二段階のPR取得・レビュー計画・分割確認・全体照合・結果表示を実装しています。
 
-`../system-design-skill-developer` に合わせた Vue 3 / TypeScript / Vue Router / Pinia、Go、Firebase Auth / Firestore、Docker Composeを使用します。AIは仕様どおりOpenAI APIです。WebSocketと認証Cookieを同じOriginで扱うため、公開時はVueのビルド成果物もGo APIと同じCloud Runサービスから配信します。
+`../system-design-skill-developer` に合わせた Vue 3 / TypeScript / Vue Router / Pinia、Go、Firebase Auth / Firestore、Docker Composeを使用します。AIはOpenAIまたはGemini Developer APIを選択できます。WebSocketと認証Cookieを同じOriginで扱うため、公開時はVueのビルド成果物もGo APIと同じCloud Runサービスから配信します。
 
 ## ローカル起動
 
@@ -38,11 +38,15 @@ npm run dev
 - Firestoreのユーザー分離、接続leaseによる二重実行防止、30日の保存期限、本人による削除。
 - 取得回数・バイト数・入力／出力トークン・処理時間・プロセスヒープ観測値の表示。
 
-**第二段階**の自動PRレビュー、レビュー計画・全体照合、指摘選択・編集・投稿、最新ヘッド確認、重複投稿防止は未実装です。課金・クレジット・Vertex AI・コード実行も含みません。
+PR URLからセッションを作り、必要なら入力欄にレビュー観点を指定して「PRレビューを開始」を押してください。ベース・ヘッドのSHA、最大5ファイルのグループ計画、差分の処理位置、指摘、未確認事項を保存します。指摘には重要度・ファイル／行・問題・影響・根拠・修正案を表示します。PRが更新されたら中断し、「新しくレビュー」で最新の対象を取得します。
+
+1回の実行は最大3分・AI呼び出し20回です。上限・停止・切断後は「保存済みの状態から再開」で続けます。先頭200ファイルまでを計画し、取得不能・バイナリ・入力上限などの未確認範囲を明示します。PRメタデータ・ページ単位の差分にはGitHub REST API、関連コード・コメントには読み取り専用MCPを利用します。
+
+指摘選択・編集・GitHubへの投稿、投稿時のヘッド確認・重複投稿防止は未実装です。アプリ側の課金・クレジット管理、Vertex AI、コード実行は含みません。
 
 ## 実接続・開発・公開準備
 
-[開発・実接続ガイド](docs/development.md)、[設計と制限](docs/architecture.md)、[Cloud Run配置](docs/deployment.md)を参照してください。実接続には利用者が所有するGitHub AppとOpenAI APIキーが必要です。認証情報の登録やクラウドへのデプロイは行っていません。
+[開発・実接続ガイド](docs/development.md)、[設計と制限](docs/architecture.md)、[Cloud Run配置](docs/deployment.md)を参照してください。実接続には利用者が所有するGitHub Appと、選択したAIのAPIキーが必要です。認証情報の登録やクラウドへのデプロイは行っていません。
 
 ## 検証
 
@@ -58,3 +62,9 @@ npm run build:local
 ```
 
 実際のGitHub App認証・GitHub MCP・OpenAIを組み合わせたE2Eは、認証情報を設定した環境で別途実施してください。通常テストでは外部通信をスタブに置き換え、統合テストではFirebase Auth / Firestore Emulatorと実WebSocket接続を使います。
+
+### Gemini Developer APIを試す
+
+`.env` に `AI_PROVIDER=gemini` と `GEMINI_MODELS=gemini-3.5-flash-lite` を設定し、`docker compose up --build -d` で再起動します。画面でGoogle AI StudioのGemini APIキーを入力してください。キーは環境変数に保存せず、セッションごとに一時的に利用します。GitHubも固定デモにするには `PROVIDER=demo` を指定します。
+
+無料枠の利用可否や上限はGoogleのプロジェクトとモデルに依存します。課金済みプロジェクトでは料金が発生する場合があります。無料枠では送信した情報がGoogleのサービス改善に使用される場合があるため、非公開コードを送る前に利用条件を確認してください。Vertex AIとは別のAPIです。

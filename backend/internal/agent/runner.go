@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"runtime"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ type Reader interface {
 type Checkpoint struct {
 	RepositoryOverview *domain.RepositoryOverview
 	OverviewPending    bool
+	Review             *domain.Review
 	Progress           string
 	Summary            string
 	Answer             string
@@ -39,6 +41,7 @@ type Input struct {
 	Key          string
 	GitHubToken  string
 	Instructions <-chan domain.Message
+	Logger       *slog.Logger
 }
 
 // Run owns only transient evidence. Each emitted checkpoint must be durably saved before continuing.
@@ -49,19 +52,31 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		}
 	}
 	originalEmit := emit
-	emit = func(cp Checkpoint) error {
+	wrappedEmit := func(cp Checkpoint) error {
 		cp.RepositoryOverview = in.Session.RepositoryOverview
 		cp.OverviewPending = in.Session.OverviewPending
 		return originalEmit(cp)
 	}
+	emit = wrappedEmit
 
+	if in.Session.RunKind == "review" {
+		return r.runReview(ctx, in, emit)
+	}
 	start := time.Now()
+	logger := in.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	cp := Checkpoint{Summary: in.Session.Summary, Metrics: in.Session.Metrics, Sources: append([]domain.Source{}, in.Session.Sources...)}
+	cp.Metrics.LastInputTokens = 0
+	cp.Metrics.LastOutputTokens = 0
+	cp.Metrics.HasLastUsage = false
 	ev := []evidence{}
 	cache := map[string]string{}
 	files := 0
 	calls := 0
 	instructions := []domain.Message{}
+	var intent IntentPlan
 	for _, m := range in.Session.Messages {
 		if m.Role == "instruction" {
 			instructions = append(instructions, m)
@@ -93,20 +108,35 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 			cp.Applied = append(cp.Applied, m.ID)
 		}
 		cp.Progress = "AIが取得情報を確認しています"
+		if step == 0 {
+			cp.Progress = "質問の意図と調査方針を整理しています"
+		}
 		measure()
 		if err := emit(cp); err != nil {
 			return err
 		}
-		input := BuildContext(in.Session, cp.Summary, instructions, ev, cp.Limitations)
+		input := BuildContext(in.Session, cp.Summary, instructions, ev, cp.Limitations, intent)
 		if len(input) > domain.MaxInputBytes {
 			return errors.New("ai_input_limit")
 		}
 		if len(input) > cp.Metrics.MaxInputBytes {
 			cp.Metrics.MaxInputBytes = len(input)
 		}
+		callStart := time.Now()
+		logger.Info("model_call_started", "step", step+1, "input_bytes", len(input))
 		decision, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, input)
+		logger.Info("model_call_finished", "step", step+1, "duration_ms", time.Since(callStart).Milliseconds(), "outcome", outcome(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 		cp.Metrics.InputTokens += usage.InputTokens
 		cp.Metrics.OutputTokens += usage.OutputTokens
+		cp.Metrics.LastInputTokens += usage.InputTokens
+		cp.Metrics.LastOutputTokens += usage.OutputTokens
+		if usage.InputTokens != 0 || usage.OutputTokens != 0 {
+			cp.Metrics.HasLastUsage = true
+			measure()
+			if emitErr := emit(cp); emitErr != nil {
+				return emitErr
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -126,6 +156,9 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		raw, _ := json.Marshal(decision)
 		if (len(in.Key) > 0 && strings.Contains(string(raw), in.Key)) || (len(in.GitHubToken) > 0 && strings.Contains(string(raw), in.GitHubToken)) {
 			return errors.New("credential_echo_blocked")
+		}
+		if validIntent(decision.Intent) {
+			intent = decision.Intent
 		}
 		if decision.Read == nil {
 			if strings.TrimSpace(decision.Answer) == "" {
@@ -151,6 +184,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		cacheKey := string(cacheKeyBytes)
 		content, ok := cache[cacheKey]
 		if ok {
+			logger.Info("github_read_cache_hit", "step", step+1, "kind", read.Kind)
 			cp.Metrics.CacheHits++
 			cp.Limitations = append(cp.Limitations, "同じ取得要求が繰り返されたため、保存済みの一時結果を利用しました。")
 		} else {
@@ -172,7 +206,10 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 			}
 			var source domain.Source
 			var n int
+			readStart := time.Now()
+			logger.Info("github_read_started", "step", step+1, "kind", read.Kind)
 			content, source, n, err = r.GitHub.Read(ctx, in.GitHubToken, in.Session.Target, read)
+			logger.Info("github_read_finished", "step", step+1, "kind", read.Kind, "duration_ms", time.Since(readStart).Milliseconds(), "outcome", outcome(err), "bytes", n)
 			cp.Metrics.FetchedBytes += n
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -215,7 +252,7 @@ func containsSource(s []domain.Source, url string) bool {
 	}
 	return false
 }
-func BuildContext(s domain.Session, summary string, instructions []domain.Message, ev []evidence, limits []string) string {
+func BuildContext(s domain.Session, summary string, instructions []domain.Message, ev []evidence, limits []string, plans ...IntentPlan) string {
 	// Keep original user instructions independently of the model's lossy summary.
 	var pinned strings.Builder
 	for _, m := range instructions {
@@ -241,11 +278,29 @@ func BuildContext(s domain.Session, summary string, instructions []domain.Messag
 		}
 	}
 	limitText := strings.Join(limits, "\n")
-	body, _ := json.Marshal(map[string]any{"target": s.Target, "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 2048)})
+	var intent IntentPlan
+	if len(plans) > 0 && validIntent(plans[0]) {
+		intent = plans[0]
+	}
+	body, _ := json.Marshal(map[string]any{"intent": intent, "target": s.Target, "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 2048)})
 	// Drop oldest evidence to enforce a hard serialized-input cap; explicitly record the omission.
 	for len(body) > domain.MaxInputBytes && len(ev) > 0 {
 		ev = ev[1:]
-		body, _ = json.Marshal(map[string]any{"target": s.Target, "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 1024) + " 古い取得情報を入力上限のため省略しました。必要なら再取得してください。"})
+		body, _ = json.Marshal(map[string]any{"intent": intent, "target": s.Target, "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 1024) + " 古い取得情報を入力上限のため省略しました。必要なら再取得してください。"})
 	}
 	return string(body)
+}
+
+// outcome avoids writing provider errors, which can contain user data or credentials.
+func outcome(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "error"
 }

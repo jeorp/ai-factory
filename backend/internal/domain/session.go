@@ -81,14 +81,17 @@ type Message struct {
 	Applied bool      `json:"applied"`
 }
 type Metrics struct {
-	InputTokens   int   `json:"inputTokens"`
-	OutputTokens  int   `json:"outputTokens"`
-	MaxInputBytes int   `json:"maxInputBytes"`
-	FetchedBytes  int   `json:"fetchedBytes"`
-	ToolCalls     int   `json:"toolCalls"`
-	CacheHits     int   `json:"cacheHits"`
-	DurationMS    int64 `json:"durationMs"`
-	HeapPeakBytes int64 `json:"heapPeakBytes"`
+	InputTokens      int   `json:"inputTokens"`
+	LastInputTokens  int   `json:"lastInputTokens"`
+	LastOutputTokens int   `json:"lastOutputTokens"`
+	HasLastUsage     bool  `json:"hasLastUsage"`
+	OutputTokens     int   `json:"outputTokens"`
+	MaxInputBytes    int   `json:"maxInputBytes"`
+	FetchedBytes     int   `json:"fetchedBytes"`
+	ToolCalls        int   `json:"toolCalls"`
+	CacheHits        int   `json:"cacheHits"`
+	DurationMS       int64 `json:"durationMs"`
+	HeapPeakBytes    int64 `json:"heapPeakBytes"`
 }
 type RepositoryOverview struct {
 	Text      string `json:"text"`
@@ -101,6 +104,8 @@ type Session struct {
 	Title              string              `json:"title"`
 	Target             Target              `json:"target"`
 	Model              string              `json:"model"`
+	RunKind            string              `json:"runKind"`
+	Review             *Review             `json:"review,omitempty"`
 	State              string              `json:"state"`
 	Messages           []Message           `json:"messages"`
 	Summary            string              `json:"summary"`

@@ -30,6 +30,10 @@ type controlledAI struct {
 
 func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agent.Decision, agent.Usage, error) {
 	p.Calls.Add(1)
+	// Overview preparation must finish before the review plan is saved.
+	if strings.Contains(input, `"overviewTask":`) {
+		return agent.Decision{Summary: "テスト用リポジトリの概要"}, agent.Usage{InputTokens: 12}, nil
+	}
 	select {
 	case p.Started <- struct{}{}:
 	default:
@@ -42,6 +46,9 @@ func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agen
 	text := "取得内容を確認しました"
 	if strings.Contains(input, "認証を優先") {
 		text = "認証を優先して確認しました"
+	}
+	if strings.Contains(input, `"reviewTask":`) {
+		return agent.Decision{Summary: "レビュー区切りの要点", Review: &domain.ReviewResult{Findings: []domain.Finding{}, Unverified: []string{}}}, agent.Usage{InputTokens: 42}, nil
 	}
 	return agent.Decision{Answer: text, Summary: "確認済みの要点"}, agent.Usage{InputTokens: 42}, nil
 }
@@ -119,7 +126,8 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	if resp.StatusCode != 201 {
 		t.Fatalf("create failed %d", resp.StatusCode)
 	}
-	t.Cleanup(func() { storage.Delete(ctx, one.uid, session.ID) })
+	initialID := session.ID
+	t.Cleanup(func() { storage.Delete(ctx, one.uid, initialID) })
 	resp = request(two, "GET", "/api/v1/sessions/"+session.ID, nil)
 	resp.Body.Close()
 	if resp.StatusCode != 404 {
@@ -235,5 +243,47 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	if strings.Contains(string(raw), "APIKey") || strings.Contains(string(raw), "sk-test-private-key-123456") || strings.Contains(string(raw), "demo-github") {
 		t.Fatal("credentials persisted")
 	}
-	t.Log(fmt.Sprintf("verified: user isolation, exclusive lease, directives, cancellation, reconnect (%d model calls)", ai.Calls.Load()))
+	// A PR run persists a plan, stops, and resumes through the real socket and Firestore.
+	three := user()
+	resp = request(three, "POST", "/api/v1/sessions", map[string]string{"target": "https://github.com/demo/ai-factory/pull/7", "model": "gpt-5-mini"})
+	var prSession domain.Session
+	json.NewDecoder(resp.Body).Decode(&prSession)
+	resp.Body.Close()
+	if resp.StatusCode != 201 {
+		t.Fatal("PR session creation failed")
+	}
+	t.Cleanup(func() { storage.Delete(ctx, three.uid, prSession.ID) })
+	session = prSession
+	ws = dial(three)
+	defer ws.Close()
+	wait(ws, func(s domain.Session) bool { return s.ID == prSession.ID })
+	before = ai.Calls.Load()
+	ws.WriteJSON(command{Type: "review", ID: randomID(), Text: "PRをレビュー", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	plan := wait(ws, func(s domain.Session) bool { return s.Review != nil && s.Review.Phase == "diff" })
+	if plan.RunKind != "review" || plan.Review.Base == plan.Review.Head || len(plan.Review.Steps) != 2 {
+		t.Fatal("review plan not saved")
+	}
+	for ai.Calls.Load() == before {
+		time.Sleep(time.Millisecond)
+	}
+	ws.WriteJSON(command{Type: "stop"})
+	stopped = wait(ws, func(s domain.Session) bool { return s.State == "stopped" })
+	if stopped.Review == nil || stopped.Review.Phase != "diff" {
+		t.Fatal("stopped review lost its plan")
+	}
+	close(ai.Gate)
+	ws.WriteJSON(command{Type: "resume", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	reviewed := wait(ws, func(s domain.Session) bool { return s.State == "done" })
+	if reviewed.Review == nil || reviewed.Review.Phase != "done" || reviewed.Target.Commit != reviewed.Review.Head || reviewed.Review.CrossCursor != 2 {
+		t.Fatal("review did not resume to completion")
+	}
+	persisted, e := storage.Get(ctx, three.uid, prSession.ID)
+	if e != nil || persisted.Review == nil || persisted.Review.Phase != "done" {
+		t.Fatalf("review not restored from Firestore: %v", e)
+	}
+	raw, _ = json.Marshal(persisted)
+	if strings.Contains(string(raw), "sk-test-private-key") || strings.Contains(string(raw), "@@ -") {
+		t.Fatal("credentials or patches persisted")
+	}
+	t.Log(fmt.Sprintf("verified: user isolation, exclusive lease, directives, cancellation, reconnect, review stop/resume/persistence (%d model calls)", ai.Calls.Load()))
 }
