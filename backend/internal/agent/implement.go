@@ -326,6 +326,12 @@ func (run *implementRun) plan(ctx context.Context) error {
 	}
 	impl.ContextFiles = nil
 	ev := []evidence{}
+	if impl.ExpectedHead != "" && impl.PullNumber > 0 {
+		ciEv := run.collectCIFailureLogs(ctx, impl.PullNumber)
+		if len(ciEv) > 0 {
+			ev = append(ev, ciEv...)
+		}
+	}
 	reads := 0
 	correction := ""
 	for call := 0; call < ImplementPlanCalls; call++ {
@@ -414,7 +420,53 @@ func (run *implementRun) checkPlanPaths(ctx context.Context, plan *domain.Implem
 			problems = append(problems, f.Path+" は存在しません")
 		}
 	}
-	return problems, nil
+	return nil, problems
+}
+
+func (run *implementRun) collectCIFailureLogs(ctx context.Context, pullNumber int) []evidence {
+	if run.r.GitHub == nil {
+		return nil
+	}
+	checkRead := github.Read{Kind: "check_runs", Number: pullNumber}
+	raw, source, _, err := run.r.GitHub.Read(ctx, run.in.GitHubToken, run.target(), checkRead)
+	if err != nil {
+		run.logger.Info("implement_ci_check_runs_failed", "error", err.Error())
+		return nil
+	}
+	var checksResult struct {
+		CheckRuns []struct {
+			ID         int64  `json:"id"`
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"check_runs"`
+	}
+	var out []evidence
+	out = append(out, evidence{Read: checkRead, Content: domain.Clip(raw, 8000)})
+	if !containsSource(run.cp.Sources, source.URL) {
+		run.cp.Sources = append(run.cp.Sources, source)
+	}
+	if json.Unmarshal([]byte(raw), &checksResult) != nil {
+		return out
+	}
+	failedJobs := 0
+	for _, cr := range checksResult.CheckRuns {
+		if cr.Conclusion == "failure" || cr.Conclusion == "timed_out" {
+			failedJobs++
+			if failedJobs > 3 {
+				break
+			}
+			jobRead := github.Read{Kind: "job_log", Number: int(cr.ID)}
+			logContent, jobSource, _, jobErr := run.r.GitHub.Read(ctx, run.in.GitHubToken, run.target(), jobRead)
+			if jobErr == nil {
+				out = append(out, evidence{Read: jobRead, Content: fmt.Sprintf("Job %s (#%d) 失敗ログ末尾:\n%s", cr.Name, cr.ID, logContent)})
+				if !containsSource(run.cp.Sources, jobSource.URL) {
+					run.cp.Sources = append(run.cp.Sources, jobSource)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (run *implementRun) edit(ctx context.Context) error {

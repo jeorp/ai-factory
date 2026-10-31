@@ -140,7 +140,7 @@ type Read struct {
 
 func (a Read) Validate() error {
 	switch a.Kind {
-	case "repository", "file", "pull_request", "issue", "pull_requests", "issues":
+	case "repository", "file", "pull_request", "issue", "pull_requests", "issues", "check_runs", "job_log":
 	default:
 		return errors.New("read_tool_not_allowed")
 	}
@@ -154,7 +154,7 @@ func (a Read) Validate() error {
 			}
 		}
 	}
-	if (a.Kind == "pull_request" || a.Kind == "issue") && (a.Number < 1 || a.Number > 100000000) {
+	if (a.Kind == "pull_request" || a.Kind == "issue" || a.Kind == "check_runs" || a.Kind == "job_log") && (a.Number < 1 || a.Number > 100000000) {
 		return errors.New("invalid_number")
 	}
 	if a.Detail != "" && a.Detail != "summary" && a.Detail != "files" && a.Detail != "comments" {
@@ -219,6 +219,17 @@ func Tool(t domain.Target, a Read) (string, map[string]any, domain.Source, error
 		args["state"] = "OPEN"
 		args["perPage"] = 10
 		link += "/issues"
+	case "check_runs":
+		name = "pull_request_read"
+		args["method"] = "get_check_runs"
+		args["pullNumber"] = a.Number
+		link += fmt.Sprintf("/pull/%d/checks", a.Number)
+		label = fmt.Sprintf("PR #%d チェック結果", a.Number)
+	case "job_log":
+		name = "get_job_logs"
+		args["jobId"] = a.Number
+		link += fmt.Sprintf("/actions/jobs/%d", a.Number)
+		label = fmt.Sprintf("Job #%d ログ", a.Number)
 	}
 	return name, args, domain.Source{Label: label, URL: link}, nil
 }
@@ -315,10 +326,53 @@ func (c *Client) Read(ctx context.Context, token string, t domain.Target, a Read
 		}
 	}
 	content := b.String()
+	if a.Kind == "job_log" {
+		content = sanitizeJobLog(content)
+	}
 	if cacheable && c.Cache != nil {
 		c.Cache.Put(ctx, key, content)
 	}
 	return content, source, result.bytes, nil
+}
+
+func sanitizeJobLog(raw string) string {
+	const maxLines = 200
+	const maxBytes = 16 * 1024
+	lines := strings.Split(raw, "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	text := strings.Join(lines, "\n")
+	if len(text) > maxBytes {
+		text = text[len(text)-maxBytes:]
+	}
+	return maskSecrets(text)
+}
+
+func maskSecrets(s string) string {
+	// Mask common sensitive tokens, basic auth patterns, and secret keys
+	prefixes := []string{"ghp_", "ghs_", "gho_", "ghu_", "ghr_", "github_pat_", "AIzaSy"}
+	for _, prefix := range prefixes {
+		idx := 0
+		for {
+			pos := strings.Index(s[idx:], prefix)
+			if pos == -1 {
+				break
+			}
+			start := idx + pos
+			end := start + len(prefix)
+			for end < len(s) && ((s[end] >= 'a' && s[end] <= 'z') || (s[end] >= 'A' && s[end] <= 'Z') || (s[end] >= '0' && s[end] <= '9') || s[end] == '_') {
+				end++
+			}
+			if end > start+len(prefix) {
+				s = s[:start] + "***MASKED_SECRET***" + s[end:]
+				idx = start + len("***MASKED_SECRET***")
+			} else {
+				idx = end
+			}
+		}
+	}
+	return s
 }
 
 type rpcResult struct {

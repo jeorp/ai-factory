@@ -186,6 +186,48 @@ func TestImplementationFlowFromChatToDraftPR(t *testing.T) {
 	}
 }
 
+func TestFollowUpIncorporatesCIFailureLogs(t *testing.T) {
+	writer := newFakeWriter()
+	var planEvidenceSeen string
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		task := implementTaskOf(t, input)
+		if task.Mode == "plan" {
+			planEvidenceSeen = input
+			return Decision{Plan: simplePlan()}, Usage{}, nil
+		}
+		return Decision{}, Usage{}, errors.New("unexpected mode")
+	})
+	reader := readerFunc(func(ctx context.Context, token string, target domain.Target, read github.Read) (string, domain.Source, int, error) {
+		if read.Kind == "check_runs" {
+			return `{"check_runs":[{"id":42,"name":"test-job","conclusion":"failure"}]}`, domain.Source{Label: "checks", URL: "https://github.com/a/b/pull/9/checks"}, 50, nil
+		}
+		if read.Kind == "job_log" && read.Number == 42 {
+			return "FAIL: TestSomethingFailed", domain.Source{Label: "job", URL: "https://github.com/a/b/actions/jobs/42"}, 30, nil
+		}
+		return "", domain.Source{}, 0, errors.New("unknown read")
+	})
+	runner := &Runner{AI: ai, GitHub: reader, Writer: writer}
+	session := baseSession()
+	session.RunKind = "implement"
+	session.Implementation = &domain.Implementation{
+		Status:       "planning",
+		Request:      "テスト失敗を修正",
+		BaseBranch:   "main",
+		BaseCommit:   implBase,
+		ExpectedHead: implBase,
+		PullNumber:   9,
+		Branch:       "ai-factory/test-1",
+		CacheID:      "0123456789abcdef",
+	}
+	err := runner.Run(context.Background(), Input{Session: session, GitHubToken: "gh"}, func(Checkpoint) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(planEvidenceSeen, "TestSomethingFailed") || !strings.Contains(planEvidenceSeen, "check_runs") {
+		t.Fatalf("CI failure log not found in plan evidence: %s", planEvidenceSeen)
+	}
+}
+
 func TestImplementationRejectsUnplannedChanges(t *testing.T) {
 	impl := &domain.Implementation{Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "a.go", Action: "update"}, {Path: "b.go", Action: "create"}}}}
 	originals := map[string]string{"a.go": "x := 1\n"}

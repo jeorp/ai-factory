@@ -12,7 +12,7 @@ Firebase HostingをWebSocket経路の前提にしない構成です。隣のプ�
 
 1. Firebaseプロジェクト・Firestore Nativeを作成し、Firebase Authenticationを有効にする。GitHub providerは使わず、サーバーからのカスタムトークン認証を使う。
 2. 専用サービスアカウントにFirestore読み書きと、Firebaseカスタムトークン署名に必要な自身への `iam.serviceAccounts.signBlob` 権限を与える。一般的には `roles/datastore.user` と、対象サービスアカウント自身への `roles/iam.serviceAccountTokenCreator` を使用する。秘密鍵JSONを配布しない。
-3. GitHub Appの権限とcallbackを設定する。callbackは `https://APP_DOMAIN/auth/callback`。実装・PR作成を使う場合はContentsとPull requestsをRead and writeにする（Workflowsは付けない）。権限を追加した場合、既存のインストールでは利用者による承認が必要。選択したリポジトリにインストールする。
+3. GitHub Appの権限とcallbackを設定する。callbackは `https://APP_DOMAIN/auth/callback`。実装・PR作成を使う場合はContentsとPull requestsをRead and writeにする（Workflowsは付けない）。また、PRのCI確認および失敗ログ参照のためにChecks (Read) と Actions (Read) を追加する（書き込み権限は不要）。権限を追加した場合、既存のインストールでは利用者による承認が必要。選択したリポジトリにインストールする。
 4. GitHub client secretと `openssl rand -base64 32` で生成したCookie鍵をSecret Managerに保存し、実行サービスアカウントだけに読み取りを許可する。
 5. Dockerビルド時に `VITE_FIREBASE_PROJECT_ID`、`VITE_FIREBASE_API_KEY`、`VITE_FIREBASE_AUTH_DOMAIN` をbuild argsで渡す。これらはブラウザー公開設定であり、OpenAIキーやGitHub secretを渡さない。既定の `WEB_BUILD_MODE=production` のままビルドする。
 6. `infra/cloud-run/service.yaml` の `REPLACE_*` を置換し、WEB_ORIGINを実際のHTTPS Originへ設定する。timeoutは3600秒。Goは55分でWebSocketを更新する。コンテナは非rootで起動する。

@@ -38,7 +38,7 @@ func TestSSECompletesWithoutWaitingForStreamToClose(t *testing.T) {
 }
 func TestReadBoundary(t *testing.T) {
 	target := domain.Target{Repository: "owner/repo", Commit: strings.Repeat("a", 40)}
-	for _, read := range []Read{{Kind: "create_pull_request"}, {Kind: "file", Path: "../secret"}, {Kind: "file", Path: "/etc/passwd"}, {Kind: "pull_request", Number: 0}, {Kind: "issue", Number: 1, Detail: "delete"}} {
+	for _, read := range []Read{{Kind: "create_pull_request"}, {Kind: "file", Path: "../secret"}, {Kind: "file", Path: "/etc/passwd"}, {Kind: "pull_request", Number: 0}, {Kind: "issue", Number: 1, Detail: "delete"}, {Kind: "check_runs", Number: 0}, {Kind: "job_log", Number: -1}} {
 		if _, _, _, err := Tool(target, read); err == nil {
 			t.Fatalf("unsafe tool accepted: %+v", read)
 		}
@@ -89,5 +89,44 @@ func TestMCPProtocolAndResponseLimit(t *testing.T) {
 	})
 	if _, err = client.rpc(context.Background(), "token", "initialize", nil, ""); err == nil {
 		t.Fatal("unbounded MCP response")
+	}
+}
+
+func TestCheckRunsAndJobLogTool(t *testing.T) {
+	target := domain.Target{Repository: "owner/repo", Commit: strings.Repeat("a", 40)}
+	name, args, src, err := Tool(target, Read{Kind: "check_runs", Number: 10})
+	if err != nil || name != "pull_request_read" || args["method"] != "get_check_runs" || args["pullNumber"] != 10 {
+		t.Fatalf("check_runs mapping failed: %s %v %v", name, args, err)
+	}
+	if !strings.Contains(src.URL, "/pull/10/checks") {
+		t.Fatalf("unexpected check_runs source URL: %s", src.URL)
+	}
+
+	name, args, src, err = Tool(target, Read{Kind: "job_log", Number: 12345})
+	if err != nil || name != "get_job_logs" || args["jobId"] != 12345 {
+		t.Fatalf("job_log mapping failed: %s %v %v", name, args, err)
+	}
+	if !strings.Contains(src.URL, "/actions/jobs/12345") {
+		t.Fatalf("unexpected job_log source URL: %s", src.URL)
+	}
+}
+
+func TestSanitizeJobLog(t *testing.T) {
+	var longLog strings.Builder
+	for i := 1; i <= 300; i++ {
+		longLog.WriteString("line " + strings.Repeat("a", 10) + "\n")
+	}
+	secretPart := "token=ghp_" + strings.Repeat("x", 20) + " test\n"
+	longLog.WriteString(secretPart)
+	sanitized := sanitizeJobLog(longLog.String())
+	lines := strings.Split(strings.TrimRight(sanitized, "\n"), "\n")
+	if len(lines) > 200 {
+		t.Fatalf("expected at most 200 lines, got %d", len(lines))
+	}
+	if strings.Contains(sanitized, "ghp_x") {
+		t.Fatalf("secret was not masked: %s", sanitized)
+	}
+	if !strings.Contains(sanitized, "***MASKED_SECRET***") {
+		t.Fatalf("masked indicator missing: %s", sanitized)
 	}
 }
