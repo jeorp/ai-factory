@@ -15,7 +15,7 @@
 
 ## 実データを読む
 
-1. GitHub Appを作成し、Repository permissionsを **Metadata / Contents / Pull requests / Issues: Read-only** に設定する。書き込み権限は付けない。User access tokenの有効期限を有効にする。
+1. GitHub Appを作成し、Repository permissionsを **Metadata / Issues: Read-only**、**Contents / Pull requests: Read and write** に設定する。書き込み権限は実装・PR作成（利用者が確認して実行した場合のみ）に使う。読み取りだけで使う場合はRead-onlyでもよく、その場合PR作成は `repository_write_forbidden` で拒否される。Workflowsの権限は付けない。User access tokenの有効期限を有効にする。
 2. Callback URLを `http://127.0.0.1:5175/auth/callback` にする。OAuth AppではなくGitHub AppのClient ID / Client secretを使う。サーバーはGitHub Appの `ghu_` user access tokenだけを受け付ける。
 3. 利用するリポジトリにGitHub Appをインストールする。Appと本人の両方がアクセスできる範囲だけを参照できる。
 4. ルートの `.env.example` を `.env` にコピーし、`PROVIDER=live`、`GITHUB_CLIENT_ID`、`GITHUB_CLIENT_SECRET`、`GITHUB_APP_SLUG` を設定する。実キーをソース管理しない。
@@ -85,3 +85,17 @@ WebSocket最初のフレームは `{type:"auth",token:"Firebase ID token"}`。�
 単体テストは大きな差分の分割・元行番号・カーソル再開・保存失敗・PR更新・根拠不足の指摘・重複・取得上限・認証情報のエコー拒否を確認する。Emulator統合テストは実WebSocket経由のレビュー停止／再開とFirestore復元も確認する。実GitHubと実AIを組み合わせたレビュー品質・大規模PRのレート制限／負荷は別途検証する。
 
 PR取得に成功した番号は `activePullRequest` に保存する。通常メッセージのAI判断が `startReview` を返すと、対象・実行モードを先に保存してから分割レビューへ進む。番号0は会話内で最後に取得したPRを参照する。古いセッションは保存済みのPR参照元も使用する。明示的なPR番号の指定も可能で、リポジトリは会話の接続先に固定する。取得失敗時に対象番号は変更しない。専用セッションの作成・レビュー開始ボタンは不要。
+
+## 実装・PR作成
+
+チャットで「〜を実装してPRを作って」と依頼するか、メッセージの種類で「実装を依頼」を選ぶ。AIは基準コミットのコードを読んで実装計画を返し、利用者が「計画を承認して変更を作成」を押すまで変更を作らない。変更は最大5ファイルずつ検索・置換ブロックで作成し、サーバーが元ファイルへの一意な一致を確認して適用する。差分を確認し、ブランチ名・PRタイトル・本文を確認して「Draft PRを作成」を押すとGitHubへ書き込む。PR作成はAIキーを使わない。
+
+WebSocketコマンド: `implement`（依頼文、AIキー必須）、`implement_approve`（計画の承認、AIキー必須）、`implement_publish`（`branch` / `title` / `body`、AIキー不要）。`resume` は保存した区切りから計画・変更作成・PR作成を再開する。変更後のファイル本文は `GET /api/v1/sessions/{id}/change?path=...` で元ファイルと一緒に返す。
+
+Emulator統合テスト `TestEmulatorImplementationLifecycle` は固定デモのAIとGitHubで、計画・承認・差分・不正なブランチ名や秘密情報の拒否・PR作成・Firestoreへの保存を実WebSocket経由で確認する。Emulatorはfirebase-toolsで起動できる:
+
+```sh
+npx -y firebase-tools@13.29.1 emulators:start --only auth,firestore --project demo-ai-factory
+cd backend && RUN_EMULATOR_TESTS=1 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 FIRESTORE_EMULATOR_HOST=127.0.0.1:8085 go test ./internal/httpapi -run Emulator
+```
+

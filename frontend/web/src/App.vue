@@ -8,6 +8,7 @@ import { busy, states, type Config, type Repository, type Finding } from './type
 import Icon from './components/Icon.vue';
 import SourceFiles from './components/SourceFiles.vue';
 import ReviewDiffs from './components/ReviewDiffs.vue';
+import ImplementationPanel from './components/ImplementationPanel.vue';
 import FindingEvidence from './components/FindingEvidence.vue';
 import FindingIssue from './components/FindingIssue.vue';
 import { clearFiles } from './lib/fileCache';
@@ -50,7 +51,7 @@ const unverifiedItems = computed(() => {
 const sessionCost = computed(() => current.value ? estimateCost(config.value.aiProvider, current.value.model, current.value.metrics.inputTokens || 0, current.value.metrics.outputTokens || 0) : undefined);
 const sessionPricing = computed(() => current.value ? pricing(config.value.aiProvider, current.value.model) : undefined);
 const canSend = computed(() => !!text.value.trim() && work.connected && (mode.value === 'instruction' || (!running.value && (config.value.aiProvider === 'demo' || keyValid.value))));
-const hints = ['このリポジトリの構成を教えて', 'READMEからセットアップ手順を整理して', 'PR一覧を見せて', '取得したPRをレビューして'];
+const hints = ['このリポジトリの構成を教えて', 'READMEからセットアップ手順を整理して', 'PR一覧を見せて', '取得したPRをレビューして', 'READMEにセットアップ手順を追加するPRを作って'];
 const errors: Record<string, string> = {
  review_read_not_allowed: 'AIがレビュー中に利用できない情報の取得を繰り返したため停止しました。保存済みの状態から再開してください。',
  pr_changed_create_new_review: 'PRのベースまたはヘッドが更新されました。チャットで「もう一度レビューして」と依頼してください。', pull_request_required: 'チャットでレビューするPRの番号かURLを教えてください。',
@@ -70,6 +71,19 @@ const errors: Record<string, string> = {
  gemini_invalid_intent: 'Geminiが質問の意図や調査方針を適切な形式で返せませんでした。再試行してください。',
  gemini_invalid_review: 'Geminiがレビュー結果を適切な形式で返せませんでした。再試行してください。',
  gemini_invalid_review_action: 'Geminiがレビュー開始の指示を適切な形式で返せませんでした。再試行してください。',
+ invalid_implementation_result: 'AIが実装の結果を適切な形式で返せませんでした。保存済みの状態から再開してください。',
+ implementation_request_required: '実装してほしい内容を入力してください。', implementation_plan_required: '承認できる実装計画がありません。チャットで実装を依頼してください。',
+ implementation_not_ready: 'PRを作成できる変更がありません。', implementation_publish_incomplete: 'ブランチへの書き込みが途中です。「PRの作成を再試行」で完了させてください。',
+ implementation_changes_expired: '変更内容の保存期限（1時間）が切れました。チャットでもう一度実装を依頼してください。',
+ implementation_plan_failed: 'AIが有効な実装計画を作成できませんでした。依頼を具体的にして再試行してください。', implementation_edit_failed: 'AIの変更を元のファイルに適用できませんでした。保存済みの状態から再開するか、依頼を分けてください。',
+ implementation_no_changes: '計画したファイルに変更が作成されませんでした。依頼を具体的にして再試行してください。',
+ change_file_exists: '追加しようとしたファイルが既に存在します。計画を作り直してください。', change_file_missing: '変更・削除しようとしたファイルが見つかりません。計画を作り直してください。',
+ change_file_size_limit: '1ファイル100 KiBを超えるファイルは変更できません。', change_contains_secret: '変更内容に認証情報のような文字列が含まれているため作成を中止しました。',
+ protected_change_path: '.github/workflows・シンボリックリンク・サブモジュールは変更できません。', change_path_not_approved: '計画で承認していないファイルは変更できません。',
+ repository_write_forbidden: 'このリポジトリへの書き込み権限がありません。GitHub AppにContentsとPull requestsの書き込みを許可してください。',
+ branch_exists: '同じ名前のブランチが既にあります。ブランチ名を変更して再試行してください。', branch_moved: '作成済みのブランチが他の更新で進んでいます。最新の状態を確認してから改めて依頼してください。', branch_already_written: 'ブランチへの書き込みが済んでいるため、ブランチ名は変更できません。',
+ invalid_branch: 'ブランチ名は ai-factory/ で始まる英小文字・数字で指定してください。', invalid_pull_request_no_secrets: 'PRのタイトルと本文を確認してください。認証情報は含められません。',
+ github_http_422: 'GitHubが書き込みを拒否しました。ブランチ名や権限を確認してください。', github_http_403: 'GitHubへの書き込みが拒否されました。GitHub Appの権限を確認してください。',
 };
 function errorMessage(value: unknown) { const code = value instanceof Error ? value.message : String(value); return errors[code] || `処理を完了できませんでした（${code}）。`; }
 async function action(fn: () => Promise<void>) { if (actionPending.value) return; actionPending.value = true; appError.value = ''; try { await fn(); } catch (e) { appError.value = errorMessage(e); } finally { actionPending.value = false; } }
@@ -97,6 +111,8 @@ async function forgetSavedKey() { try { await deleteSavedKey(config.value.aiProv
 function syncKey() { const c = credentials(); keyValid.value = !!c.apiKey; }
 function send() { if (!canSend.value) return; try { work.send(mode.value, text.value.trim()); text.value = ''; } catch (e) { appError.value = errorMessage(e); } }
 function investigate(index: number) { try { work.send('investigate', '', crypto.randomUUID(), index); } catch (e) { appError.value = errorMessage(e); } }
+function approveImplementation() { try { work.send('implement_approve'); } catch (e) { appError.value = errorMessage(e); } }
+function publishImplementation(value: { branch: string; title: string; body: string }) { try { work.send('implement_publish', '', crypto.randomUUID(), undefined, value); } catch (e) { appError.value = errorMessage(e); } }
 function resume() { try { work.send('resume'); } catch (e) { appError.value = errorMessage(e); } }
 function stop() { try { work.send('stop'); } catch (e) { appError.value = errorMessage(e); } }
 function end() { try { if (work.connected) work.send('end'); } finally { work.disconnect(true); keyDraft.value = ''; syncKey(); } }
@@ -143,13 +159,13 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
      <div v-if="deleteID === s.id" class="delete-confirm">会話と結果を削除します。<button @click="action(async () => { await work.remove(s.id); deleteID = ''; })">削除する</button></div>
     </div>
    </div>
-   <div class="sidebar-bottom"><div class="readonly-note"><Icon name="shield" :size="16" /><span>GitHubへのアクセスは<br /><strong>読み取り専用</strong>です</span></div>
+   <div class="sidebar-bottom"><div class="readonly-note"><Icon name="shield" :size="16" /><span>GitHubへの書き込みは<br /><strong>確認後のPR作成のみ</strong>です</span></div>
     <div class="profile"><span class="avatar">{{ login ? login[0]?.toUpperCase() : 'G' }}</span><div><strong>{{ login || 'ゲスト' }}</strong><small>{{ config.demo ? 'ローカルデモ' : 'Personal account' }}</small></div><button v-if="login" class="icon-button" aria-label="ログアウト" @click="signOut"><Icon name="logout" :size="17" /></button></div>
    </div>
   </aside>
 
   <main class="main-panel">
-   <header class="topbar"><div class="breadcrumb">ワークスペース<Icon name="chevron" :size="13" /><strong>GitHub チャット</strong></div><div class="top-actions"><span class="badge" :class="{ demo: config.demo }"><span class="status-dot"></span>{{ config.demo ? 'デモモード' : 'READ ONLY' }}</span><button v-if="current" class="icon-button" aria-label="参照情報の表示を切り替え" @click="openedFile = undefined; showDetails = !showDetails"><Icon name="grid" :size="17" /></button></div></header>
+   <header class="topbar"><div class="breadcrumb">ワークスペース<Icon name="chevron" :size="13" /><strong>GitHub チャット</strong></div><div class="top-actions"><span class="badge" :class="{ demo: config.demo }"><span class="status-dot"></span>{{ config.demo ? 'デモモード' : 'PR作成は確認後のみ' }}</span><button v-if="current" class="icon-button" aria-label="参照情報の表示を切り替え" @click="openedFile = undefined; showDetails = !showDetails"><Icon name="grid" :size="17" /></button></div></header>
    <div v-if="appError || work.error" class="error-banner" role="alert">{{ appError || errorMessage(work.error) }}<button class="plain-button" @click="appError = ''; work.error = ''">閉じる</button></div>
    <div v-if="config.demo" class="demo-banner">{{ config.aiProvider === 'demo' ? '固定デモです。実際のGitHubやAIには接続しません。' : 'GitHubは固定デモです。質問とサンプル情報はGeminiへ送信されます。' }}</div>
 
@@ -160,7 +176,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
      <p class="welcome-description">リポジトリの構成も、PRの背景も、気になるIssueも。<br />GitHubの情報を必要な分だけ集めて、根拠とともに整理します。</p>
      <div class="setup-card">
       <div class="card-heading"><div class="number-label">01</div><div><h2>{{ login ? '調べたいリポジトリを選択' : 'GitHubとつなげて、はじめる' }}</h2><p>{{ login ? '許可したリポジトリ・PR・Issueを参照できます。' : 'GitHub Appで、参照するリポジトリを選べます。' }}</p></div><Icon name="branch" :size="22" /></div>
-      <div v-if="!login" class="login-area"><button class="primary-button" :disabled="loading || actionPending" @click="signIn"><Icon name="code" :size="18" />{{ config.demo ? '開発用ログイン' : 'GitHubでログイン' }}<Icon name="chevron" :size="16" /></button><span>コードの変更や投稿は行いません。</span></div>
+      <div v-if="!login" class="login-area"><button class="primary-button" :disabled="loading || actionPending" @click="signIn"><Icon name="code" :size="18" />{{ config.demo ? '開発用ログイン' : 'GitHubでログイン' }}<Icon name="chevron" :size="16" /></button><span>コードの変更は、確認後に新しいブランチのDraft PRとしてだけ作成します。</span></div>
       <form v-else @submit.prevent="createSession">
        <label for="repository">リポジトリ</label>
        <select id="repository" v-model="repositoryChoice" class="repository-select" required><option value="" disabled>リポジトリを選択してください</option><option v-for="r in repositories" :key="r.full_name" :value="r.full_name">{{ r.full_name }}</option><option value="__manual__">リポジトリ・PR・Issueを直接入力</option></select>
@@ -221,6 +237,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
        </details>
        <article v-else-if="entry.kind === 'message'" class="message" :class="entry.message.role"><div class="message-avatar"><Icon v-if="entry.message.role === 'assistant'" name="grid" :size="16" /><Icon v-else-if="entry.message.role === 'instruction'" name="branch" :size="16" /><span v-else>{{ login[0]?.toUpperCase() }}</span></div><div class="message-content"><div class="message-label">{{ entry.message.role === 'assistant' ? 'AI Factory' : entry.message.role === 'instruction' ? '追加指示' : 'あなた' }}<span v-if="entry.message.role === 'instruction'" class="instruction-state">{{ entry.message.applied ? '反映済み' : '受付済み・次の区切りで反映' }}</span></div><div class="message-text">{{ entry.message.text }}</div></div></article>
       </template>
+ <ImplementationPanel v-if="current.implementation" :key="`${current.id}:impl`" :session-id="current.id" :repository="current.target.repository" :implementation="current.implementation" :running="running" :connected="work.connected" :can-run="work.connected && (config.aiProvider === 'demo' || keyValid)" @approve="approveImplementation" @publish="publishImplementation" />
       <SourceFiles v-if="!current.review" :key="current.id" :session="current" @open="openFile" @clear="closeFile" />
       <div v-if="running" class="progress-message"><span class="loading-dots">•••</span>{{ current.state === 'stopping' ? '停止を要求しています…' : work.progress || '処理を開始しています…' }}</div>
      </div>
@@ -228,9 +245,9 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
       <div v-if="work.reconnecting" class="connection-notice">再接続中です。保存した会話を復元しています。</div>
       <div v-if="current.state === 'failed'" class="connection-notice" role="alert">{{ errorMessage(current.limitations.at(-1) || 'run_failed') }}</div>
       <div v-if="current.state === 'user_wait'" class="connection-notice" role="status">今回の実行時間または利用量の上限に達したため一時停止しました。途中結果は保存済みです。<template v-if="current.review">{{ current.review.steps.reduce((n, step) => n + step.files.filter(file => file.done).length, 0) }} / {{ current.review.totalFiles }} ファイルを処理済みです。</template>「保存済みの状態から再開」で残りを続行できます。</div>
-      <div v-if="['auth_wait', 'failed', 'stopped', 'user_wait'].includes(current.state) && (current.messages.length || current.runKind === 'review') || current.state === 'done' && current.target?.kind === 'pull' && current.review && current.review.phase && current.review.phase !== 'done'" class="resume-row"><span>{{ current.state === 'done' ? '中断したレビューを保存した区切りから続行できます。' : '保存した区切りから続行できます。' }}</span><button class="plain-button" :disabled="running || !work.connected || (config.aiProvider !== 'demo' && !keyValid)" @click="resume"><Icon name="refresh" :size="13" />保存済みの状態から再開</button></div>
-      <div class="composer"><textarea v-model="text" :placeholder="mode === 'instruction' ? '次の区切りで反映する追加指示…' : '質問や「このPRをレビューして」など…'" aria-label="メッセージ" rows="2" maxlength="4096" @keydown="keydown" /><div class="composer-toolbar"><div><select v-model="mode" aria-label="メッセージの種類"><option value="message">チャット</option><option value="instruction">追加指示</option></select><span class="composer-model">{{ current.model }}</span></div><button v-if="running" class="stop-button" :disabled="current.state === 'stopping'" @click="stop"><Icon name="stop" :size="13" />停止</button><button class="send-button" :disabled="!canSend" aria-label="送信" @click="send"><Icon name="arrow" :size="17" /></button></div></div>
-      <div class="composer-caption"><span><span class="status-dot" :class="{ offline: !work.connected }"></span>{{ work.connected ? '接続中' : '未接続' }} · 読み取り専用<span v-if="current.activePullRequest"> · 対象 PR #{{ current.activePullRequest }}</span></span><span>Enterで送信</span></div>
+      <div v-if="['auth_wait', 'failed', 'stopped', 'user_wait'].includes(current.state) && (current.messages.length || current.runKind === 'review' || current.runKind === 'implement') || current.state === 'done' && current.target?.kind === 'pull' && current.review && current.review.phase && current.review.phase !== 'done'" class="resume-row"><span>{{ current.state === 'done' ? '中断したレビューを保存した区切りから続行できます。' : '保存した区切りから続行できます。' }}</span><button class="plain-button" :disabled="running || !work.connected || (config.aiProvider !== 'demo' && !keyValid)" @click="resume"><Icon name="refresh" :size="13" />保存済みの状態から再開</button></div>
+      <div class="composer"><textarea v-model="text" :placeholder="mode === 'instruction' ? '次の区切りで反映する追加指示…' : mode === 'implement' ? '実装してほしい変更（例: ログイン画面にエラー表示を追加して）…' : '質問や「このPRをレビューして」「〜を実装してPRを作って」など…'" aria-label="メッセージ" rows="2" maxlength="4096" @keydown="keydown" /><div class="composer-toolbar"><div><select v-model="mode" aria-label="メッセージの種類"><option value="message">チャット</option><option value="implement">実装を依頼</option><option value="instruction">追加指示</option></select><span class="composer-model">{{ current.model }}</span></div><button v-if="running" class="stop-button" :disabled="current.state === 'stopping'" @click="stop"><Icon name="stop" :size="13" />停止</button><button class="send-button" :disabled="!canSend" aria-label="送信" @click="send"><Icon name="arrow" :size="17" /></button></div></div>
+      <div class="composer-caption"><span><span class="status-dot" :class="{ offline: !work.connected }"></span>{{ work.connected ? '接続中' : '未接続' }} · 書き込みは確認後のみ<span v-if="current.activePullRequest"> · 対象 PR #{{ current.activePullRequest }}</span></span><span>Enterで送信</span></div>
      </div>
     </section>
     <aside v-if="openedFile" ref="codePanel" class="code-panel" aria-label="コードパネル" tabindex="-1">

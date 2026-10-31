@@ -12,6 +12,7 @@ func decisionInstructions(schema map[string]any, input string) string {
 	var context struct {
 		ReviewTask   json.RawMessage `json:"reviewTask"`
 		PriorityTask []priorityItem  `json:"priorityTask"`
+		Implement    *implementTask  `json:"implementTask"`
 		ChatBudget   *chatBudget     `json:"chatBudget"`
 		Target       struct {
 			Number int `json:"number"`
@@ -19,6 +20,9 @@ func decisionInstructions(schema map[string]any, input string) string {
 	}
 	if json.Unmarshal([]byte(input), &context) != nil {
 		return systemPrompt
+	}
+	if context.Implement != nil && (context.Implement.Mode == "plan" || context.Implement.Mode == "edit") {
+		return implementInstructions(schema, *context.Implement)
 	}
 	if len(context.PriorityTask) > 0 {
 		addPrioritySchema(schema, context.PriorityTask)

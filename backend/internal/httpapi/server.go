@@ -51,7 +51,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{16,80}$`)
-var keyPattern = regexp.MustCompile(`(?:AIza|sk-|github_pat_|gh[opusr]_)[a-zA-Z0-9_-]{12,}`)
+var keyPattern = regexp.MustCompile(`\b(?:AIza|sk-|github_pat_|gh[opusr]_)[a-zA-Z0-9_-]{12,}`)
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -106,6 +106,7 @@ func (s *Server) Handler() http.Handler {
 		})
 		route.HandleFunc("POST /api/v1/sessions", func(w http.ResponseWriter, r *http.Request) { s.create(w, r, c) })
 		route.HandleFunc("GET /api/v1/sessions/{id}/file", func(w http.ResponseWriter, r *http.Request) { s.sessionFile(w, r, c) })
+		route.HandleFunc("GET /api/v1/sessions/{id}/change", func(w http.ResponseWriter, r *http.Request) { s.sessionChange(w, r, c) })
 		route.HandleFunc("GET /api/v1/sessions/{id}/review-diff", func(w http.ResponseWriter, r *http.Request) { s.sessionReviewDiff(w, r, c) })
 		route.HandleFunc("GET /api/v1/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 			if !idPattern.MatchString(r.PathValue("id")) {

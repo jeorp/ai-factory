@@ -46,7 +46,7 @@ func main() {
 	} else if c.AIProvider == "gemini" {
 		ai = &agent.Gemini{HTTP: client}
 	}
-	api := httpapi.New(c, auth, &store.Store{DB: db}, gh, &agent.Runner{AI: ai, GitHub: gh}, client)
+	api := httpapi.New(c, auth, &store.Store{DB: db}, gh, &agent.Runner{AI: ai, GitHub: gh, Writer: gh}, client)
 	server := &http.Server{Addr: ":" + c.Port, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 16 * 1024}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
