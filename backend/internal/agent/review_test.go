@@ -68,14 +68,14 @@ func runFixture(t *testing.T, f *reviewFixture, p Provider) Checkpoint {
 }
 func TestReviewSplitsLargePatchAndResumesSavedCursor(t *testing.T) {
 	f := fixture()
-	lines := strings.Repeat("+new content\n", 800)
-	f.files[0].Patch = "@@ -0,0 +1,800 @@\n" + lines
+	lines := strings.Repeat("+new content\n", 8000)
+	f.files[0].Patch = "@@ -0,0 +1,8000 @@\n" + lines
 	s := reviewSession()
 	interrupted := errors.New("save connection lost")
 	var saved Checkpoint
 	calls := 0
 	ai := providerFunc(func(_ context.Context, _ string, _ string, input string) (Decision, Usage, error) {
-		if len(input) > domain.MaxInputBytes {
+		if !reviewInputFits([]byte(input)) {
 			t.Fatal("oversized input")
 		}
 		var body struct {
@@ -83,10 +83,10 @@ func TestReviewSplitsLargePatchAndResumesSavedCursor(t *testing.T) {
 		}
 		json.Unmarshal([]byte(input), &body)
 		if body.Task.Mode == "diff" {
-			if len(body.Task.Patch) > 3100 {
+			if !reviewPatchesFit(body.Task.Patches) {
 				t.Fatal("PR passed in one call")
 			}
-			if strings.Contains(body.Task.Patch, "new content") && strings.Contains(body.Task.Patch, "new client") {
+			if strings.Contains(body.Task.Patches[0].Patch, "new content") && strings.Contains(body.Task.Patches[0].Patch, "new client") {
 				t.Fatal("whole PR in context")
 			}
 		}
@@ -168,8 +168,8 @@ func TestReviewRejectsInvalidLocationsAndDeduplicates(t *testing.T) {
 		json.Unmarshal([]byte(input), &body)
 		d := result()
 		if body.Task.Mode == "diff" {
-			f := finding(body.Task.Path, 1)
-			d.Review.Findings = []domain.Finding{f, f, finding(body.Task.Path, 999), finding("outside.go", 1)}
+			f := finding(body.Task.Patches[0].Path, 1)
+			d.Review.Findings = []domain.Finding{f, f, finding(body.Task.Patches[0].Path, 999), finding("outside.go", 1)}
 		}
 		return d, Usage{}, nil
 	}))
@@ -266,8 +266,10 @@ func TestPatchFragmentsPreserveOriginalLineNumbers(t *testing.T) {
 
 func TestReviewBudgetYieldsWithResumableCursor(t *testing.T) {
 	f := fixture()
-	f.files = f.files[:1]
-	f.files[0].Patch = "@@ -0,0 +1,6000 @@\n" + strings.Repeat("+source line\n", 6000)
+	f.files = nil
+	for i := 0; i <= ReviewMaxCalls; i++ {
+		f.files = append(f.files, github.ChangedFile{Filename: fmt.Sprintf("pkg%03d/file.go", i), Status: "modified", Patch: "@@ -1 +1 @@\n-old\n+new\n"})
+	}
 	calls := 0
 	r := Runner{GitHub: f, AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
 		calls++
@@ -275,7 +277,7 @@ func TestReviewBudgetYieldsWithResumableCursor(t *testing.T) {
 	})}
 	var saved Checkpoint
 	err := r.Run(context.Background(), Input{Session: reviewSession()}, func(cp Checkpoint) error { saved = cp; return nil })
-	if err == nil || err.Error() != "review_run_budget_resume" || calls != 20 || saved.Review.Steps[0].Files[0].Offset == 0 || saved.Answer != "" {
+	if err == nil || err.Error() != "review_run_budget_resume" || calls != ReviewMaxCalls || !saved.Review.Steps[ReviewMaxCalls-1].Files[0].Done || saved.Review.Steps[ReviewMaxCalls].Files[0].Done || saved.Answer != "" {
 		t.Fatalf("budget did not yield safely: %v calls=%d", err, calls)
 	}
 	s := reviewSession()
@@ -332,5 +334,60 @@ func TestReviewReusesPlannedPatches(t *testing.T) {
 	}
 	if len(f.filePages) != len(f.files) || cp.Metrics.CacheHits != len(f.files) {
 		t.Fatalf("patches not reused: pages=%v hits=%d", f.filePages, cp.Metrics.CacheHits)
+	}
+}
+
+func TestReviewCorrectsDisallowedReadWithoutExecutingIt(t *testing.T) {
+	for _, rejected := range []github.Read{
+		{Kind: "repository"},
+		{Kind: "pull_request", Number: 42, Detail: "files"},
+		{Kind: "pull_request", Number: 99, Detail: "comments"},
+	} {
+		t.Run(fmt.Sprintf("%s/%d/%s", rejected.Kind, rejected.Number, rejected.Detail), func(t *testing.T) {
+			f := fixture()
+			calls := 0
+			final := runFixture(t, f, providerFunc(func(_ context.Context, _ string, _ string, input string) (Decision, Usage, error) {
+				calls++
+				var body struct {
+					Correction string     `json:"readCorrection"`
+					Evidence   []evidence `json:"evidence"`
+				}
+				if err := json.Unmarshal([]byte(input), &body); err != nil {
+					t.Fatal(err)
+				}
+				if calls == 1 {
+					return Decision{Read: &rejected}, Usage{InputTokens: 7}, nil
+				}
+				if calls == 2 {
+					if !strings.Contains(body.Correction, "number=42") || len(f.reads) != 0 {
+						t.Fatal("rejected read executed or correction missing")
+					}
+					return Decision{Read: &github.Read{Kind: "file", Path: "api/server.go"}}, Usage{}, nil
+				}
+				if calls == 3 && (len(body.Evidence) != 1 || len(f.reads) != 1) {
+					t.Fatal("corrected read was not used")
+				}
+				return result(), Usage{}, nil
+			}))
+			if final.Review.Phase != "done" || final.Metrics.InputTokens != 7 || len(f.reads) != 1 {
+				t.Fatalf("review did not recover with usage and read boundaries intact: %+v", final)
+			}
+		})
+	}
+}
+
+func TestReviewRepeatedDisallowedReadStopsAtSavedCursor(t *testing.T) {
+	f := fixture()
+	calls := 0
+	var saved Checkpoint
+	err := (&Runner{GitHub: f, AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
+		calls++
+		return Decision{Read: &github.Read{Kind: "pull_request", Number: 42, Detail: "summary"}}, Usage{InputTokens: 7}, nil
+	})}).Run(context.Background(), Input{Session: reviewSession()}, func(cp Checkpoint) error { saved = cp; return nil })
+	if err == nil || err.Error() != "review_read_not_allowed" || calls != 2 || len(f.reads) != 0 {
+		t.Fatalf("disallowed read not bounded: err=%v calls=%d reads=%v", err, calls, f.reads)
+	}
+	if saved.Review.Steps[0].Files[0].Offset != 0 || saved.Review.Steps[0].Files[0].Done || saved.Metrics.InputTokens != 14 {
+		t.Fatal("failed correction advanced the cursor or lost usage")
 	}
 }

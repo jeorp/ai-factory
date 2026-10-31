@@ -41,7 +41,10 @@ type OpenAI struct {
 }
 
 func (p *OpenAI) Next(ctx context.Context, key, model, input string) (Decision, Usage, error) {
-	if len(input) > domain.MaxInputBytes {
+	if len(input) > aiInputLimit(input) {
+		return Decision{}, Usage{}, errors.New("ai_input_limit")
+	}
+	if reviewWorkflow(input) && !reviewInputFits([]byte(input)) {
 		return Decision{}, Usage{}, errors.New("ai_input_limit")
 	}
 	// A single typed read decision is interpreted locally. The AI cannot select endpoints, credentials, repositories or write tools.
@@ -52,8 +55,13 @@ func (p *OpenAI) Next(ctx context.Context, key, model, input string) (Decision, 
 		}}}},
 	}}
 	addReviewSchema(schema)
-	body, _ := json.Marshal(map[string]any{"model": model, "store": false, "max_output_tokens": 4096, "reasoning": map[string]string{"effort": "minimal"}, "instructions": systemPrompt, "input": input, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "github_read_decision", "strict": true, "schema": schema}}})
-	if len(body) > 40*1024 {
+	instructions := decisionInstructions(schema, input)
+	maxOutput := 4096
+	if reviewWorkflow(input) {
+		maxOutput = 8192
+	}
+	body, _ := json.Marshal(map[string]any{"model": model, "store": false, "max_output_tokens": maxOutput, "reasoning": map[string]string{"effort": "minimal"}, "instructions": instructions, "input": input, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "github_read_decision", "strict": true, "schema": schema}}})
+	if len(body) > aiRequestLimit(input) {
 		return Decision{}, Usage{}, errors.New("ai_request_limit")
 	}
 	endpoint := p.Endpoint

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"ai-factory/backend/internal/domain"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -51,6 +53,33 @@ func TestGeminiRejectsIncompleteAndInvalidReads(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected response to be rejected")
 		}
+	}
+}
+
+func TestGeminiReportsValidationFailures(t *testing.T) {
+	valid := Decision{Intent: IntentPlan{Goal: "goal", Investigation: "investigation", Response: "response"}}
+	tests := []struct {
+		name   string
+		change func(*Decision)
+		want   string
+	}{
+		{"answer length", func(d *Decision) { d.Answer = strings.Repeat("x", 16*1024+1) }, "gemini_answer_too_long"},
+		{"missing intent", func(d *Decision) { d.Intent.Goal = "" }, "gemini_invalid_intent"},
+		{"invalid review", func(d *Decision) { d.Review = &domain.ReviewResult{Unverified: make([]string, 11)} }, "gemini_invalid_review"},
+		{"conflicting review action", func(d *Decision) { d.StartReview = &ReviewRequest{Number: 42}; d.Answer = "answer" }, "gemini_invalid_review_action"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := valid
+			tc.change(&d)
+			decision, _ := json.Marshal(d)
+			response, _ := json.Marshal(map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP", "content": map[string]any{"parts": []any{map[string]any{"text": string(decision)}}}}}})
+			p := Gemini{HTTP: fakeClient(func(*http.Request) string { return string(response) }), Endpoint: "https://example.test"}
+			_, _, err := p.Next(context.Background(), "key", "model", "input")
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("got %v, want %s", err, tc.want)
+			}
+		})
 	}
 }
 

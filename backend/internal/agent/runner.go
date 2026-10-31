@@ -67,6 +67,9 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 	if in.Session.RunKind == "review" {
 		return r.runReview(ctx, in, emit)
 	}
+	reviewCtx := ctx
+	ctx, cancelChat := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancelChat()
 	start := time.Now()
 	logger := in.Logger
 	if logger == nil {
@@ -132,6 +135,12 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		logger.Info("model_call_started", "step", step+1, "input_bytes", len(input))
 		decision, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, input)
 		logger.Info("model_call_finished", "step", step+1, "duration_ms", time.Since(callStart).Milliseconds(), "outcome", outcome(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
+		if err != nil {
+			switch err.Error() {
+			case "gemini_answer_too_long", "gemini_invalid_intent", "gemini_invalid_review", "gemini_invalid_review_action":
+				logger.Info("model_response_validation_failed", "step", step+1, "reason", err.Error())
+			}
+		}
 		cp.Metrics.InputTokens += usage.InputTokens
 		cp.Metrics.OutputTokens += usage.OutputTokens
 		cp.Metrics.LastInputTokens += usage.InputTokens
@@ -179,7 +188,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 					in.Session.Messages = append(in.Session.Messages, m)
 				}
 			}
-			return r.reviewFromChat(ctx, in, cp, *decision.StartReview, emit)
+			return r.reviewFromChat(reviewCtx, in, cp, *decision.StartReview, emit)
 		}
 		if decision.Read == nil {
 			if strings.TrimSpace(decision.Answer) == "" {

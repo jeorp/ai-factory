@@ -7,10 +7,44 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-factory/backend/internal/domain"
 	"ai-factory/backend/internal/github"
 )
+
+func TestChatReviewHandoffGetsReviewTimeBudget(t *testing.T) {
+	s := reviewSession()
+	s.RunKind = "chat"
+	sawChat, sawReview := false, false
+	r := Runner{GitHub: fixture(), AI: providerFunc(func(ctx context.Context, _ string, _ string, input string) (Decision, Usage, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("run has no deadline")
+		}
+		if strings.Contains(input, `"priorityTask":`) {
+			return Decision{Answer: "[]"}, Usage{}, nil
+		}
+		if strings.Contains(input, `"reviewTask":`) {
+			sawReview = true
+			if time.Until(deadline) < 10*time.Minute || time.Until(deadline) > ReviewRunDuration {
+				t.Fatal("chat timeout leaked into review")
+			}
+			return result(), Usage{}, nil
+		}
+		sawChat = true
+		if time.Until(deadline) > 3*time.Minute {
+			t.Fatal("normal chat timeout increased")
+		}
+		return Decision{StartReview: &ReviewRequest{Number: 42}}, Usage{}, nil
+	})}
+	if err := r.Run(context.Background(), Input{Session: s}, func(Checkpoint) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !sawChat || !sawReview {
+		t.Fatal("review was not routed from chat")
+	}
+}
 
 type chatReviewFixture struct{ *reviewFixture }
 
@@ -85,7 +119,7 @@ func TestRetrievedPRIsRememberedAndCanBeReviewedInNextChatMessage(t *testing.T) 
 	if !routed || cp.Review == nil || cp.Review.Phase != "done" || cp.Answer == "" {
 		t.Fatal("chat did not launch the full review")
 	}
-	if cp.Metrics.LastInputTokens != 31 || cp.Metrics.InputTokens != 41 {
+	if cp.Metrics.LastInputTokens != 26 || cp.Metrics.InputTokens != 36 {
 		t.Fatalf("routing/review usage lost: %+v", cp.Metrics)
 	}
 }

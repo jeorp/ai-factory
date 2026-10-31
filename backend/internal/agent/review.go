@@ -26,14 +26,15 @@ type reviewFileCache interface {
 	PutReviewFile(context.Context, domain.Target, string, string, int, github.ChangedFile)
 }
 type reviewTask struct {
-	Mode  string              `json:"mode"`
-	Path  string              `json:"path,omitempty"`
-	Patch string              `json:"patch,omitempty"`
-	Steps []domain.ReviewStep `json:"steps,omitempty"`
-	Prior string              `json:"prior"`
+	Mode    string              `json:"mode"`
+	Patches []reviewPatch       `json:"patches,omitempty"`
+	Steps   []domain.ReviewStep `json:"steps,omitempty"`
+	Prior   string              `json:"prior"`
 }
 
 func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) error) error {
+	ctx, cancel := context.WithTimeout(ctx, ReviewRunDuration)
+	defer cancel()
 	gh, ok := r.GitHub.(reviewReader)
 	if !ok || in.Session.Target.Kind != "pull" {
 		return errors.New("pull_request_required")
@@ -44,6 +45,10 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 		logger = slog.Default()
 	}
 	modelCalls := 0
+	runInputTokens, runOutputTokens := 0, 0
+	budgetExhausted := func() bool {
+		return modelCalls >= ReviewMaxCalls || runInputTokens >= ReviewRunInputTokens || runOutputTokens >= ReviewRunOutputTokens
+	}
 	cp := Checkpoint{Summary: in.Session.Summary, Sources: append([]domain.Source{}, in.Session.Sources...), Metrics: in.Session.Metrics}
 	if !in.ContinueMetrics {
 		cp.Metrics.LastInputTokens, cp.Metrics.LastOutputTokens, cp.Metrics.HasLastUsage = 0, 0, false
@@ -144,7 +149,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 	if err := check(); err != nil {
 		return err
 	}
-	// Planning is resumable too: each directory group contains at most five files.
+	// Planning is resumable too; related implementation/tests share a directory.
 	if review.Phase == "planning" {
 		count := 0
 		for _, step := range review.Steps {
@@ -178,7 +183,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				dir := path.Dir(f.Filename)
 				idx := -1
 				for i := range review.Steps {
-					if review.Steps[i].Directory == dir && len(review.Steps[i].Files) < 5 {
+					if review.Steps[i].Directory == dir && len(review.Steps[i].Files) < ReviewMaxFiles {
 						idx = i
 						break
 					}
@@ -215,6 +220,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 	analyze := func(task reviewTask) (Decision, error) {
 		ev := []evidence{}
 		cache := map[string]bool{}
+		readCorrection := ""
 		for call := 0; call <= domain.MaxFiles; call++ {
 			for {
 				select {
@@ -243,9 +249,12 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				}
 			}
 			payload := map[string]any{"reviewTask": task, "repositoryOverview": in.Session.RepositoryOverview, "target": map[string]any{"repository": in.Session.Target.Repository, "number": in.Session.Target.Number, "base": review.Base, "head": review.Head}, "title": review.Title, "body": review.Body, "focus": focus, "instructions": pinned, "evidence": ev, "readBudget": domain.MaxFiles - call}
+			if readCorrection != "" {
+				payload["readCorrection"] = readCorrection
+			}
 			body, _ := json.Marshal(payload)
 			// Reduce optional background before source evidence. Every omission is visible.
-			if len(body) > domain.MaxInputBytes {
+			if !reviewInputFits(body) {
 				payload["body"] = ""
 				payload["repositoryOverview"] = nil
 				payload["focus"] = domain.Clip(focus, 1024)
@@ -254,7 +263,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				limit("入力上限によりPR本文・レビュー観点・以前の要点の一部を省略しました。")
 				body, _ = json.Marshal(payload)
 			}
-			for capBytes := 3000; len(body) > domain.MaxInputBytes && len(ev) > 0 && capBytes >= 500; capBytes -= 500 {
+			for capBytes := 16000; !reviewInputFits(body) && len(ev) > 0 && capBytes >= 1000; capBytes -= 1000 {
 				for i := range ev {
 					if len(ev[i].Content) > capBytes {
 						ev[i].Content = domain.Clip(ev[i].Content, capBytes)
@@ -264,18 +273,20 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				payload["evidence"] = ev
 				body, _ = json.Marshal(payload)
 			}
-			if len(body) > domain.MaxInputBytes {
+			if !reviewInputFits(body) {
 				return Decision{}, errors.New("ai_input_limit")
 			}
-			if modelCalls >= 20 {
+			if budgetExhausted() {
 				return Decision{}, errors.New("review_run_budget_resume")
 			}
 			modelCalls++
-			logger.Info("model_call_started", "step", modelCalls, "review_phase", task.Mode, "input_bytes", len(body))
+			logger.Info("model_call_started", "step", modelCalls, "review_phase", task.Mode, "input_bytes", len(body), "estimated_input_tokens", reviewTokens(string(body)), "batch_files", len(task.Patches))
 			if len(body) > cp.Metrics.MaxInputBytes {
 				cp.Metrics.MaxInputBytes = len(body)
 			}
 			d, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, string(body))
+			runInputTokens += usage.InputTokens
+			runOutputTokens += usage.OutputTokens
 			logger.Info("model_call_finished", "step", modelCalls, "review_phase", task.Mode, "outcome", outcome(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 			if err == nil {
 				applied = nil
@@ -330,8 +341,12 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				}
 				for _, f := range d.Review.Findings {
 					supported := false
-					if task.Mode == "diff" && f.Path == task.Path {
-						supported = patchLocation(task.Patch, f)
+					if task.Mode == "diff" {
+						for _, patch := range task.Patches {
+							if f.Path == patch.Path && patchLocation(patch.Patch, f) {
+								supported = true
+							}
+						}
 					}
 					sourcePaths := map[string]bool{}
 					for _, e := range ev {
@@ -371,11 +386,16 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				return Decision{}, err
 			}
 			if call == domain.MaxFiles {
-				limit(task.Path + ": 追加取得回数の上限により、この区切りの確認は完了していません。")
+				limit("追加取得回数の上限により、この区切りの確認は完了していません。")
 				return Decision{Summary: "追加取得の上限に達したため未確認事項が残っています。"}, nil
 			}
 			if read.Kind != "file" && !(read.Kind == "pull_request" && read.Number == in.Session.Target.Number && read.Detail == "comments") {
-				return Decision{}, errors.New("review_read_not_allowed")
+				logger.Info("review_read_rejected", "error_code", "review_read_not_allowed", "kind", read.Kind, "detail", read.Detail, "pull_number", read.Number)
+				if readCorrection != "" {
+					return Decision{}, errors.New("review_read_not_allowed")
+				}
+				readCorrection = fmt.Sprintf("直前の追加取得要求は実行していません。追加取得はkind=file、またはkind=pull_request・number=%d・detail=commentsのみです。PR概要や変更一覧の再取得はできません。必要な関連コードをfileで指定するか、read=nullで現在の区切りのreviewを返してください。", in.Session.Target.Number)
+				continue
 			}
 			keyBytes, _ := json.Marshal(read)
 			key := string(keyBytes)
@@ -397,8 +417,8 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				content = "取得できませんでした: " + err.Error()
 				limit(read.Path + ": " + content)
 			} else {
-				if len(content) > 3500 {
-					content = domain.Clip(content, 3500)
+				if len(content) > 24000 {
+					content = domain.Clip(content, 24000)
 					limit("関連コード・コメントの後半は未確認: " + read.Path)
 				}
 				if !containsSource(cp.Sources, source.URL) && len(cp.Sources) < 100 {
@@ -406,19 +426,78 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				}
 			}
 			ev = append(ev, evidence{Read: read, Content: content})
-			if len(ev) > 2 {
-				ev = ev[len(ev)-2:]
+			if len(ev) > domain.MaxFiles {
+				ev = ev[len(ev)-domain.MaxFiles:]
 			}
 		}
 		return Decision{}, errors.New("review_step_limit")
 	}
 	if review.Phase == "diff" {
+		type pendingPatch struct {
+			step, file, next int
+			done             bool
+		}
+		batch := []reviewPatch{}
+		pending := []pendingPatch{}
+		flush := func() error {
+			if len(batch) == 0 {
+				return nil
+			}
+			prior := ""
+			seen := map[int]bool{}
+			for _, item := range pending {
+				if !seen[item.step] {
+					prior += domain.Clip(review.Steps[item.step].Summary, 2048) + "\n"
+					seen[item.step] = true
+				}
+			}
+			d, err := analyze(reviewTask{Mode: "diff", Patches: batch, Prior: domain.Clip(prior, 6000)})
+			if err != nil {
+				return err
+			}
+			if err := check(); err != nil {
+				return err
+			}
+			for _, item := range pending {
+				step := &review.Steps[item.step]
+				f := &step.Files[item.file]
+				f.Offset, f.Done = item.next, item.done
+				step.Summary = domain.Clip(d.Summary, 2048)
+			}
+			for si := range seen {
+				step := &review.Steps[si]
+				complete := true
+				for _, f := range step.Files {
+					complete = complete && f.Done
+				}
+				if complete && step.State != "partial" {
+					step.State = "done"
+				}
+			}
+			batch, pending = nil, nil
+			return save("差分の区切りと次の取得位置を保存しました")
+		}
 		for si := range review.Steps {
 			step := &review.Steps[si]
+			// Older saved plans have five-file groups: combine consecutive groups
+			// in the same directory without changing their saved cursor identities.
+			if si > 0 && step.Directory != review.Steps[si-1].Directory {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
 			for fi := range step.Files {
 				f := &step.Files[fi]
 				if f.Done {
 					continue
+				}
+				if budgetExhausted() {
+					return errors.New("review_run_budget_resume")
+				}
+				if len(batch) >= ReviewMaxFiles {
+					if err := flush(); err != nil {
+						return err
+					}
 				}
 				if step.State != "partial" {
 					step.State = "running"
@@ -434,9 +513,8 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				cacheHit := false
 				if cache, ok := r.GitHub.(reviewFileCache); ok {
 					if cached, hit := cache.GetReviewFile(ctx, in.GitHubToken, in.Session.Target, review.Base, review.Head, f.Index); hit {
-						files = []github.ChangedFile{cached}
+						files, cacheHit = []github.ChangedFile{cached}, true
 						cp.Metrics.CacheHits++
-						cacheHit = true
 					}
 				}
 				if len(files) == 0 {
@@ -450,8 +528,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				}
 				if err != nil {
 					limit(f.Path + ": 差分取得失敗（" + err.Error() + "）。")
-					f.Done = true
-					step.State = "partial"
+					f.Done, step.State = true, "partial"
 					if err := save("取得できなかった範囲を保存しました"); err != nil {
 						return err
 					}
@@ -469,49 +546,62 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				patch := files[0].Patch
 				if (github.Read{Kind: "file", Path: f.Path}).Validate() != nil || patch == "" {
 					limit(f.Path + ": バイナリ・生成ファイル、またはGitHubから差分が返らないため未確認です。")
-					f.Done = true
+					f.Done, step.State = true, "partial"
+					if err := save("ファイルの確認状況を保存しました"); err != nil {
+						return err
+					}
+					continue
+				}
+				if !completePatch(patch) {
+					limit(f.Path + ": 差分が不完全なため、返された範囲だけを確認します。")
 					step.State = "partial"
-				} else {
-					// GitHub can omit/truncate patches. Hunk counts are checked explicitly.
-					if !completePatch(patch) {
-						limit(f.Path + ": 差分が不完全なため、返された範囲だけを確認します。")
-						step.State = "partial"
-					}
-					for f.Offset < len(patch) {
-						chunk, next := patchChunk(patch, f.Offset)
-						if chunk == "" {
-							limit(f.Path + ": 1行が差分入力上限を超えるため未確認です。長い行をスキップしました。")
-							step.State = "partial"
-							f.Offset = next
-							continue
-						}
-						// Prefix the cursor's original line numbers for a fragment inside a hunk.
-						left, right := patchCursor(patch[:f.Offset])
-						chunk = fmt.Sprintf("@@ -%d +%d @@\n", left, right) + chunk
-						d, err := analyze(reviewTask{Mode: "diff", Path: f.Path, Patch: chunk, Prior: step.Summary})
-						if err != nil {
-							return err
-						}
-						if err := check(); err != nil {
-							return err
-						}
-						step.Summary = domain.Clip(d.Summary, 512)
-						f.Offset = next
-						if err := save("差分の区切りと次の取得位置を保存しました"); err != nil {
-							return err
-						}
-					}
+				}
+				if f.Offset >= len(patch) {
 					f.Done = true
+					if err := save("ファイルの確認状況を保存しました"); err != nil {
+						return err
+					}
+					continue
 				}
-				if err := save("ファイルの確認状況を保存しました"); err != nil {
-					return err
+				for offset := f.Offset; offset < len(patch); {
+					part, next := nextReviewPatch(f.Path, patch, offset, batch)
+					if next == offset {
+						if err := flush(); err != nil {
+							return err
+						}
+						continue
+					}
+					if part.Patch == "" {
+						limit(f.Path + ": 1行が差分入力上限を超えるため未確認です。長い行をスキップしました。")
+						step.State = "partial"
+						f.Offset, f.Done = next, next == len(patch)
+						if err := save("差分入力上限による未確認範囲を保存しました"); err != nil {
+							return err
+						}
+					} else {
+						batch = append(batch, part)
+						pending = append(pending, pendingPatch{si, fi, next, next == len(patch)})
+						if next < len(patch) || len(batch) >= ReviewMaxFiles {
+							if err := flush(); err != nil {
+								return err
+							}
+						}
+					}
+					offset = next
 				}
 			}
-			if step.State != "partial" {
+		}
+		if err := flush(); err != nil {
+			return err
+		}
+		for si := range review.Steps {
+			step := &review.Steps[si]
+			complete := true
+			for _, file := range step.Files {
+				complete = complete && file.Done
+			}
+			if complete && step.State != "partial" {
 				step.State = "done"
-			}
-			if err := save("グループの確認結果を保存しました"); err != nil {
-				return err
 			}
 		}
 		review.Phase = "cross"
@@ -521,13 +611,20 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 	}
 	if review.Phase == "cross" {
 		for review.CrossCursor < len(review.Steps) {
-			end := review.CrossCursor + 1
-			if end > len(review.Steps) {
-				end = len(review.Steps)
+			end := review.CrossCursor
+			for end < len(review.Steps) {
+				body, _ := json.Marshal(review.Steps[review.CrossCursor : end+1])
+				if len(body) > 128*1024 || reviewTokens(string(body)) > ReviewDiffTokens {
+					break
+				}
+				end++
+			}
+			if end == review.CrossCursor {
+				return errors.New("ai_input_limit")
 			}
 			prior := review.CrossSummary
 			for _, f := range review.Findings {
-				for _, rf := range review.Steps[review.CrossCursor].Files {
+				for _, rf := range reviewFiles(review.Steps[review.CrossCursor:end]) {
 					if rf.Path == f.Path && len(prior) < 3500 {
 						prior += "\n" + f.Severity + " " + f.Path + ": " + domain.Clip(f.Problem, 300)
 					}
@@ -556,7 +653,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 	}
 	if review.Phase == "priority" {
 		for review.PriorityCursor < len(review.Unverified) {
-			if modelCalls >= 20 {
+			if budgetExhausted() {
 				return errors.New("review_run_budget_resume")
 			}
 			end := review.PriorityCursor + 15
@@ -572,7 +669,11 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				return err
 			}
 			modelCalls++
+			logger.Info("model_call_started", "step", modelCalls, "review_phase", "priority", "input_bytes", len(payload))
 			d, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, string(payload))
+			logger.Info("model_call_finished", "step", modelCalls, "review_phase", "priority", "outcome", outcome(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
+			runInputTokens += usage.InputTokens
+			runOutputTokens += usage.OutputTokens
 			cp.Metrics.InputTokens += usage.InputTokens
 			cp.Metrics.OutputTokens += usage.OutputTokens
 			cp.Metrics.LastInputTokens += usage.InputTokens
@@ -614,22 +715,6 @@ func echoes(s string, in Input) bool {
 	return in.Key != "" && strings.Contains(s, in.Key) || in.GitHubToken != "" && strings.Contains(s, in.GitHubToken)
 }
 
-// Split on complete lines; a very long single line is explicitly skipped.
-func patchChunk(s string, offset int) (string, int) {
-	end := offset + 3000
-	if end >= len(s) {
-		return s[offset:], len(s)
-	}
-	cut := strings.LastIndexByte(s[offset:end], '\n')
-	if cut < 0 {
-		next := strings.IndexByte(s[offset:], '\n')
-		if next < 0 {
-			return "", len(s)
-		}
-		return "", offset + next + 1
-	}
-	return s[offset : offset+cut+1], offset + cut + 1
-}
 func hunk(line string) (int, int, bool) {
 	var l, r int
 	parts := strings.Fields(line)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ type controlledAI struct {
 	Gate    chan struct{}
 	Started chan struct{}
 	Calls   atomic.Int32
+	Fail    atomic.Bool
 }
 
 func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agent.Decision, agent.Usage, error) {
@@ -42,6 +44,9 @@ func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agen
 	case <-ctx.Done():
 		return agent.Decision{}, agent.Usage{}, ctx.Err()
 	case <-p.Gate:
+	}
+	if p.Fail.Load() {
+		return agent.Decision{}, agent.Usage{}, errors.New("review_read_not_allowed")
 	}
 	text := "取得内容を確認しました"
 	if strings.Contains(input, "認証を優先") {
@@ -384,6 +389,17 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	persistedInvestigation, e := storage.Get(ctx, four.uid, chatSession.ID)
 	if e != nil || persistedInvestigation.Review.Investigations["0"] != investigated.Review.Investigations["0"] {
 		t.Fatalf("investigation not persisted: %v", e)
+	}
+	// A non-provider error must reach the browser even when a review is present.
+	ai.Fail.Store(true)
+	ws.WriteJSON(command{Type: "message", ID: randomID(), Text: "失敗通知の確認", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	failed := wait(ws, func(s domain.Session) bool { return s.State == "failed" })
+	if failed.Review == nil || failed.Limitations[len(failed.Limitations)-1] != "review_read_not_allowed" {
+		t.Fatal("review failure reason was not retained")
+	}
+	var failure envelope
+	if err := ws.ReadJSON(&failure); err != nil || failure.Type != "error" || !strings.Contains(string(failure.Data), "review_read_not_allowed") {
+		t.Fatalf("review failure was silent: %+v %v", failure, err)
 	}
 	t.Log(fmt.Sprintf("verified: isolation, directives, stop/resume, PR retrieval and full review in one conversation (%d model calls)", ai.Calls.Load()))
 }

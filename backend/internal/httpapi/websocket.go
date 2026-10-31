@@ -217,7 +217,9 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			} else if runErr != nil && runErr.Error() == "review_run_budget_resume" {
 				session.State = "user_wait"
 			} else if runErr != nil {
-				if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+				if errors.Is(runErr, context.DeadlineExceeded) && session.RunKind == "review" {
+					session.State = "user_wait"
+				} else if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 					session.State = "auth_wait"
 				} else {
 					session.State = "failed"
@@ -231,7 +233,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			if send("session", session) != nil {
 				return
 			}
-			if runErr != nil && (strings.HasPrefix(runErr.Error(), "gemini_") || runErr.Error() == "pr_changed_create_new_review") {
+			if runErr != nil && session.State == "failed" {
 				problem(runErr.Error())
 			}
 		case cmd := <-inbound:
@@ -317,7 +319,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					problem("nothing_to_resume")
 					continue
 				}
-				deadline := minTime(time.Now().Add(3*time.Minute), time.UnixMilli(cmd.KeyExpiresAt))
+				deadline := minTime(time.Now().Add(agent.ReviewRunDuration), time.UnixMilli(cmd.KeyExpiresAt))
 				if s.Config.AIProvider != "demo" && (!validAIKey(cmd.APIKey) || !deadline.After(time.Now())) {
 					session.State = "auth_wait"
 					save()
@@ -326,7 +328,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if s.Config.AIProvider == "demo" {
-					deadline = time.Now().Add(3 * time.Minute)
+					deadline = time.Now().Add(agent.ReviewRunDuration)
 					cmd.APIKey = ""
 				}
 				if session.HistoryBytes() > domain.MaxHistoryBytes-24*1024 || len(session.Messages) > 196 {

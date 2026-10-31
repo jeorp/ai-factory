@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-
-	"ai-factory/backend/internal/domain"
 )
 
 // Gemini uses the Gemini Developer API; the user supplies the API key for each run.
@@ -21,7 +19,10 @@ type Gemini struct {
 }
 
 func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, Usage, error) {
-	if len(input) > domain.MaxInputBytes {
+	if len(input) > aiInputLimit(input) {
+		return Decision{}, Usage{}, errors.New("ai_input_limit")
+	}
+	if reviewWorkflow(input) && !reviewInputFits([]byte(input)) {
 		return Decision{}, Usage{}, errors.New("ai_input_limit")
 	}
 	read := map[string]any{"type": []string{"object", "null"}, "properties": map[string]any{
@@ -30,8 +31,13 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	}, "required": []string{"kind", "path", "number", "detail"}, "additionalProperties": false}
 	schema := map[string]any{"type": "object", "properties": map[string]any{"intent": intentSchema(), "answer": map[string]any{"type": "string"}, "summary": map[string]any{"type": "string"}, "read": read}, "required": []string{"intent", "answer", "summary", "read"}, "additionalProperties": false}
 	addReviewSchema(schema)
-	body, err := json.Marshal(map[string]any{"systemInstruction": map[string]any{"parts": []any{map[string]string{"text": systemPrompt}}}, "contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": input}}}}, "generationConfig": map[string]any{"maxOutputTokens": 4096, "responseMimeType": "application/json", "responseJsonSchema": schema}})
-	if err != nil || len(body) > 40*1024 {
+	instructions := decisionInstructions(schema, input)
+	maxOutput := 4096
+	if reviewWorkflow(input) {
+		maxOutput = 8192
+	}
+	body, err := json.Marshal(map[string]any{"systemInstruction": map[string]any{"parts": []any{map[string]string{"text": instructions}}}, "contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": input}}}}, "generationConfig": map[string]any{"maxOutputTokens": maxOutput, "responseMimeType": "application/json", "responseJsonSchema": schema}})
+	if err != nil || len(body) > aiRequestLimit(input) {
 		return Decision{}, Usage{}, errors.New("ai_request_limit")
 	}
 	endpoint := p.Endpoint
@@ -89,8 +95,17 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	if json.Unmarshal([]byte(text.String()), &d) != nil {
 		return d, usage, errors.New("gemini_invalid_output")
 	}
-	if len(d.Answer) > 16*1024 || len(d.Summary) > 2048 || !validIntent(d.Intent) || !validReviewResult(d.Review) || !validReviewAction(d) {
-		return d, usage, errors.New("gemini_output_limit")
+	if len(d.Answer) > 16*1024 || len(d.Summary) > 2048 {
+		return d, usage, errors.New("gemini_answer_too_long")
+	}
+	if !validIntent(d.Intent) {
+		return d, usage, errors.New("gemini_invalid_intent")
+	}
+	if !validReviewResult(d.Review) {
+		return d, usage, errors.New("gemini_invalid_review")
+	}
+	if !validReviewAction(d) {
+		return d, usage, errors.New("gemini_invalid_review_action")
 	}
 	if d.Read != nil {
 		if err := d.Read.Validate(); err != nil {
