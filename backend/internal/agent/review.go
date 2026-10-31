@@ -139,6 +139,12 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 		}
 		review = &domain.Review{Title: domain.Clip(pr.Title, 512), Body: domain.Clip(pr.Body, 2048), Base: pr.Base.SHA, Head: pr.Head.SHA, TotalFiles: pr.ChangedFiles, Phase: "planning", Steps: []domain.ReviewStep{}, Findings: []domain.Finding{}, Unverified: []string{"コード・テストの実行による検証は行っていません。"}}
 		review.Scope = in.Session.ReviewScope
+		for i := len(in.Session.Messages) - 1; i >= 0; i-- {
+			if in.Session.Messages[i].Role == "user" {
+				review.RequestMessageID = in.Session.Messages[i].ID
+				break
+			}
+		}
 		if len(pr.Body) > 2048 {
 			limit("PR本文の後半を入力上限のため省略しました。")
 		}

@@ -12,6 +12,7 @@ import FindingEvidence from './components/FindingEvidence.vue';
 import FindingIssue from './components/FindingIssue.vue';
 import { clearFiles } from './lib/fileCache';
 import { fileKey, type SourceFile } from './lib/sourceFiles';
+import { reviewTimeline } from './lib/reviewTimeline';
 
 const CodeViewer = defineAsyncComponent(() => import('./components/CodeViewer.vue'));
 
@@ -34,6 +35,7 @@ async function closeFile() {
 }
 function escapeFile(event: KeyboardEvent) { if (event.key === 'Escape' && openedFile.value) { event.preventDefault(); void closeFile(); } }
 const current = computed(() => work.current); const running = computed(() => busy(current.value));
+const timeline = computed(() => reviewTimeline(current.value?.messages || [], current.value?.review));
 const reviewPolicy = computed(() => config.value.reviewPolicy || { maxFiles: 10, diffTokens: 20000, inputTokens: 30000, inputBytes: 262144, maxCalls: 100, maxMinutes: 15, runInputTokens: 500000, runOutputTokens: 64000 });
 const inputLimitBytes = computed(() => current.value?.runKind === 'review' ? reviewPolicy.value.inputBytes : 24576);
 const priorityLabels = { high: '高', medium: '中', low: '低', unknown: '未評価' } as const;
@@ -194,29 +196,31 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
       </form>
      </div>
      <div ref="transcript" class="transcript" role="log" aria-label="会話履歴" aria-live="polite">
-      <details v-if="current.review" :key="current.id" class="review-results">
-       <summary>PRレビュー結果 · {{ current.review.title }} · 指摘 {{ current.review.findings.length }} 件</summary>
-       <h2>{{ current.review.title }}</h2>
-       <p class="review-commits">Base <code>{{ current.review.base.slice(0, 12) }}</code> → Head <code>{{ current.review.head.slice(0, 12) }}</code></p>
-       <p>{{ { planning: '計画作成中', diff: '差分を確認中', cross: 'ファイル間の整合性を確認中', priority: '未確認項目の優先度を確認中', done: '確認完了' }[current.review.phase] || current.review.phase }} · {{ current.review.steps.reduce((n, s) => n + s.files.filter(f => f.done).length, 0) }} / {{ current.review.totalFiles }} ファイルの処理済み（取得失敗・対象外を含む）</p>
-       <p v-if="current.review.scope === 'backend' || current.review.scope === 'frontend'">対象範囲: {{ current.review.scope === 'backend' ? 'バックエンド（frontend/ を除外）' : 'フロントエンド（backend/ を除外）' }}。共通の設定・ドキュメントも確認します。</p>
-       <details><summary>レビュー計画と処理状況</summary><div v-for="(step, i) in current.review.steps" :key="i" class="review-step"><strong>{{ i + 1 }}. {{ step.directory }} · {{ { pending: '未処理', running: '確認中', done: '処理済み', partial: '未確認あり', excluded: '指定により対象外' }[step.state] || step.state }}</strong><ul><li v-for="file in step.files" :key="file.index">{{ file.path || `一覧取得失敗（${file.index + 1}番目）` }} · {{ file.excluded ? '指定により対象外（AI確認なし）' : file.done ? '処理済み' : file.offset ? '差分の途中まで処理済み' : '未処理' }}</li></ul><p v-if="step.summary">{{ step.summary }}</p></div></details>
-       <ReviewDiffs :key="`${current.id}-${current.review.base}-${current.review.head}`" :session-id="current.id" :review="current.review" />
-       <h3>指摘 {{ current.review.findings.length }} 件</h3>
-       <p v-if="!current.review.findings.length">{{ current.review.phase === 'done' ? '確認した範囲では、保存された指摘はありません。' : '指摘は確認した区切りごとに表示されます。' }}</p>
-       <article v-for="(finding, i) in current.review.findings" :key="i" class="review-finding">
-        <h3><span class="finding-severity">{{ finding.severity }}</span> {{ finding.title }}</h3>
-        <a :href="findingLink(finding)" target="_blank" rel="noopener noreferrer">{{ finding.path }}{{ finding.line ? ':' + finding.line : '（行未特定）' }} · {{ finding.side === 'LEFT' ? '変更前' : '変更後' }}</a>
-        <p><strong>問題:</strong> {{ finding.problem }}</p><p><strong>影響:</strong> {{ finding.impact }}</p><FindingEvidence :evidence="finding.evidence" /><p v-if="finding.suggestion"><strong>修正案:</strong> {{ finding.suggestion }}</p>
-        <FindingIssue v-if="!config.demo && current.target.kind === 'pull' && current.target.number" :finding="finding" :repository="current.target.repository" :pull-number="current.target.number" :source-url="findingLink(finding)" />
-       </article>
-       <details v-if="current.review.unverified.length" open><summary>未確認の範囲・制限 {{ current.review.unverified.length }} 件</summary>
-        <p>優先度はレビューへの影響の推定です。未評価の項目も残します。追加調査では関連情報を再確認します。</p><p v-if="unverifiedItems.length < current.review.unverified.length" role="status">未確認項目の優先度を確認しています。中断した場合は保存済みの状態から再開できます。</p>
-        <ul class="unverified-list"><li v-for="entry in unverifiedItems" :key="entry.index"><p><strong class="priority-label">優先度 {{ priorityLabels[entry.priority?.level || 'unknown'] }}</strong> {{ entry.text }}</p><p v-if="entry.priority?.reason" class="priority-reason">{{ entry.priority.reason }}</p><button type="button" class="investigate-button" :disabled="running || !work.connected || (config.aiProvider !== 'demo' && !keyValid)" @click="investigate(entry.index)">{{ current.review.investigations?.[entry.index] ? 'もう一度調査' : '追加調査' }}</button><span v-if="current.review.pendingInvestigation === entry.index + 1" class="investigation-status">{{ running ? '調査中' : '調査が中断されています。保存済みの状態から再開できます。' }}</span><div v-if="current.review.investigations?.[entry.index]" class="investigation-result"><strong>追加調査の結果</strong><p>{{ current.review.investigations[entry.index] }}</p></div></li></ul>
+      <div v-if="!current.messages.length && !current.review" class="chat-empty"><span class="assistant-mark"><Icon name="grid" :size="24" /></span><h2>何から読み解きましょう？</h2><p>PRを取得したあと、「このPRをレビューして」と続けて依頼できます。</p><div class="suggestions"><button v-for="hint in hints" :key="hint" @click="selectHint(hint)">{{ hint }}<Icon name="chevron" :size="14" /></button></div></div>
+      <template v-for="entry in timeline" :key="`${current.id}:${entry.key}`">
+       <details v-if="entry.kind === 'review' && current.review" class="review-results">
+        <summary>PRレビュー結果 · {{ current.review.title }} · 指摘 {{ current.review.findings.length }} 件</summary>
+        <h2>{{ current.review.title }}</h2>
+        <p class="review-commits">Base <code>{{ current.review.base.slice(0, 12) }}</code> → Head <code>{{ current.review.head.slice(0, 12) }}</code></p>
+        <p>{{ { planning: '計画作成中', diff: '差分を確認中', cross: 'ファイル間の整合性を確認中', priority: '未確認項目の優先度を確認中', done: '確認完了' }[current.review.phase] || current.review.phase }} · {{ current.review.steps.reduce((n, s) => n + s.files.filter(f => f.done).length, 0) }} / {{ current.review.totalFiles }} ファイルの処理済み（取得失敗・対象外を含む）</p>
+        <p v-if="current.review.scope === 'backend' || current.review.scope === 'frontend'">対象範囲: {{ current.review.scope === 'backend' ? 'バックエンド（frontend/ を除外）' : 'フロントエンド（backend/ を除外）' }}。共通の設定・ドキュメントも確認します。</p>
+        <details><summary>レビュー計画と処理状況</summary><div v-for="(step, i) in current.review.steps" :key="i" class="review-step"><strong>{{ i + 1 }}. {{ step.directory }} · {{ { pending: '未処理', running: '確認中', done: '処理済み', partial: '未確認あり', excluded: '指定により対象外' }[step.state] || step.state }}</strong><ul><li v-for="file in step.files" :key="file.index">{{ file.path || `一覧取得失敗（${file.index + 1}番目）` }} · {{ file.excluded ? '指定により対象外（AI確認なし）' : file.done ? '処理済み' : file.offset ? '差分の途中まで処理済み' : '未処理' }}</li></ul><p v-if="step.summary">{{ step.summary }}</p></div></details>
+        <ReviewDiffs :key="`${current.id}-${current.review.base}-${current.review.head}`" :session-id="current.id" :review="current.review" />
+        <h3>指摘 {{ current.review.findings.length }} 件</h3>
+        <p v-if="!current.review.findings.length">{{ current.review.phase === 'done' ? '確認した範囲では、保存された指摘はありません。' : '指摘は確認した区切りごとに表示されます。' }}</p>
+        <article v-for="(finding, i) in current.review.findings" :key="i" class="review-finding">
+         <h3><span class="finding-severity">{{ finding.severity }}</span> {{ finding.title }}</h3>
+         <a :href="findingLink(finding)" target="_blank" rel="noopener noreferrer">{{ finding.path }}{{ finding.line ? ':' + finding.line : '（行未特定）' }} · {{ finding.side === 'LEFT' ? '変更前' : '変更後' }}</a>
+         <p><strong>問題:</strong> {{ finding.problem }}</p><p><strong>影響:</strong> {{ finding.impact }}</p><FindingEvidence :evidence="finding.evidence" /><p v-if="finding.suggestion"><strong>修正案:</strong> {{ finding.suggestion }}</p>
+         <FindingIssue v-if="!config.demo && current.target.kind === 'pull' && current.target.number" :finding="finding" :repository="current.target.repository" :pull-number="current.target.number" :source-url="findingLink(finding)" />
+        </article>
+        <details v-if="current.review.unverified.length" open><summary>未確認の範囲・制限 {{ current.review.unverified.length }} 件</summary>
+         <p>優先度はレビューへの影響の推定です。未評価の項目も残します。追加調査では関連情報を再確認します。</p><p v-if="unverifiedItems.length < current.review.unverified.length" role="status">未確認項目の優先度を確認しています。中断した場合は保存済みの状態から再開できます。</p>
+         <ul class="unverified-list"><li v-for="entry in unverifiedItems" :key="entry.index"><p><strong class="priority-label">優先度 {{ priorityLabels[entry.priority?.level || 'unknown'] }}</strong> {{ entry.text }}</p><p v-if="entry.priority?.reason" class="priority-reason">{{ entry.priority.reason }}</p><button type="button" class="investigate-button" :disabled="running || !work.connected || (config.aiProvider !== 'demo' && !keyValid)" @click="investigate(entry.index)">{{ current.review.investigations?.[entry.index] ? 'もう一度調査' : '追加調査' }}</button><span v-if="current.review.pendingInvestigation === entry.index + 1" class="investigation-status">{{ running ? '調査中' : '調査が中断されています。保存済みの状態から再開できます。' }}</span><div v-if="current.review.investigations?.[entry.index]" class="investigation-result"><strong>追加調査の結果</strong><p>{{ current.review.investigations[entry.index] }}</p></div></li></ul>
+        </details>
        </details>
-      </details>
-      <div v-if="!current.messages.length" class="chat-empty"><span class="assistant-mark"><Icon name="grid" :size="24" /></span><h2>何から読み解きましょう？</h2><p>PRを取得したあと、「このPRをレビューして」と続けて依頼できます。</p><div class="suggestions"><button v-for="hint in hints" :key="hint" @click="selectHint(hint)">{{ hint }}<Icon name="chevron" :size="14" /></button></div></div>
-      <article v-for="message in current.messages" :key="message.id" class="message" :class="message.role"><div class="message-avatar"><Icon v-if="message.role === 'assistant'" name="grid" :size="16" /><Icon v-else-if="message.role === 'instruction'" name="branch" :size="16" /><span v-else>{{ login[0]?.toUpperCase() }}</span></div><div class="message-content"><div class="message-label">{{ message.role === 'assistant' ? 'AI Factory' : message.role === 'instruction' ? '追加指示' : 'あなた' }}<span v-if="message.role === 'instruction'" class="instruction-state">{{ message.applied ? '反映済み' : '受付済み・次の区切りで反映' }}</span></div><div class="message-text">{{ message.text }}</div></div></article>
+       <article v-else-if="entry.kind === 'message'" class="message" :class="entry.message.role"><div class="message-avatar"><Icon v-if="entry.message.role === 'assistant'" name="grid" :size="16" /><Icon v-else-if="entry.message.role === 'instruction'" name="branch" :size="16" /><span v-else>{{ login[0]?.toUpperCase() }}</span></div><div class="message-content"><div class="message-label">{{ entry.message.role === 'assistant' ? 'AI Factory' : entry.message.role === 'instruction' ? '追加指示' : 'あなた' }}<span v-if="entry.message.role === 'instruction'" class="instruction-state">{{ entry.message.applied ? '反映済み' : '受付済み・次の区切りで反映' }}</span></div><div class="message-text">{{ entry.message.text }}</div></div></article>
+      </template>
       <SourceFiles v-if="!current.review" :key="current.id" :session="current" @open="openFile" @clear="closeFile" />
       <div v-if="running" class="progress-message"><span class="loading-dots">•••</span>{{ current.state === 'stopping' ? '停止を要求しています…' : work.progress || '処理を開始しています…' }}</div>
      </div>

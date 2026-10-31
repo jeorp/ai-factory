@@ -8,6 +8,7 @@ type ReviewPriority struct {
 }
 
 type Review struct {
+	RequestMessageID     string                    `json:"requestMessageId,omitempty"`
 	Scope                string                    `json:"scope,omitempty"`
 	Title                string                    `json:"title"`
 	Body                 string                    `json:"body"`

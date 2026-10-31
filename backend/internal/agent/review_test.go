@@ -71,6 +71,7 @@ func TestReviewSplitsLargePatchAndResumesSavedCursor(t *testing.T) {
 	lines := strings.Repeat("+new content\n", 8000)
 	f.files[0].Patch = "@@ -0,0 +1,8000 @@\n" + lines
 	s := reviewSession()
+	s.Messages[0].ID = "review-request"
 	interrupted := errors.New("save connection lost")
 	var saved Checkpoint
 	calls := 0
@@ -105,12 +106,16 @@ func TestReviewSplitsLargePatchAndResumesSavedCursor(t *testing.T) {
 		t.Fatalf("checkpoint did not stop: %v calls=%d", err, calls)
 	}
 	offset := saved.Review.Steps[0].Files[0].Offset
+	if saved.Review.RequestMessageID != "review-request" {
+		t.Fatal("review request anchor not saved")
+	}
 	raw, _ := json.Marshal(saved.Review)
 	if strings.Contains(string(raw), "new content") {
 		t.Fatal("patch persisted")
 	}
 	s.Review = saved.Review
 	s.Metrics = saved.Metrics
+	s.Messages = append(s.Messages, domain.Message{ID: "later-directive", Role: "instruction", Text: "Check compatibility"})
 	var final Checkpoint
 	if err := r.Run(context.Background(), Input{Session: s}, func(cp Checkpoint) error { final = cp; return nil }); err != nil {
 		t.Fatal(err)
@@ -120,6 +125,9 @@ func TestReviewSplitsLargePatchAndResumesSavedCursor(t *testing.T) {
 	}
 	if final.Review.Phase != "done" || !final.Review.Steps[0].Files[0].Done || final.Answer == "" {
 		t.Fatalf("did not finish: %+v", final)
+	}
+	if final.Review.RequestMessageID != "review-request" {
+		t.Fatal("review request anchor moved on resume")
 	}
 	if final.Metrics.InputTokens != calls*10 {
 		t.Fatal("usage lost on resume")

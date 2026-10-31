@@ -26,8 +26,8 @@ onUnmounted(() => { active = false; controller.abort(); });
 </script>
 
 <template>
- <section v-if="files.length" class="diffs" aria-label="ベースからの差分">
-  <h3>ベースからの差分</h3>
+ <details v-if="files.length" class="diffs" aria-label="ベースからの差分" open>
+  <summary>ベースからの差分 · {{ files.length }} ファイル</summary>
   <p>レビュー対象の Base → Head の変更を表示します。GitHub が差分を返さないファイルや、途中までの差分もあります。</p>
   <div v-for="file in files" :key="file.index" class="diff-file">
    <button class="diff-toggle" type="button" :aria-expanded="selected === file.index" @click="open(file.index)"><span>{{ file.path }}</span><small>{{ file.status }} · {{ selected === file.index ? '閉じる' : '差分を見る' }}</small></button>
@@ -41,7 +41,7 @@ onUnmounted(() => { active = false; controller.abort(); });
     </template>
    </template>
   </div>
- </section>
+ </details>
 </template>
 
 <style scoped>

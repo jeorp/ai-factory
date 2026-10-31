@@ -14,6 +14,7 @@ export const busy = (s?: Session | null) => !!s && ['running', 'accepted', 'stop
 
 export interface Finding { severity: 'P0' | 'P1' | 'P2' | 'P3'; path: string; line: number; side: 'LEFT' | 'RIGHT'; title: string; problem: string; impact: string; evidence: string; suggestion: string }
 export interface Review {
+ requestMessageId?: string;
  scope?: 'all' | 'backend' | 'frontend'; title: string; body: string; base: string; head: string; totalFiles: number; phase: string;
  steps: { directory: string; state: string; summary: string; files: { path: string; previousPath: string; status: string; index: number; offset: number; done: boolean; excluded?: boolean }[] }[];
  findings: Finding[]; unverified: string[]; investigations?: Record<string, string>; pendingInvestigation?: number; priorities?: Record<string, { level: 'high' | 'medium' | 'low' | 'unknown'; reason: string }>; priorityCursor?: number; crossCursor: number; crossSummary: string;
