@@ -567,9 +567,9 @@ func (run *implementRun) publish(ctx context.Context) error {
 	}
 	impl.Status = "published"
 	if impl.ExpectedHead != "" {
-		run.cp.Answer = fmt.Sprintf("ブランチ `%s` に追加の変更をコミットしました（%s）。\n%s", impl.Branch, impl.Commit[:7], impl.PullURL)
+		run.cp.Answer = fmt.Sprintf("ブランチ %s に追加の変更をコミットしました（%s）。\n%s", impl.Branch, impl.Commit[:7], impl.PullURL)
 	} else {
-		run.cp.Answer = fmt.Sprintf("Draft PRを作成しました: %s\n\nブランチ: `%s`\nCIの結果を確認してください。アプリ内ではコードやテストを実行していません。", impl.PullURL, impl.Branch)
+		run.cp.Answer = fmt.Sprintf("Draft PRを作成しました: %s\n\nブランチ: %s\nCIの結果を確認してください。アプリ内ではコードやテストを実行していません。", impl.PullURL, impl.Branch)
 	}
 	return run.save(ctx, "PRを作成しました")
 }
@@ -637,15 +637,15 @@ func actionLabel(a string) string {
 func formatPlan(impl *domain.Implementation) string {
 	p := impl.Plan
 	var b strings.Builder
-	b.WriteString("実装計画を作成しました（ベース: `" + impl.BaseBranch + "` " + impl.BaseCommit[:7] + "）。\n\n" + p.Summary + "\n\n**変更するファイル**\n")
+	b.WriteString("実装計画を作成しました（ベース: " + impl.BaseBranch + " " + impl.BaseCommit[:7] + "）。\n\n" + p.Summary + "\n\n【変更するファイル】\n")
 	for _, f := range p.Files {
-		b.WriteString(fmt.Sprintf("- `%s`（%s）: %s\n", f.Path, actionLabel(f.Action), f.Approach))
+		b.WriteString(fmt.Sprintf("- %s（%s）: %s\n", f.Path, actionLabel(f.Action), f.Approach))
 	}
 	list := func(title string, items []string) {
 		if len(items) == 0 {
 			return
 		}
-		b.WriteString("\n**" + title + "**\n")
+		b.WriteString("\n【" + title + "】\n")
 		for _, v := range items {
 			b.WriteString("- " + v + "\n")
 		}
@@ -661,10 +661,10 @@ func formatChanges(impl *domain.Implementation) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("%dファイルの変更を作成しました。差分を確認し、ブランチ名・PRタイトル・本文を確認してからPRを作成してください。\n\n", len(impl.Changes)))
 	for _, c := range impl.Changes {
-		b.WriteString(fmt.Sprintf("- `%s`（%s）\n", c.Path, actionLabel(c.Action)))
+		b.WriteString(fmt.Sprintf("- %s（%s）\n", c.Path, actionLabel(c.Action)))
 	}
 	if len(impl.Unverified) > 0 {
-		b.WriteString("\n**未確認事項**\n")
+		b.WriteString("\n【未確認事項】\n")
 		for _, u := range impl.Unverified {
 			b.WriteString("- " + u + "\n")
 		}

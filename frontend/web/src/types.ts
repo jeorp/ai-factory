@@ -2,7 +2,7 @@ export interface Source { label: string; url: string }
 export interface Message { id: string; role: 'user' | 'assistant' | 'instruction'; text: string; at: string; applied: boolean }
 export interface Session {
  id: string; title: string; target: { repository: string; commit: string; kind: string; number: number }; model: string;
- runKind?: string; activePullRequest?: number; review?: Review;
+ runKind?: string; activePullRequest?: number; review?: Review; implementation?: Implementation;
  state: string; messages: Message[]; summary: string; sources: Source[]; limitations: string[];
  metrics: { inputTokens: number; outputTokens: number; lastInputTokens?: number; lastOutputTokens?: number; hasLastUsage?: boolean; maxInputBytes: number; fetchedBytes: number; toolCalls: number; cacheHits: number; durationMs: number; heapPeakBytes: number };
  updatedAt: string; expiresAt: string;
@@ -18,4 +18,14 @@ export interface Review {
  scope?: 'all' | 'backend' | 'frontend'; title: string; body: string; base: string; head: string; totalFiles: number; phase: string;
  steps: { directory: string; state: string; summary: string; files: { path: string; previousPath: string; status: string; index: number; offset: number; done: boolean; excluded?: boolean }[] }[];
  findings: Finding[]; unverified: string[]; investigations?: Record<string, string>; pendingInvestigation?: number; priorities?: Record<string, { level: 'high' | 'medium' | 'low' | 'unknown'; reason: string }>; priorityCursor?: number; crossCursor: number; crossSummary: string;
+}
+
+export interface PlannedFile { path: string; action: 'create' | 'update' | 'delete'; approach: string }
+export interface Implementation {
+ request: string; baseBranch: string; baseCommit: string;
+ status: 'planning' | 'plan_ready' | 'editing' | 'ready' | 'publishing' | 'published';
+ plan?: { summary: string; files: PlannedFile[]; outOfScope: string[] | null; risks: string[] | null; tests: string[] | null };
+ steps?: { files: string[] }[]; nextStep: number;
+ changes: { path: string; action: PlannedFile['action']; bytes: number }[]; unverified: string[]; summary: string; version: number;
+ branch?: string; title?: string; body?: string; commit?: string; refUpdated?: boolean; pullNumber?: number; pullUrl?: string; expectedHead?: string;
 }

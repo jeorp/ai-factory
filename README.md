@@ -1,6 +1,6 @@
 # AI Factory
 
-GitHubの情報を読み取り専用で参照し、PRの差分を分割レビューするチャットアプリです。[AIファクトリー PRレビュー MVP 仕様書](https://chatgpt.com/space/page_fac25bd05bb48191a477ebdc827f840f)の第一段階（GitHubチャット）と第二段階のPR取得・レビュー計画・分割確認・全体照合・結果表示を実装しています。
+GitHubの情報を参照し、PRの差分を分割レビューし、依頼に応じて実装したDraft PRを確認後に作成するチャットアプリです。[AIファクトリー PRレビュー MVP 仕様書](https://chatgpt.com/space/page_fac25bd05bb48191a477ebdc827f840f)の第一段階（GitHubチャット）と第二段階のPR取得・レビュー計画・分割確認・全体照合・結果表示を実装しています。
 
 `../system-design-skill-developer` に合わせた Vue 3 / TypeScript / Vue Router / Pinia、Go、Firebase Auth / Firestore、Docker Composeを使用します。AIはOpenAIまたはGemini Developer APIを選択できます。WebSocketと認証Cookieを同じOriginで扱うため、公開時はVueのビルド成果物もGo APIと同じCloud Runサービスから配信します。
 
@@ -31,6 +31,7 @@ npm run dev
 - GitHub App OAuth（state・PKCE）、Firebaseカスタムトークンによる本人認証。
 - GitHub Appに許可したリポジトリの一覧、リポジトリ・PR・Issue URLからセッション作成。
 - 読み取り専用GitHub MCP接続。サーバーが対象リポジトリ・コミット・操作を固定。
+- 実装・PR作成: チャットの依頼から実装計画 → 利用者の承認 → 変更作成 → 差分確認 → 新しい `ai-factory/` ブランチへのDraft PR作成。書き込みはサーバー側の専用処理だけが行い、コードやテストは実行しない（検証は対象リポジトリのCI）。
 - OpenAI Responses APIの構造化出力を使った段階的な情報取得と回答。
 - WebSocketでの質問・追加指示・停止、進捗表示、切断時の中断、再接続後の会話復元と手動再開。
 - 取得結果と保存履歴の分離、直近の会話＋要点へのコンテキスト制限、同一実行内の重複取得抑制。
