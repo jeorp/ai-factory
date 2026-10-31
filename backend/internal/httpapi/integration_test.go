@@ -338,8 +338,20 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 		t.Fatal("stopped review lost its plan")
 	}
 	close(ai.Gate)
+	// Investigating an unverified item must not make the interrupted review unresumable.
+	stoppedIndex := 0
+	ws.WriteJSON(command{Type: "investigate", ID: randomID(), UnverifiedIndex: &stoppedIndex, APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	midInvestigation := wait(ws, func(s domain.Session) bool {
+		return s.State == "done" && s.RunKind == "investigation" && s.Review != nil && s.Review.Investigations["0"] != ""
+	})
+	if midInvestigation.Review.Phase != "diff" {
+		t.Fatalf("investigation changed the interrupted review phase: %s", midInvestigation.Review.Phase)
+	}
 	ws.WriteJSON(command{Type: "resume", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
-	reviewed := wait(ws, func(s domain.Session) bool { return s.State == "done" })
+	reviewed := wait(ws, func(s domain.Session) bool { return s.State == "done" && s.Review != nil && s.Review.Phase == "done" })
+	if reviewed.RunKind != "review" || reviewed.Review.Investigations["0"] != midInvestigation.Review.Investigations["0"] {
+		t.Fatal("resumed review lost its kind or the investigation result")
+	}
 	if reviewed.Review == nil || reviewed.Review.Phase != "done" || reviewed.Target.Commit != reviewed.Review.Head || reviewed.Review.CrossCursor != 2 {
 		t.Fatal("review did not resume to completion")
 	}

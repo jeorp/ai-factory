@@ -56,3 +56,9 @@ type ReviewResult struct {
 	Findings   []Finding `json:"findings"`
 	Unverified []string  `json:"unverified"`
 }
+
+// ReviewUnfinished reports whether a pull request review stopped before its
+// final phase, independently of later chat or investigation runs.
+func (s Session) ReviewUnfinished() bool {
+	return s.Target.Kind == "pull" && s.Review != nil && s.Review.Phase != "" && s.Review.Phase != "done"
+}

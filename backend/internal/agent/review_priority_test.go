@@ -69,3 +69,73 @@ func TestReviewPrioritizesBeforeCompletionAndResumes(t *testing.T) {
 		t.Fatalf("priority was not persisted: %+v", final.Review)
 	}
 }
+
+func TestReviewAppliesInstructionQueuedDuringPriorityBeforeCompletion(t *testing.T) {
+	f := fixture()
+	s := reviewSession()
+	queue := make(chan domain.Message, 1)
+	priorityCalls := 0
+	sawInstruction := false
+	r := Runner{GitHub: f, AI: providerFunc(func(_ context.Context, _ string, _ string, input string) (Decision, Usage, error) {
+		if strings.Contains(input, `"priorityTask":`) {
+			priorityCalls++
+			if priorityCalls == 1 {
+				// The directive arrives while the priority model call is in flight.
+				queue <- domain.Message{ID: "late-directive", Role: "instruction", Text: "認証の項目を優先"}
+			} else if strings.Contains(input, "認証の項目を優先") {
+				sawInstruction = true
+			}
+			var body struct {
+				Items []priorityItem `json:"priorityTask"`
+			}
+			_ = json.Unmarshal([]byte(input), &body)
+			d := Decision{}
+			for _, item := range body.Items {
+				d.Priorities = append(d.Priorities, PriorityAssessment{Index: item.Index, Level: "medium", Reason: "確認が必要"})
+			}
+			return d, Usage{}, nil
+		}
+		return result(), Usage{}, nil
+	})}
+	var final Checkpoint
+	if err := r.Run(context.Background(), Input{Session: s, Instructions: queue}, func(cp Checkpoint) error { final = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if priorityCalls != 2 || !sawInstruction {
+		t.Fatalf("late directive was not applied to the priority assessment: calls=%d saw=%v", priorityCalls, sawInstruction)
+	}
+	if final.Review.Phase != "done" || len(final.Applied) != 1 || final.Applied[0] != "late-directive" {
+		t.Fatalf("directive not marked applied at completion: %+v %v", final.Review.Phase, final.Applied)
+	}
+}
+
+func TestReviewPriorityFailureDoesNotLoopOnUnappliedInstruction(t *testing.T) {
+	f := fixture()
+	s := reviewSession()
+	queue := make(chan domain.Message, 1)
+	priorityCalls := 0
+	r := Runner{GitHub: f, AI: providerFunc(func(_ context.Context, _ string, _ string, input string) (Decision, Usage, error) {
+		if strings.Contains(input, `"priorityTask":`) {
+			priorityCalls++
+			if priorityCalls == 1 {
+				queue <- domain.Message{ID: "late-directive", Role: "instruction", Text: "認証の項目を優先"}
+			}
+			return Decision{}, Usage{}, errors.New("provider_failed")
+		}
+		return result(), Usage{}, nil
+	})}
+	var final Checkpoint
+	if err := r.Run(context.Background(), Input{Session: s, Instructions: queue}, func(cp Checkpoint) error { final = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if priorityCalls != 2 || final.Review.Phase != "done" || len(final.Applied) != 0 {
+		t.Fatalf("unexpected retry behavior: calls=%d phase=%s applied=%v", priorityCalls, final.Review.Phase, final.Applied)
+	}
+	found := false
+	for _, u := range final.Review.Unverified {
+		found = found || strings.Contains(u, "追加指示の一部は未適用")
+	}
+	if !found {
+		t.Fatalf("unapplied directive not reported: %v", final.Review.Unverified)
+	}
+}

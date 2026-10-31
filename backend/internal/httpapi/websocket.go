@@ -316,7 +316,10 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					send("session", session)
 					continue
 				}
-				if cmd.Type == "resume" && ((len(session.Messages) == 0 && session.RunKind != "review") || session.State == "done") {
+				// A finished chat or investigation must not hide a review that was
+				// interrupted earlier; resume returns to that review's saved cursor.
+				resumeReview := cmd.Type == "resume" && session.State == "done" && session.ReviewUnfinished()
+				if cmd.Type == "resume" && !resumeReview && ((len(session.Messages) == 0 && session.RunKind != "review") || session.State == "done") {
 					problem("nothing_to_resume")
 					continue
 				}
@@ -354,6 +357,9 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 						session.Review.PendingInvestigation = 0
 					}
 					session.RunKind = "chat"
+				}
+				if resumeReview {
+					session.RunKind = "review"
 				}
 				session.State = "accepted"
 				if save() != nil {

@@ -344,12 +344,28 @@ func buildContext(s domain.Session, summary string, instructions []domain.Messag
 	if budget != nil {
 		payload["chatBudget"] = budget
 	}
+	findings := buildReviewFindingsContext(s)
+	if findings != nil {
+		payload["reviewFindings"] = findings
+	}
 	body, _ := json.Marshal(payload)
+	// Shrink the saved-findings reference before dropping fetched evidence; the
+	// index survives longest so the model can still name and re-read a finding.
+	if len(body) > domain.MaxInputBytes && findings != nil {
+		findings.Details = nil
+		findings.Omitted = "入力上限のため指摘の詳細を省略しました。" + findings.Omitted
+		payload["reviewFindings"] = findings
+		body, _ = json.Marshal(payload)
+	}
 	// Drop oldest evidence to enforce a hard serialized-input cap; explicitly record the omission.
 	for len(body) > domain.MaxInputBytes && len(ev) > 0 {
 		ev = ev[1:]
 		payload["evidence"] = ev
 		payload["unverified"] = domain.Clip(limitText, 1024) + " 古い取得情報を入力上限のため省略しました。必要なら残りの取得枠内で再取得してください。"
+		body, _ = json.Marshal(payload)
+	}
+	if len(body) > domain.MaxInputBytes && findings != nil {
+		delete(payload, "reviewFindings")
 		body, _ = json.Marshal(payload)
 	}
 	return string(body)

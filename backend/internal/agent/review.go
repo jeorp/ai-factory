@@ -67,6 +67,45 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			instructions = append(instructions, m)
 		}
 	}
+	drainInstructions := func() {
+		for {
+			select {
+			case m, open := <-in.Instructions:
+				if !open {
+					return
+				}
+				instructions = append(instructions, m)
+			default:
+				return
+			}
+		}
+	}
+	pinnedInstructions := func() string {
+		pinned := ""
+		for _, m := range instructions {
+			pinned += m.Text + "\n"
+		}
+		return pinned
+	}
+	markApplied := func() {
+		applied = nil
+		for _, m := range instructions {
+			applied = append(applied, m.ID)
+		}
+	}
+	unappliedInstructions := func() []string {
+		done := map[string]bool{}
+		for _, id := range applied {
+			done[id] = true
+		}
+		pending := []string{}
+		for _, m := range instructions {
+			if !m.Applied && !done[m.ID] {
+				pending = append(pending, m.ID)
+			}
+		}
+		return pending
+	}
 	save := func(progress string) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -688,10 +727,13 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 		}
 	}
 	if review.Phase == "priority" {
+		reassessed := map[string]bool{}
+	priority:
 		for review.PriorityCursor < len(review.Unverified) {
 			if budgetExhausted() {
 				return errors.New("review_run_budget_resume")
 			}
+			drainInstructions()
 			end := review.PriorityCursor + 15
 			if end > len(review.Unverified) {
 				end = len(review.Unverified)
@@ -700,7 +742,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			for i := review.PriorityCursor; i < end; i++ {
 				items = append(items, priorityItem{Index: i, Text: review.Unverified[i]})
 			}
-			payload, _ := json.Marshal(map[string]any{"priorityTask": items, "title": domain.Clip(review.Title, 500), "body": domain.Clip(review.Body, 1500), "summary": domain.Clip(review.CrossSummary, 1500)})
+			payload, _ := json.Marshal(map[string]any{"priorityTask": items, "title": domain.Clip(review.Title, 500), "body": domain.Clip(review.Body, 1500), "summary": domain.Clip(review.CrossSummary, 1500), "instructions": pinnedInstructions()})
 			if err := save("未確認項目の優先度を確認しています"); err != nil {
 				return err
 			}
@@ -709,6 +751,9 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			d, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, string(payload))
 			if err == nil && !validPriorityDecision(string(payload), d) {
 				err = errors.New("invalid_priority_result")
+			}
+			if err == nil {
+				markApplied()
 			}
 			logger.Info("model_call_finished", "step", modelCalls, "review_phase", "priority", "outcome", outcome(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 			runInputTokens += usage.InputTokens
@@ -738,6 +783,26 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			if err := save("未確認項目の優先度を保存しました"); err != nil {
 				return err
 			}
+		}
+		// Instructions accepted during the last assessment must not be left
+		// unapplied when the review completes: re-assess with them included.
+		drainInstructions()
+		retry := false
+		for _, id := range unappliedInstructions() {
+			if !reassessed[id] {
+				reassessed[id], retry = true, true
+			}
+		}
+		if len(unappliedInstructions()) > 0 && !retry {
+			// The assessment itself failed; keep the directive visible as unapplied.
+			limit("優先度評価に失敗したため、追加指示の一部は未適用です。必要ならレビュー後のチャットで再度指示してください。")
+		}
+		if retry && len(review.Unverified) > 0 {
+			review.PriorityCursor = 0
+			if err := save("追加指示を反映して未確認項目の優先度を再確認します"); err != nil {
+				return err
+			}
+			goto priority
 		}
 		review.Phase = "done"
 	}
