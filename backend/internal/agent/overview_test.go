@@ -48,3 +48,47 @@ func TestOverviewSavedOnceAndIncludedInContext(t *testing.T) {
 		t.Fatalf("overview was not reused: reads=%d calls=%d", reads, calls)
 	}
 }
+
+type overviewTestCache struct {
+	saved *domain.RepositoryOverview
+	reads int
+}
+
+func (f *overviewTestCache) Read(_ context.Context, _ string, _ domain.Target, _ github.Read) (string, domain.Source, int, error) {
+	f.reads++
+	return "backend: API", domain.Source{URL: "https://github.com/a/b/blob/sha/README.md"}, 12, nil
+}
+func (f *overviewTestCache) GetOverview(_ context.Context, _ string, target domain.Target) (*domain.RepositoryOverview, bool) {
+	return f.saved, f.saved != nil && f.saved.Commit == target.Commit
+}
+func (f *overviewTestCache) PutOverview(_ context.Context, _ domain.Target, value domain.RepositoryOverview) {
+	f.saved = &value
+}
+func TestOverviewReusedAcrossSessions(t *testing.T) {
+	gh := &overviewTestCache{}
+	overviewCalls := 0
+	r := Runner{GitHub: gh, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
+		if strings.Contains(input, `"overviewTask"`) {
+			overviewCalls++
+			return Decision{Summary: "backend: API"}, Usage{}, nil
+		}
+		return Decision{Answer: "done"}, Usage{}, nil
+	})}
+	for i := 0; i < 2; i++ {
+		s := baseSession()
+		s.OverviewPending = true
+		var saved Checkpoint
+		if err := r.Run(context.Background(), Input{Session: s}, func(cp Checkpoint) error { saved = cp; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if saved.RepositoryOverview == nil || saved.RepositoryOverview.Text != "backend: API" {
+			t.Fatal("missing overview")
+		}
+		if i == 1 && saved.Metrics.CacheHits != 1 {
+			t.Fatal("cache hit not counted")
+		}
+	}
+	if gh.reads != 1 || overviewCalls != 1 {
+		t.Fatalf("repeated work: reads=%d overview calls=%d", gh.reads, overviewCalls)
+	}
+}

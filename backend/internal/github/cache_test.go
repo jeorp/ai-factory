@@ -50,3 +50,26 @@ func TestMutableReadsNotCached(t *testing.T) {
 		t.Fatalf("mutable read cached: %v", err)
 	}
 }
+
+func TestOverviewCacheAuthorizationAndCommit(t *testing.T) {
+	ctx := context.Background()
+	cache := memoryReadCache{}
+	c := Client{Demo: true, Cache: cache}
+	target := domain.Target{Repository: "demo/ai-factory", Commit: strings.Repeat("a", 40)}
+	overview := domain.RepositoryOverview{Text: "backend: API", Commit: target.Commit}
+	c.PutOverview(ctx, target, overview)
+	got, ok := c.GetOverview(ctx, "", target)
+	if !ok || *got != overview {
+		t.Fatal("overview not reused")
+	}
+	other := target
+	other.Commit = strings.Repeat("b", 40)
+	if _, ok = c.GetOverview(ctx, "", other); ok {
+		t.Fatal("different commit reused")
+	}
+	other = target
+	other.Repository = "other/repo"
+	if _, ok = c.GetOverview(ctx, "", other); ok {
+		t.Fatal("unauthorized cache access")
+	}
+}

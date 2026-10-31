@@ -9,12 +9,30 @@ import (
 	"ai-factory/backend/internal/github"
 )
 
+type overviewCache interface {
+	GetOverview(context.Context, string, domain.Target) (*domain.RepositoryOverview, bool)
+	PutOverview(context.Context, domain.Target, domain.RepositoryOverview)
+}
+
 // initializeOverview uses the session's original commit. Only the compact result is saved
 // in the session; the bounded README excerpt is sent to the model once.
 func (r *Runner) initializeOverview(ctx context.Context, in *Input, emit func(Checkpoint) error) error {
 	cp := Checkpoint{RepositoryOverview: in.Session.RepositoryOverview, OverviewPending: true, Summary: in.Session.Summary, Sources: append([]domain.Source{}, in.Session.Sources...), Limitations: append([]string{}, in.Session.Limitations...), Metrics: in.Session.Metrics, Progress: "READMEからリポジトリの概要を整理しています"}
 	if err := emit(cp); err != nil {
 		return err
+	}
+	if cache, ok := r.GitHub.(overviewCache); ok {
+		if overview, hit := cache.GetOverview(ctx, in.GitHubToken, in.Session.Target); hit && !(in.Key != "" && strings.Contains(overview.Text, in.Key)) && !(in.GitHubToken != "" && strings.Contains(overview.Text, in.GitHubToken)) {
+			_, _, source, err := github.Tool(in.Session.Target, github.Read{Kind: "file", Path: "README.md"})
+			if err == nil {
+				cp.RepositoryOverview = overview
+				cp.Metrics.CacheHits++
+				if !containsSource(cp.Sources, source.URL) {
+					cp.Sources = append(cp.Sources, source)
+				}
+				return finishOverview(in, cp, emit)
+			}
+		}
 	}
 	content, source, n, err := r.GitHub.Read(ctx, in.GitHubToken, in.Session.Target, github.Read{Kind: "file", Path: "README.md"})
 	cp.Metrics.ToolCalls++
@@ -42,6 +60,9 @@ func (r *Runner) initializeOverview(ctx context.Context, in *Input, emit func(Ch
 		summary := strings.TrimSpace(decision.Summary)
 		if aiErr == nil && summary != "" && !(in.Key != "" && strings.Contains(summary, in.Key)) && !(in.GitHubToken != "" && strings.Contains(summary, in.GitHubToken)) {
 			cp.RepositoryOverview = &domain.RepositoryOverview{Text: domain.Clip(summary, 1400), Commit: in.Session.Target.Commit, Truncated: truncated || len(summary) > 1400}
+			if cache, ok := r.GitHub.(overviewCache); ok {
+				cache.PutOverview(ctx, in.Session.Target, *cp.RepositoryOverview)
+			}
 			if !containsSource(cp.Sources, source.URL) {
 				cp.Sources = append(cp.Sources, source)
 			}
@@ -50,6 +71,10 @@ func (r *Runner) initializeOverview(ctx context.Context, in *Input, emit func(Ch
 	if cp.RepositoryOverview == nil {
 		cp.Limitations = append(cp.Limitations, "READMEの概要を準備できませんでした。必要に応じて調査します。")
 	}
+	return finishOverview(in, cp, emit)
+}
+
+func finishOverview(in *Input, cp Checkpoint, emit func(Checkpoint) error) error {
 	cp.OverviewPending = false
 	if err := emit(cp); err != nil {
 		return err
