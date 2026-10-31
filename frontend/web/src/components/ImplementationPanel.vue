@@ -41,10 +41,11 @@ onUnmounted(() => { active = false; controller.abort(); });
 
 <template>
  <section class="implementation" aria-label="実装とPR作成">
-  <header><strong>実装とPR作成</strong><span class="impl-status">{{ statusLabels[impl.status] || impl.status }}<template v-if="impl.status === 'editing' && progress"> · {{ progress }}</template></span></header>
+  <header><strong>実装とPR作成</strong><span class="impl-status">{{ impl.status === 'plan_ready' && !impl.plan ? '依頼内容の確認待ち' : statusLabels[impl.status] || impl.status }}<template v-if="impl.status === 'editing' && progress"> · {{ progress }}</template></span></header>
   <p class="impl-request">{{ impl.request }}</p>
   <p v-if="impl.baseCommit" class="impl-base">ベース <code>{{ impl.baseBranch }}</code> <code>{{ impl.baseCommit.slice(0, 12) }}</code><template v-if="followUp"> · 作成済みのブランチ <code>{{ impl.branch }}</code> に追加コミット</template></p>
 
+  <p v-if="impl.status === 'plan_ready' && !impl.plan" class="impl-question" role="status">計画を作る前に確認したいことがあります。チャットの最後のメッセージの質問に、メッセージの種類「実装を依頼」で答えると計画を作り直します。</p>
   <template v-if="impl.plan">
    <h3>実装計画</h3>
    <p class="impl-summary">{{ impl.plan.summary }}</p>
@@ -96,5 +97,5 @@ onUnmounted(() => { active = false; controller.abort(); });
 .diff-file{border-top:1px solid #e2e8e4}.diff-toggle{display:flex;justify-content:space-between;gap:12px;width:100%;padding:11px 0;text-align:left;border:0;background:none;color:#315e31;cursor:pointer}.diff-toggle small{flex-shrink:0;color:#63766b}
 .patch-scroll{max-height:420px;overflow:auto;border:1px solid #d1d9e0;border-radius:6px;background:#f6f8fa}.patch-scroll pre{margin:0;min-width:max-content;font:12px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:4}.patch-scroll span{display:block;padding:0 12px;white-space:pre;min-height:1.7em}.patch-scroll i{font-style:normal;display:inline-block;width:1.4em;color:#8a9a90}.patch-scroll .add{background:#dafbe1;color:#116329}.patch-scroll .remove{background:#ffebe9;color:#82071e}.patch-scroll .skip{background:#ddf4ff;color:#0550ae}
 .impl-publish{display:grid;gap:10px;margin-top:14px}.impl-publish label{display:grid;gap:4px;font-size:13px}.impl-publish input,.impl-publish textarea{font:inherit;padding:8px;border:1px solid #cdd8d1;border-radius:6px}.impl-publish .consent{display:flex;gap:8px;align-items:flex-start}
-.impl-done{padding:10px;background:#e8f3ea;border-radius:6px}
+.impl-question{padding:10px;background:#fff8e6;border-radius:6px;font-size:13px}.impl-done{padding:10px;background:#e8f3ea;border-radius:6px}
 </style>
