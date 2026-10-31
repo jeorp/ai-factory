@@ -108,6 +108,7 @@ type Session struct {
 	ReviewScope        string              `json:"reviewScope,omitempty"`
 	ActivePullRequest  int                 `json:"activePullRequest"`
 	Review             *Review             `json:"review,omitempty"`
+	Implementation     *Implementation     `json:"implementation,omitempty"`
 	State              string              `json:"state"`
 	Messages           []Message           `json:"messages"`
 	Summary            string              `json:"summary"`
@@ -131,6 +132,14 @@ func (s *Session) Normalize() {
 	}
 	if s.Limitations == nil {
 		s.Limitations = []string{}
+	}
+	if i := s.Implementation; i != nil {
+		if i.Changes == nil {
+			i.Changes = []ChangeSummary{}
+		}
+		if i.Unverified == nil {
+			i.Unverified = []string{}
+		}
 	}
 	if r := s.Review; r != nil {
 		if r.Steps == nil {

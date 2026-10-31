@@ -726,14 +726,20 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			return err
 		}
 	}
+	unappliedNote := ""
 	if review.Phase == "priority" {
 		reassessed := map[string]bool{}
+		// IDs of the directives included in the latest priority request.
+		attempted := map[string]bool{}
 	priority:
 		for review.PriorityCursor < len(review.Unverified) {
 			if budgetExhausted() {
 				return errors.New("review_run_budget_resume")
 			}
 			drainInstructions()
+			for _, m := range instructions {
+				attempted[m.ID] = true
+			}
 			end := review.PriorityCursor + 15
 			if end > len(review.Unverified) {
 				end = len(review.Unverified)
@@ -786,16 +792,21 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 		}
 		// Instructions accepted during the last assessment must not be left
 		// unapplied when the review completes: re-assess with them included.
+		// A directive that was already sent with a failed request is not a late
+		// arrival; re-running every batch would only repeat the failure.
 		drainInstructions()
 		retry := false
+		failedDirective := false
 		for _, id := range unappliedInstructions() {
-			if !reassessed[id] {
+			switch {
+			case !attempted[id] && !reassessed[id]:
 				reassessed[id], retry = true, true
+			default:
+				failedDirective = true
 			}
 		}
-		if len(unappliedInstructions()) > 0 && !retry {
-			// The assessment itself failed; keep the directive visible as unapplied.
-			limit("優先度評価に失敗したため、追加指示の一部は未適用です。必要ならレビュー後のチャットで再度指示してください。")
+		if failedDirective && !retry {
+			unappliedNote = "優先度評価に失敗したため、追加指示の一部は未適用です。必要ならチャットで再度指示してください。"
 		}
 		if retry && len(review.Unverified) > 0 {
 			review.PriorityCursor = 0
@@ -815,6 +826,9 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 	}
 	cp.Summary = domain.Clip(cp.Summary, 2048)
 	cp.Answer = fmt.Sprintf("PR #%d のレビューを完了しました。指摘 %d 件。計画・指摘・未確認範囲をレビュー結果に表示しています。対象ヘッド: %s。実行・テストによる検証は行っていません。", in.Session.Target.Number, len(review.Findings), review.Head[:12])
+	if unappliedNote != "" {
+		cp.Answer += "\n" + unappliedNote
+	}
 	return save("レビュー結果を保存しました")
 }
 

@@ -28,6 +28,10 @@ type Decision struct {
 	Review      *domain.ReviewResult `json:"review"`
 	StartReview *ReviewRequest       `json:"startReview"`
 	Priorities  []PriorityAssessment `json:"priorities,omitempty"`
+	// Implementation workflow (specification section 13).
+	StartImplementation *ImplementRequest          `json:"startImplementation"`
+	Plan                *domain.ImplementationPlan `json:"plan"`
+	Implementation      *ImplementResult           `json:"implementation"`
 }
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`
@@ -56,10 +60,14 @@ func (p *OpenAI) Next(ctx context.Context, key, model, input string) (Decision, 
 		}}}},
 	}}
 	addReviewSchema(schema)
+	addImplementationSchema(schema)
 	instructions := decisionInstructions(schema, input)
 	maxOutput := 4096
 	if reviewWorkflow(input) {
 		maxOutput = 8192
+	}
+	if implementWorkflow(input) {
+		maxOutput = ImplementOutputToks
 	}
 	body, _ := json.Marshal(map[string]any{"model": model, "store": false, "max_output_tokens": maxOutput, "reasoning": map[string]string{"effort": "minimal"}, "instructions": instructions, "input": input, "text": map[string]any{"format": map[string]any{"type": "json_schema", "name": "github_read_decision", "strict": true, "schema": schema}}})
 	if len(body) > aiRequestLimit(input) {
@@ -80,8 +88,8 @@ func (p *OpenAI) Next(ctx context.Context, key, model, input string) (Decision, 
 	if resp.StatusCode != 200 {
 		return Decision{}, Usage{}, fmt.Errorf("openai_http_%d", resp.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024+1))
-	if err != nil || len(raw) > 128*1024 {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(aiResponseLimit(input))+1))
+	if err != nil || len(raw) > aiResponseLimit(input) {
 		return Decision{}, Usage{}, errors.New("openai_response_limit")
 	}
 	var out struct {
@@ -120,6 +128,9 @@ func (p *OpenAI) Next(ctx context.Context, key, model, input string) (Decision, 
 	if !validPriorityDecision(input, d) {
 		return d, out.Usage, errors.New("invalid_priority_result")
 	}
+	if !validImplementationDecision(d) {
+		return d, out.Usage, errors.New("invalid_implementation_result")
+	}
 	return d, out.Usage, nil
 }
 
@@ -145,7 +156,7 @@ reviewTaskがあればread=nullで区切りの結果をreviewに出し、summary
 回答は取得済みの根拠だけに基づき、未取得・省略・エラー・推測を区別します。ファイルは指定コミット時点、PR/Issueの本文と一覧は取得時点です。全体を確認したと断定しないでください。
 read=nullで最終回答し、summaryには今後に必要な目的、確認済みの事実、参照パスと未確認事項だけを短く保存します。コード全文をsummaryや回答に複製しないでください。
 readが必要ならanswerを空にし、kind/path/number/detailを指定します。repositoryはルート一覧、fileはファイルまたはディレクトリ、pull_request/issueはnumber、filesはPR変更一覧、commentsはコメントです。
-これまでのreadが失敗した場合、同じreadを繰り返さず、確認できなかった理由を回答してください。`
+これまでのreadが失敗した場合、同じreadを繰り返さず、確認できなかった理由を回答してください。` + implementChatRule
 
 // Local demonstration never calls OpenAI and never needs a real API key.
 type Demo struct{}
@@ -153,6 +164,9 @@ type Demo struct{}
 func (Demo) Next(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 	if strings.Contains(input, `"overviewTask":`) {
 		return Decision{Summary: "固定デモ: Go APIとVue 3によるGitHub読み取りチャット。"}, Usage{}, nil
+	}
+	if implementWorkflow(input) {
+		return demoImplement(input), Usage{}, nil
 	}
 	if strings.Contains(input, `"reviewTask":`) {
 		return Decision{Summary: "固定デモの差分を確認しました。実際のリポジトリは未確認です。", Review: &domain.ReviewResult{Findings: []domain.Finding{}, Unverified: []string{"固定デモのため、実コードの問題は判定していません。"}}}, Usage{}, nil
@@ -170,6 +184,9 @@ func (Demo) Next(ctx context.Context, key, model, input string) (Decision, Usage
 				message = chat.History[i].Text
 				break
 			}
+		}
+		if strings.Contains(message, "実装") || strings.Contains(message, "追加して") || strings.Contains(message, "修正して") {
+			return Decision{StartImplementation: &ImplementRequest{Request: message}}, Usage{}, nil
 		}
 		if strings.Contains(message, "レビュー") {
 			return Decision{StartReview: &ReviewRequest{Number: chat.Active}}, Usage{}, nil

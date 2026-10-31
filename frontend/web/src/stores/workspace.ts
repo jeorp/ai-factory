@@ -12,6 +12,7 @@ export const useWorkspace = defineStore('workspace', () => {
  function disconnect(clear = false) { generation++; clearTimeout(retry); socket?.close(); socket = undefined; connected.value = false; reconnecting.value = false; if (clear) { clearKey(); current.value = null; } }
  function normalize(session: Session) {
   session.messages ||= []; session.sources ||= []; session.limitations ||= [];
+  if (session.implementation) { session.implementation.changes ||= []; session.implementation.unverified ||= []; }
   if (session.review) { session.review.steps ||= []; session.review.findings ||= []; session.review.unverified ||= []; for (const step of session.review.steps) step.files ||= []; }
   return session;
  }
@@ -44,9 +45,10 @@ export const useWorkspace = defineStore('workspace', () => {
    ws.onerror = () => { error.value = 'connection_failed'; };
   } catch { if (epoch === generation) error.value = 'login_required'; }
  }
- function send(type: string, text = '', id = crypto.randomUUID(), unverifiedIndex?: number) {
+ function send(type: string, text = '', id = crypto.randomUUID(), unverifiedIndex?: number, extra: Record<string, string> = {}) {
   if (!connected.value || socket?.readyState !== WebSocket.OPEN) throw new Error('connection_required');
-  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...(['message', 'resume', 'review', 'investigate'].includes(type) ? credentials() : {}) }));
+  // Publishing writes saved changes and never needs the AI key.
+  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...extra, ...(['message', 'resume', 'review', 'investigate', 'implement', 'implement_approve'].includes(type) ? credentials() : {}) }));
   error.value = '';
  }
  async function remove(id: string) {

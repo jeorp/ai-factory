@@ -4,6 +4,8 @@ describe('token cost estimates', () => {
  it('uses the standard input and output rates for each supported provider', () => {
   expect(estimateCost('openai', 'gpt-5-mini', 1_000_000, 1_000_000)).toBe(2.25);
   expect(estimateCost('gemini', 'gemini-3.5-flash-lite', 1_000_000, 1_000_000)).toBe(2.8);
+  expect(estimateCost('gemini', 'gemini-3.1-pro-preview', 1_000_000, 1_000_000)).toBe(14);
+  expect(estimateCost('gemini', 'gemini-3.8-flash', 1_000_000, 1_000_000)).toBe(4.5);
  });
  it('does not infer rates for unknown models or demo mode', () => {
   expect(pricing('openai', 'gpt-5-mini-extra')).toBeUndefined();

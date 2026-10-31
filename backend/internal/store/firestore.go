@@ -52,6 +52,7 @@ func (s *Store) List(ctx context.Context, uid string) ([]domain.Session, error) 
 			v.Messages = []domain.Message{}
 			v.Summary = ""
 			v.Review = nil
+			v.Implementation = nil
 			out = append(out, v)
 		}
 	}

@@ -31,12 +31,16 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	}, "required": []string{"kind", "path", "number", "detail"}, "additionalProperties": false}
 	schema := map[string]any{"type": "object", "properties": map[string]any{"intent": intentSchema(), "answer": map[string]any{"type": "string"}, "summary": map[string]any{"type": "string"}, "read": read}, "required": []string{"intent", "answer", "summary", "read"}, "additionalProperties": false}
 	addReviewSchema(schema)
+	addImplementationSchema(schema)
 	instructions := decisionInstructions(schema, input)
 	maxOutput := 4096
 	if reviewWorkflow(input) {
 		maxOutput = 8192
 	}
-	body, err := json.Marshal(map[string]any{"systemInstruction": map[string]any{"parts": []any{map[string]string{"text": instructions}}}, "contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": input}}}}, "generationConfig": map[string]any{"maxOutputTokens": maxOutput, "responseMimeType": "application/json", "responseJsonSchema": schema}})
+	if implementWorkflow(input) {
+		maxOutput = ImplementOutputToks
+	}
+	body, err := json.Marshal(map[string]any{"systemInstruction": map[string]any{"parts": []any{map[string]string{"text": instructions}}}, "contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": input}}}}, "generationConfig": geminiGenerationConfig(model, maxOutput, schema)})
 	if err != nil || len(body) > aiRequestLimit(input) {
 		return Decision{}, Usage{}, errors.New("ai_request_limit")
 	}
@@ -58,8 +62,8 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	if resp.StatusCode != http.StatusOK {
 		return Decision{}, Usage{}, geminiError(resp)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024+1))
-	if err != nil || len(raw) > 128*1024 {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(aiResponseLimit(input))+1))
+	if err != nil || len(raw) > aiResponseLimit(input) {
 		return Decision{}, Usage{}, errors.New("gemini_response_limit")
 	}
 	var out struct {
@@ -115,7 +119,28 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	if !validPriorityDecision(input, d) {
 		return d, usage, errors.New("invalid_priority_result")
 	}
+	if !validImplementationDecision(d) {
+		return d, usage, errors.New("invalid_implementation_result")
+	}
 	return d, usage, nil
+}
+
+// geminiThinkingHeadroom is added to maxOutputTokens because Gemini counts
+// thinking tokens toward that limit. Without it, models that think by
+// default (Pro and newer Flash models) stop with MAX_TOKENS before answering.
+const geminiThinkingHeadroom = 8192
+
+// geminiGenerationConfig keeps thinking short and predictable across model
+// families. Gemini 3 and later accept thinkingLevel, and "low" is supported by
+// every current Flash, Flash-Lite and Pro model; "minimal" is not available
+// on Pro models. Gemini 2.x models predate thinkingLevel, so they keep their
+// default thinking and rely on the extra output headroom.
+func geminiGenerationConfig(model string, answerTokens int, schema map[string]any) map[string]any {
+	config := map[string]any{"maxOutputTokens": answerTokens + geminiThinkingHeadroom, "responseMimeType": "application/json", "responseJsonSchema": schema}
+	if !strings.HasPrefix(model, "gemini-2") && !strings.HasPrefix(model, "gemini-1") {
+		config["thinkingConfig"] = map[string]any{"thinkingLevel": "low"}
+	}
+	return config
 }
 
 // Only return fixed error codes. Never expose Google's error message or request data.

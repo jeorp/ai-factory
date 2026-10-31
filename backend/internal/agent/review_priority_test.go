@@ -131,11 +131,87 @@ func TestReviewPriorityFailureDoesNotLoopOnUnappliedInstruction(t *testing.T) {
 	if priorityCalls != 2 || final.Review.Phase != "done" || len(final.Applied) != 0 {
 		t.Fatalf("unexpected retry behavior: calls=%d phase=%s applied=%v", priorityCalls, final.Review.Phase, final.Applied)
 	}
-	found := false
-	for _, u := range final.Review.Unverified {
-		found = found || strings.Contains(u, "追加指示の一部は未適用")
+	if !strings.Contains(final.Answer, "追加指示の一部は未適用") {
+		t.Fatalf("unapplied directive not reported: %q", final.Answer)
 	}
-	if !found {
-		t.Fatalf("unapplied directive not reported: %v", final.Review.Unverified)
+	for _, u := range final.Review.Unverified {
+		if strings.Contains(u, "追加指示") {
+			t.Fatalf("notice must not become an unprioritized unverified item: %v", final.Review.Unverified)
+		}
+	}
+}
+
+func TestReviewPriorityFailureWithoutLateDirectiveDoesNotRerun(t *testing.T) {
+	f := fixture()
+	s := reviewSession()
+	queue := make(chan domain.Message, 1)
+	priorityCalls, sent := 0, false
+	r := Runner{GitHub: f, AI: providerFunc(func(_ context.Context, _ string, _ string, input string) (Decision, Usage, error) {
+		if strings.Contains(input, `"priorityTask":`) {
+			priorityCalls++
+			return Decision{}, Usage{}, errors.New("provider_failed")
+		}
+		return result(), Usage{}, nil
+	})}
+	var final Checkpoint
+	err := r.Run(context.Background(), Input{Session: s, Instructions: queue}, func(cp Checkpoint) error {
+		// Queued on entering the priority phase, the directive is sent with the
+		// failing priority request, so it is not a late arrival.
+		if !sent && cp.Review != nil && cp.Review.Phase == "priority" {
+			sent = true
+			queue <- domain.Message{ID: "directive", Role: "instruction", Text: "認証の項目を優先"}
+		}
+		final = cp
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priorityCalls != 1 || final.Review.Phase != "done" {
+		t.Fatalf("a failed assessment must not rerun every batch: calls=%d phase=%s", priorityCalls, final.Review.Phase)
+	}
+	if !strings.Contains(final.Answer, "追加指示の一部は未適用") {
+		t.Fatalf("unapplied directive not reported: %q", final.Answer)
+	}
+}
+
+func TestReviewPriorityReassessmentFailureKeepsEarlierPriorities(t *testing.T) {
+	f := fixture()
+	s := reviewSession()
+	queue := make(chan domain.Message, 1)
+	priorityCalls := 0
+	r := Runner{GitHub: f, AI: providerFunc(func(_ context.Context, _ string, _ string, input string) (Decision, Usage, error) {
+		if strings.Contains(input, `"priorityTask":`) {
+			priorityCalls++
+			if priorityCalls > 1 {
+				return Decision{}, Usage{}, errors.New("provider_failed")
+			}
+			queue <- domain.Message{ID: "late-directive", Role: "instruction", Text: "認証の項目を優先"}
+			var body struct {
+				Items []priorityItem `json:"priorityTask"`
+			}
+			_ = json.Unmarshal([]byte(input), &body)
+			d := Decision{}
+			for _, item := range body.Items {
+				d.Priorities = append(d.Priorities, PriorityAssessment{Index: item.Index, Level: "high", Reason: "確認が必要"})
+			}
+			return d, Usage{}, nil
+		}
+		return result(), Usage{}, nil
+	})}
+	var final Checkpoint
+	if err := r.Run(context.Background(), Input{Session: s, Instructions: queue}, func(cp Checkpoint) error { final = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if priorityCalls != 2 || len(final.Review.Priorities) == 0 {
+		t.Fatalf("expected one reassessment: calls=%d priorities=%v", priorityCalls, final.Review.Priorities)
+	}
+	for k, p := range final.Review.Priorities {
+		if p.Level != "high" {
+			t.Fatalf("failed reassessment erased priority %s: %+v", k, p)
+		}
+	}
+	if !strings.Contains(final.Answer, "追加指示の一部は未適用") {
+		t.Fatalf("unapplied directive not reported: %q", final.Answer)
 	}
 }

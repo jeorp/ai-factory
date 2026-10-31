@@ -18,6 +18,19 @@ type Config struct {
 	AIProvider                                             string
 }
 
+// DefaultGeminiModels lists the Gemini models offered when GEMINI_MODELS is
+// unset. The first entry is selected by default in the UI.
+var DefaultGeminiModels = []string{"gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-pro-preview"}
+
+// splitModels parses a comma-separated allowlist, ignoring spaces around entries.
+func splitModels(value string) []string {
+	models := strings.Split(value, ",")
+	for i, model := range models {
+		models[i] = strings.TrimSpace(model)
+	}
+	return models
+}
+
 func LoadConfig() (Config, error) {
 	c := Config{Local: os.Getenv("APP_ENV") == "local", Demo: os.Getenv("PROVIDER") == "demo", Project: os.Getenv("GCP_PROJECT_ID"), Origin: os.Getenv("WEB_ORIGIN"), Port: os.Getenv("PORT"), ClientID: os.Getenv("GITHUB_CLIENT_ID"), ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"), AppSlug: os.Getenv("GITHUB_APP_SLUG"), Models: []string{"gpt-5-mini"}}
 	c.AIProvider = os.Getenv("AI_PROVIDER")
@@ -35,16 +48,16 @@ func LoadConfig() (Config, error) {
 		return c, errors.New("demo AI requires demo provider")
 	}
 	if c.AIProvider == "gemini" {
-		c.Models = []string{"gemini-3.5-flash-lite"}
+		c.Models = DefaultGeminiModels
 		if value := os.Getenv("GEMINI_MODELS"); value != "" {
-			c.Models = strings.Split(value, ",")
+			c.Models = splitModels(value)
 		}
 	}
 	if c.Port == "" {
 		c.Port = "8080"
 	}
 	if value := os.Getenv("OPENAI_MODELS"); value != "" && c.AIProvider == "openai" {
-		c.Models = strings.Split(value, ",")
+		c.Models = splitModels(value)
 	}
 	for _, model := range c.Models {
 		if c.AIProvider == "gemini" && !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`).MatchString(model) {

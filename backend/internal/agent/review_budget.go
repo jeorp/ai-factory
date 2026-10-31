@@ -56,15 +56,22 @@ func reviewWorkflow(input string) bool {
 	return body.Task != nil && (body.Task.Mode == "diff" || body.Task.Mode == "cross") || len(body.Priority) > 0 && string(body.Priority) != "null"
 }
 
+func aiResponseLimit(input string) int {
+	if implementWorkflow(input) {
+		return 512 * 1024
+	}
+	return 128 * 1024
+}
+
 func aiInputLimit(input string) int {
-	if reviewWorkflow(input) {
+	if reviewWorkflow(input) || implementWorkflow(input) {
 		return ReviewInputBytes
 	}
 	return domain.MaxInputBytes
 }
 
 func aiRequestLimit(input string) int {
-	if reviewWorkflow(input) {
+	if reviewWorkflow(input) || implementWorkflow(input) {
 		return ReviewRequestBytes
 	}
 	return 40 * 1024
