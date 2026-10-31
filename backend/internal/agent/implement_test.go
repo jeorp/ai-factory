@@ -21,6 +21,7 @@ type fakeWriter struct {
 	published []github.PublishRequest
 	failPut   bool
 	closed    bool
+	moved     string   // a newer head someone pushed to the PR branch
 	list      []string // overrides the listed paths when set
 	listErr   error
 }
@@ -55,6 +56,12 @@ func (w *fakeWriter) FileList(ctx context.Context, token, repo, commit string) (
 	return paths, false, nil
 }
 func (w *fakeWriter) PullRequestTarget(ctx context.Context, token, repo string, number int) (github.PullRequestTarget, error) {
+	if w.closed {
+		return github.PullRequestTarget{}, errors.New("pull_request_closed")
+	}
+	if w.moved != "" {
+		return github.PullRequestTarget{Branch: "ai-factory/x-1", Head: w.moved, Base: "main"}, nil
+	}
 	if number != 7 {
 		return github.PullRequestTarget{}, errors.New("pull_request_not_ai_branch")
 	}
@@ -346,7 +353,7 @@ func TestProvidersExposeImplementationContract(t *testing.T) {
 }
 
 func (w *fakeWriter) PullRequestOpen(ctx context.Context, token, repo string, number int, branch, head string) (bool, error) {
-	return !w.closed, nil
+	return !w.closed && w.moved == "", nil
 }
 
 func TestFollowUpOnClosedPRStartsNewBranch(t *testing.T) {
@@ -650,5 +657,28 @@ func TestFixRequestForExistingPRPushesToItsBranch(t *testing.T) {
 	session.Implementation = StartImplementation(nil, ImplementRequest{Request: "x", PullNumber: 8}, "0123456789abcdef")
 	if err := runner.Run(context.Background(), Input{Session: session}, func(Checkpoint) error { return nil }); err == nil || err.Error() != "pull_request_not_ai_branch" {
 		t.Fatalf("foreign branch accepted: %v", err)
+	}
+}
+
+func TestFollowUpOnMovedPRBuildsOnNewHead(t *testing.T) {
+	writer := newFakeWriter()
+	writer.moved = implBase
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
+	})
+	session := baseSession()
+	session.RunKind = "implement"
+	prev := &domain.Implementation{Status: "published", BaseBranch: "main", BaseCommit: strings.Repeat("9", 40), Commit: strings.Repeat("f", 40), Branch: "ai-factory/x-1", PullNumber: 4, Request: "r"}
+	session.Implementation = domain.NextImplementation(prev, "追加", "0123456789abcdef")
+	var last Checkpoint
+	if err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	impl := last.Implementation
+	if impl.PullNumber != 4 || impl.Branch != "ai-factory/x-1" || impl.ExpectedHead != implBase || impl.BaseCommit != implBase {
+		t.Fatalf("open PR with a moved head must not become a new PR: %+v", impl)
+	}
+	if !strings.Contains(last.Answer, "PR #4 のブランチ ai-factory/x-1") {
+		t.Fatalf("plan message should name the target branch: %s", last.Answer)
 	}
 }

@@ -133,8 +133,14 @@ func TestSanitizeJobLog(t *testing.T) {
 
 func TestJobLogReadsRESTTailAndMasksSecrets(t *testing.T) {
 	var path string
-	c := &Client{HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
-		path = r.URL.Path
+	c := &Client{HTTP: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "api.github.com" {
+			path = r.URL.Path
+			return &http.Response{StatusCode: 302, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{"Location": []string{"https://pipelines.actions.githubusercontent.com/signed?sig=1"}}}, nil
+		}
+		if r.Header.Get("Authorization") != "" || r.URL.Host != "pipelines.actions.githubusercontent.com" {
+			t.Fatalf("download must go to the signed URL without the token: %s %q", r.URL, r.Header.Get("Authorization"))
+		}
 		body := strings.Repeat("ok\n", 500) + "FAIL TestX token=ghp_" + strings.Repeat("y", 20) + "\n"
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 	})}}
@@ -147,5 +153,19 @@ func TestJobLogReadsRESTTailAndMasksSecrets(t *testing.T) {
 	}
 	if (Read{Kind: "job_log", Number: 124628312411}).Validate() != nil {
 		t.Fatal("real job IDs must be accepted")
+	}
+}
+
+func TestJobLogRejectsUnexpectedRedirectHost(t *testing.T) {
+	for _, loc := range []string{"http://pipelines.actions.githubusercontent.com/x", "https://evil.example/x", "https://githubusercontent.com.evil.example/x"} {
+		c := &Client{HTTP: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Host != "api.github.com" {
+				t.Fatalf("followed %s", r.URL)
+			}
+			return &http.Response{StatusCode: 302, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{"Location": []string{loc}}}, nil
+		})}}
+		if _, _, err := c.jobLog(context.Background(), "t", "o/r", 1); err == nil || err.Error() != "job_log_redirect_invalid" {
+			t.Fatalf("%s: %v", loc, err)
+		}
 	}
 }

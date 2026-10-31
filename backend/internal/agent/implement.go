@@ -140,7 +140,7 @@ func StartImplementation(prev *domain.Implementation, req ImplementRequest, cach
 		if prev != nil {
 			impl.Version = prev.Version + 1
 		}
-		impl.PullNumber = req.PullNumber
+		impl.PullNumber, impl.FixTarget = req.PullNumber, true
 	}
 	return impl
 }
@@ -313,9 +313,11 @@ func (run *implementRun) read(ctx context.Context, read github.Read, ev *[]evide
 
 func (run *implementRun) plan(ctx context.Context) error {
 	impl := run.impl
-	if impl.PullNumber > 0 && impl.Branch == "" {
+	if impl.PullNumber > 0 && (impl.Branch == "" || impl.FixTarget) {
 		// A fix request for an existing PR: build on its current head and push
 		// to its branch. Only open ai-factory/ branches in this repository qualify.
+		// The head is re-read on every plan so that a named PR is never replaced
+		// by a new one; a closed PR stops with an error instead.
 		pr, err := run.r.Writer.PullRequestTarget(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, impl.PullNumber)
 		if err != nil {
 			return err
@@ -332,9 +334,20 @@ func (run *implementRun) plan(ctx context.Context) error {
 			return err
 		}
 		if !open {
-			previous := impl.PullNumber
-			impl.DetachFollowUp()
-			impl.Unverified = append(impl.Unverified, fmt.Sprintf("PR #%d はマージ・クローズ済み、またはブランチが更新されているため、最新のデフォルトブランチから新しいブランチで作成します。", previous))
+			// Only a merged or closed PR starts over on a new branch. If the PR is
+			// still open and someone pushed to it, build on its new head instead.
+			pr, err := run.r.Writer.PullRequestTarget(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, impl.PullNumber)
+			switch {
+			case err == nil && pr.Branch == impl.Branch:
+				impl.BaseCommit, impl.ExpectedHead = pr.Head, pr.Head
+				impl.Unverified = append(impl.Unverified, fmt.Sprintf("PR #%d のブランチが更新されていたため、最新のコミットを基準にしました。", impl.PullNumber))
+			case err == nil || err.Error() == "pull_request_closed" || err.Error() == "pull_request_not_found":
+				previous := impl.PullNumber
+				impl.DetachFollowUp()
+				impl.Unverified = append(impl.Unverified, fmt.Sprintf("PR #%d はマージ・クローズ済みのため、最新のデフォルトブランチから新しいブランチで作成します。", previous))
+			default:
+				return err
+			}
 		}
 	}
 	if impl.BaseCommit == "" {
@@ -473,7 +486,7 @@ func (run *implementRun) collectCIFailureLogs(ctx context.Context, pullNumber in
 		} `json:"check_runs"`
 	}
 	var out []evidence
-	out = append(out, evidence{Read: checkRead, Content: domain.Clip(raw, 8000)})
+	out = append(out, evidence{Read: checkRead, Content: domain.MaskSecrets(domain.Clip(raw, 8000))})
 	if !containsSource(run.cp.Sources, source.URL) {
 		run.cp.Sources = append(run.cp.Sources, source)
 	}
@@ -955,7 +968,11 @@ func actionLabel(a string) string {
 func formatPlan(impl *domain.Implementation) string {
 	p := impl.Plan
 	var b strings.Builder
-	b.WriteString("実装計画を作成しました（ベース: " + impl.BaseBranch + " " + impl.BaseCommit[:7] + "）。\n\n" + p.Summary + "\n\n【変更するファイル】\n")
+	base := "ベース: " + impl.BaseBranch + " " + impl.BaseCommit[:7]
+	if impl.ExpectedHead != "" && impl.PullNumber > 0 {
+		base = fmt.Sprintf("PR #%d のブランチ %s の %s に追加", impl.PullNumber, impl.Branch, impl.BaseCommit[:7])
+	}
+	b.WriteString("実装計画を作成しました（" + base + "）。\n\n" + p.Summary + "\n\n【変更するファイル】\n")
 	for _, f := range p.Files {
 		b.WriteString(fmt.Sprintf("- %s（%s）: %s\n", f.Path, actionLabel(f.Action), f.Approach))
 	}

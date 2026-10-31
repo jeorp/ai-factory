@@ -358,13 +358,29 @@ func (c *Client) jobLog(ctx context.Context, token, repository string, id int) (
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	// GitHub answers with a redirect to a signed download URL; the client drops
-	// the Authorization header when following it to another host.
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return "", 0, errors.New("github_unavailable")
 	}
 	defer resp.Body.Close()
+	// GitHub answers with a redirect to a short-lived signed URL. The server's
+	// HTTP client does not follow redirects, so follow this one explicitly and
+	// without the GitHub token.
+	if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusTemporaryRedirect {
+		loc, err := url.Parse(resp.Header.Get("Location"))
+		if err != nil || loc.Scheme != "https" || !jobLogHost(loc.Hostname()) {
+			return "", 0, errors.New("job_log_redirect_invalid")
+		}
+		dl, err := http.NewRequestWithContext(ctx, http.MethodGet, loc.String(), nil)
+		if err != nil {
+			return "", 0, err
+		}
+		resp.Body.Close()
+		if resp, err = c.HTTP.Do(dl); err != nil {
+			return "", 0, errors.New("github_unavailable")
+		}
+		defer resp.Body.Close()
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", 0, apiError{resp.StatusCode}
 	}
@@ -373,6 +389,17 @@ func (c *Client) jobLog(ctx context.Context, token, repository string, id int) (
 		return "", 0, err
 	}
 	return sanitizeJobLog(string(b)), len(b), nil
+}
+
+// jobLogHost accepts the hosts GitHub serves signed Actions log URLs from.
+func jobLogHost(host string) bool {
+	host = strings.ToLower(host)
+	for _, suffix := range []string{".actions.githubusercontent.com", ".blob.core.windows.net"} {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // sanitizeJobLog keeps the last 200 lines (16 KiB at most) and masks credentials.
