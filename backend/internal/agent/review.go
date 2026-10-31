@@ -311,7 +311,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 					break
 				}
 			}
-			payload := map[string]any{"reviewTask": task, "repositoryOverview": in.Session.RepositoryOverview, "target": map[string]any{"repository": in.Session.Target.Repository, "number": in.Session.Target.Number, "base": review.Base, "head": review.Head}, "title": review.Title, "body": review.Body, "scope": review.Scope, "focus": focus, "instructions": pinned, "evidence": ev, "readBudget": domain.MaxFiles - call}
+			payload := map[string]any{"reviewTask": task, "repositoryOverview": in.Session.RepositoryOverview, "target": map[string]any{"repository": in.Session.Target.Repository, "number": in.Session.Target.Number, "base": review.Base, "head": review.Head}, "title": review.Title, "body": review.Body, "scope": review.Scope, "focus": focus, "instructions": pinned, "evidence": ev, "readBudget": domain.MaxFiles - call, "locale": in.Session.Locale}
 			if readCorrection != "" {
 				payload["readCorrection"] = readCorrection
 			}
@@ -748,7 +748,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			for i := review.PriorityCursor; i < end; i++ {
 				items = append(items, priorityItem{Index: i, Text: review.Unverified[i]})
 			}
-			payload, _ := json.Marshal(map[string]any{"priorityTask": items, "title": domain.Clip(review.Title, 500), "body": domain.Clip(review.Body, 1500), "summary": domain.Clip(review.CrossSummary, 1500), "instructions": pinnedInstructions()})
+			payload, _ := json.Marshal(map[string]any{"priorityTask": items, "title": domain.Clip(review.Title, 500), "body": domain.Clip(review.Body, 1500), "summary": domain.Clip(review.CrossSummary, 1500), "instructions": pinnedInstructions(), "locale": in.Session.Locale})
 			if err := save("未確認項目の優先度を確認しています"); err != nil {
 				return err
 			}

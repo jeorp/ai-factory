@@ -32,7 +32,7 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	schema := map[string]any{"type": "object", "properties": map[string]any{"intent": intentSchema(), "answer": map[string]any{"type": "string"}, "summary": map[string]any{"type": "string"}, "read": read}, "required": []string{"intent", "answer", "summary", "read"}, "additionalProperties": false}
 	addReviewSchema(schema)
 	addImplementationSchema(schema)
-	instructions := decisionInstructions(schema, input)
+	instructions := outputLanguageInstruction(input) + decisionInstructions(schema, input)
 	maxOutput := 4096
 	if reviewWorkflow(input) {
 		maxOutput = 8192
