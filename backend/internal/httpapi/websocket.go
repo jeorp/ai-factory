@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,12 +16,13 @@ import (
 )
 
 type command struct {
-	Type         string `json:"type"`
-	ID           string `json:"id"`
-	Text         string `json:"text"`
-	Token        string `json:"token"`
-	APIKey       string `json:"apiKey"`
-	KeyExpiresAt int64  `json:"keyExpiresAt"`
+	Type            string `json:"type"`
+	ID              string `json:"id"`
+	Text            string `json:"text"`
+	Token           string `json:"token"`
+	APIKey          string `json:"apiKey"`
+	KeyExpiresAt    int64  `json:"keyExpiresAt"`
+	UnverifiedIndex *int   `json:"unverifiedIndex"`
 }
 type update struct {
 	Checkpoint agent.Checkpoint
@@ -177,6 +180,17 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			if cp.Answer != "" {
 				if err = session.Add("assistant", cp.Answer, randomID()); err == nil {
 					session.State = "done"
+					if session.RunKind == "investigation" && session.Review != nil && session.Review.PendingInvestigation > 0 {
+						if session.Review.Investigations == nil {
+							session.Review.Investigations = map[string]string{}
+						}
+						result := cp.Answer
+						if len(result) > 4096 {
+							result = domain.Clip(result, 4096) + "\n（以降はチャットの回答を参照してください）"
+						}
+						session.Review.Investigations[strconv.Itoa(session.Review.PendingInvestigation-1)] = result
+						session.Review.PendingInvestigation = 0
+					}
 				}
 			} else {
 				err = nil
@@ -275,20 +289,27 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				if send("session", session) != nil {
 					return
 				}
-			case "message", "resume", "review":
+			case "message", "resume", "review", "investigate":
 				if cancelRun != nil {
 					problem("run_in_progress")
 					continue
+				}
+				if cmd.Type == "investigate" {
+					if session.Review == nil || session.Target.Kind != "pull" || cmd.UnverifiedIndex == nil || *cmd.UnverifiedIndex < 0 || *cmd.UnverifiedIndex >= len(session.Review.Unverified) || !idPattern.MatchString(cmd.ID) {
+						problem("invalid_investigation")
+						continue
+					}
+					cmd.Text = fmt.Sprintf("PR #%d のレビューの未確認項目を追加調査してください。対象: %s\n関連コードや差分を必要に応じて確認し、確認できた事実と根拠、問題の有無、引き続き未確認の点を区別してください。確認できないことを推測で確定しないでください。", session.Target.Number, session.Review.Unverified[*cmd.UnverifiedIndex])
 				}
 				if cmd.Type == "review" && session.Target.Kind != "pull" {
 					problem("pull_request_required")
 					continue
 				}
-				if (cmd.Type == "message" || cmd.Type == "review") && (!idPattern.MatchString(cmd.ID) || !safeText(cmd.Text) || (cmd.APIKey != "" && strings.Contains(cmd.Text, cmd.APIKey))) {
+				if (cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate") && (!idPattern.MatchString(cmd.ID) || !safeText(cmd.Text) || (cmd.APIKey != "" && strings.Contains(cmd.Text, cmd.APIKey))) {
 					problem("invalid_message_no_secrets")
 					continue
 				}
-				if (cmd.Type == "message" || cmd.Type == "review") && session.HasMessage(cmd.ID) {
+				if (cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate") && session.HasMessage(cmd.ID) {
 					send("session", session)
 					continue
 				}
@@ -312,16 +333,22 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					problem("history_limit_create_new_session")
 					continue
 				}
-				if cmd.Type == "message" || cmd.Type == "review" {
+				if cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate" {
 					if err = session.Add("user", cmd.Text, cmd.ID); err != nil {
 						problem(err.Error())
 						continue
 					}
 				}
-				if cmd.Type == "review" {
+				if cmd.Type == "investigate" {
+					session.RunKind = "investigation"
+					session.Review.PendingInvestigation = *cmd.UnverifiedIndex + 1
+				} else if cmd.Type == "review" {
 					session.RunKind = "review"
 					session.Review = nil
 				} else if cmd.Type == "message" {
+					if session.Review != nil {
+						session.Review.PendingInvestigation = 0
+					}
 					session.RunKind = "chat"
 				}
 				session.State = "accepted"

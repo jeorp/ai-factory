@@ -48,7 +48,7 @@ func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agen
 		text = "認証を優先して確認しました"
 	}
 	if strings.Contains(input, `"reviewTask":`) {
-		return agent.Decision{Summary: "レビュー区切りの要点", Review: &domain.ReviewResult{Findings: []domain.Finding{}, Unverified: []string{}}}, agent.Usage{InputTokens: 42}, nil
+		return agent.Decision{Summary: "レビュー区切りの要点", Review: &domain.ReviewResult{Findings: []domain.Finding{}, Unverified: []string{"関連コードを確認できませんでした"}}}, agent.Usage{InputTokens: 42}, nil
 	}
 	var chat struct {
 		Active  int              `json:"activePullRequest"`
@@ -369,6 +369,21 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	resp.Body.Close()
 	if err != nil || resp.StatusCode != 200 || restoredReview.Review == nil || restoredReview.Review.Findings == nil || restoredReview.Review.Unverified == nil || len(restoredReview.Review.Steps) != len(chatReviewed.Review.Steps) {
 		t.Fatalf("review reload cannot render empty findings: %+v %v", restoredReview.Review, err)
+	}
+	index := 0
+	if len(chatReviewed.Review.Unverified) == 0 {
+		t.Fatal("missing unverified item")
+	}
+	ws.WriteJSON(command{Type: "investigate", ID: randomID(), UnverifiedIndex: &index, APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	investigated := wait(ws, func(s domain.Session) bool {
+		return s.State == "done" && s.RunKind == "investigation" && s.Review != nil && s.Review.Investigations["0"] != ""
+	})
+	if investigated.Review.PendingInvestigation != 0 || investigated.Review.Unverified[0] != chatReviewed.Review.Unverified[0] {
+		t.Fatal("investigation did not preserve the original item")
+	}
+	persistedInvestigation, e := storage.Get(ctx, four.uid, chatSession.ID)
+	if e != nil || persistedInvestigation.Review.Investigations["0"] != investigated.Review.Investigations["0"] {
+		t.Fatalf("investigation not persisted: %v", e)
 	}
 	t.Log(fmt.Sprintf("verified: isolation, directives, stop/resume, PR retrieval and full review in one conversation (%d model calls)", ai.Calls.Load()))
 }

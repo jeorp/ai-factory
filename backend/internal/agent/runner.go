@@ -167,6 +167,9 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 			intent = decision.Intent
 		}
 		if decision.StartReview != nil {
+			if in.Session.RunKind == "investigation" {
+				return errors.New("investigation_review_restart_blocked")
+			}
 			if !validReviewAction(decision) {
 				return errors.New("invalid_review_action")
 			}

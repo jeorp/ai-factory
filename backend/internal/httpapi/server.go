@@ -106,6 +106,7 @@ func (s *Server) Handler() http.Handler {
 		})
 		route.HandleFunc("POST /api/v1/sessions", func(w http.ResponseWriter, r *http.Request) { s.create(w, r, c) })
 		route.HandleFunc("GET /api/v1/sessions/{id}/file", func(w http.ResponseWriter, r *http.Request) { s.sessionFile(w, r, c) })
+		route.HandleFunc("GET /api/v1/sessions/{id}/review-diff", func(w http.ResponseWriter, r *http.Request) { s.sessionReviewDiff(w, r, c) })
 		route.HandleFunc("GET /api/v1/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 			if !idPattern.MatchString(r.PathValue("id")) {
 				fail(w, 404, "not_found")

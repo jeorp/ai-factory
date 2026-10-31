@@ -21,6 +21,10 @@ type reviewReader interface {
 	PullRequest(context.Context, string, domain.Target) (github.PullRequest, int, error)
 	ReviewFiles(context.Context, string, domain.Target, int, int) ([]github.ChangedFile, int, error)
 }
+type reviewFileCache interface {
+	GetReviewFile(context.Context, string, domain.Target, string, string, int) (github.ChangedFile, bool)
+	PutReviewFile(context.Context, domain.Target, string, string, int, github.ChangedFile)
+}
 type reviewTask struct {
 	Mode  string              `json:"mode"`
 	Path  string              `json:"path,omitempty"`
@@ -188,6 +192,11 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			count++
 			if err := check(); err != nil {
 				return err
+			}
+			if err == nil {
+				if cache, ok := r.GitHub.(reviewFileCache); ok {
+					cache.PutReviewFile(ctx, in.Session.Target, review.Base, review.Head, count-1, files[0])
+				}
 			}
 			if err := save(fmt.Sprintf("レビュー計画: %d / %d ファイル", count, max)); err != nil {
 				return err
@@ -420,9 +429,22 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				if err := save(fmt.Sprintf("差分レビュー %d / %d: %s", si+1, len(review.Steps), f.Path)); err != nil {
 					return err
 				}
-				files, n, err := gh.ReviewFiles(ctx, in.GitHubToken, in.Session.Target, f.Index+1, 1)
-				cp.Metrics.ToolCalls++
-				cp.Metrics.FetchedBytes += n
+				var files []github.ChangedFile
+				var err error
+				cacheHit := false
+				if cache, ok := r.GitHub.(reviewFileCache); ok {
+					if cached, hit := cache.GetReviewFile(ctx, in.GitHubToken, in.Session.Target, review.Base, review.Head, f.Index); hit {
+						files = []github.ChangedFile{cached}
+						cp.Metrics.CacheHits++
+						cacheHit = true
+					}
+				}
+				if len(files) == 0 {
+					var n int
+					files, n, err = gh.ReviewFiles(ctx, in.GitHubToken, in.Session.Target, f.Index+1, 1)
+					cp.Metrics.ToolCalls++
+					cp.Metrics.FetchedBytes += n
+				}
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -440,6 +462,9 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 				}
 				if err := check(); err != nil {
 					return err
+				}
+				if cache, ok := r.GitHub.(reviewFileCache); ok && !cacheHit {
+					cache.PutReviewFile(ctx, in.Session.Target, review.Base, review.Head, f.Index, files[0])
 				}
 				patch := files[0].Patch
 				if (github.Read{Kind: "file", Path: f.Path}).Validate() != nil || patch == "" {

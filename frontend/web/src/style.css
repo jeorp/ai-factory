@@ -16,3 +16,7 @@
 .code-panel{width:52%;min-width:360px;max-width:1000px;flex-shrink:0;min-height:0;background:#fff;border-left:1px solid #d1d9e0;overflow:hidden}.code-panel:focus{outline:none}.code-open .conversation{max-width:none;margin:0;min-width:0}.code-open .transcript{padding-left:22px;padding-right:22px}.code-open .composer-area{padding-left:20px;padding-right:20px}
 @media(max-width:900px){.code-panel{position:fixed;inset:0 0 0 auto;z-index:10;width:min(90vw,720px);min-width:0;max-width:none;box-shadow:-12px 0 32px #1f23281f}}
 @media (max-width: 700px) { .review-results { padding: 16px; } }
+
+.repository-select{width:100%;padding:11px 12px}.manual-target{margin-top:14px}
+
+.unverified-list li{padding:9px 0;border-bottom:1px solid #e2e8e4}.investigate-button{padding:6px 10px;border:1px solid #ccd9c8;border-radius:5px;background:#f6faf3;color:#315b3d;font-size:11px}.investigation-status{margin-left:8px;font-size:10px;color:#748467}.investigation-result{margin-top:10px;padding:10px 12px;border-left:3px solid #91b590;background:#f4f8f1;font-size:11px;overflow-wrap:anywhere}.investigation-result p{margin-bottom:0}

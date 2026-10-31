@@ -44,9 +44,9 @@ export const useWorkspace = defineStore('workspace', () => {
    ws.onerror = () => { error.value = 'connection_failed'; };
   } catch { if (epoch === generation) error.value = 'login_required'; }
  }
- function send(type: string, text = '', id = crypto.randomUUID()) {
+ function send(type: string, text = '', id = crypto.randomUUID(), unverifiedIndex?: number) {
   if (!connected.value || socket?.readyState !== WebSocket.OPEN) throw new Error('connection_required');
-  socket.send(JSON.stringify({ type, text, id, ...(['message', 'resume', 'review'].includes(type) ? credentials() : {}) }));
+  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...(['message', 'resume', 'review', 'investigate'].includes(type) ? credentials() : {}) }));
   error.value = '';
  }
  async function remove(id: string) {

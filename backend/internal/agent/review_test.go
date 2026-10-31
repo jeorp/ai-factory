@@ -308,3 +308,29 @@ func TestReviewAppliesLateDirectiveBeforeFinalResult(t *testing.T) {
 		t.Fatal("late directive not applied before result")
 	}
 }
+
+type cachedReviewFixture struct {
+	*reviewFixture
+	cached map[int]github.ChangedFile
+}
+
+func (f *cachedReviewFixture) GetReviewFile(_ context.Context, _ string, _ domain.Target, _, _ string, index int) (github.ChangedFile, bool) {
+	v, ok := f.cached[index]
+	return v, ok
+}
+func (f *cachedReviewFixture) PutReviewFile(_ context.Context, _ domain.Target, _, _ string, index int, file github.ChangedFile) {
+	f.cached[index] = file
+}
+
+func TestReviewReusesPlannedPatches(t *testing.T) {
+	f := &cachedReviewFixture{reviewFixture: fixture(), cached: map[int]github.ChangedFile{}}
+	ai := providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) { return result(), Usage{}, nil })
+	var cp Checkpoint
+	err := (&Runner{AI: ai, GitHub: f}).Run(context.Background(), Input{Session: reviewSession()}, func(next Checkpoint) error { cp = next; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.filePages) != len(f.files) || cp.Metrics.CacheHits != len(f.files) {
+		t.Fatalf("patches not reused: pages=%v hits=%d", f.filePages, cp.Metrics.CacheHits)
+	}
+}

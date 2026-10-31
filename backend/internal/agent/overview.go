@@ -22,7 +22,7 @@ func (r *Runner) initializeOverview(ctx context.Context, in *Input, emit func(Ch
 		return err
 	}
 	if cache, ok := r.GitHub.(overviewCache); ok {
-		if overview, hit := cache.GetOverview(ctx, in.GitHubToken, in.Session.Target); hit && !(in.Key != "" && strings.Contains(overview.Text, in.Key)) && !(in.GitHubToken != "" && strings.Contains(overview.Text, in.GitHubToken)) {
+		if overview, hit := cache.GetOverview(ctx, in.GitHubToken, in.Session.Target); hit && !echoes(overview.Text, *in) {
 			_, _, source, err := github.Tool(in.Session.Target, github.Read{Kind: "file", Path: "README.md"})
 			if err == nil {
 				cp.RepositoryOverview = overview

@@ -7,6 +7,9 @@ import { useWorkspace } from './stores/workspace';
 import { busy, states, type Config, type Repository, type Finding } from './types';
 import Icon from './components/Icon.vue';
 import SourceFiles from './components/SourceFiles.vue';
+import ReviewDiffs from './components/ReviewDiffs.vue';
+import FindingEvidence from './components/FindingEvidence.vue';
+import FindingIssue from './components/FindingIssue.vue';
 import { clearFiles } from './lib/fileCache';
 import { fileKey, type SourceFile } from './lib/sourceFiles';
 
@@ -15,7 +18,7 @@ const CodeViewer = defineAsyncComponent(() => import('./components/CodeViewer.vu
 const work = useWorkspace();
 const config = ref<Config>({ demo: false, aiProvider: 'openai', models: [], installUrl: '' });
 const login = ref(''); const loading = ref(true); const actionPending = ref(false); const appError = ref('');
-const repositories = ref<Repository[]>([]); const target = ref(''); const model = ref(''); const text = ref('');
+const repositories = ref<Repository[]>([]); const repositoryChoice = ref(''); const manualTarget = ref(''); const target = computed(() => repositoryChoice.value === '__manual__' ? manualTarget.value.trim() : repositoryChoice.value); const model = ref(''); const text = ref('');
 const keyDraft = ref(''); const keyChoice = ref<'saved' | 'new'>('new'); const keyPending = ref(false); const rememberKey = ref(false); const hasSavedKey = ref(false); const keyValid = ref(false); const consent = ref(false); const mode = ref('message');
 const showNew = ref(false); const showDetails = ref(window.matchMedia('(min-width: 1100px)').matches); const deleteID = ref(''); const transcript = ref<HTMLElement>();
 const openedFile = ref<SourceFile>(); const codePanel = ref<HTMLElement>(); let fileOpener: HTMLElement | undefined;
@@ -51,10 +54,10 @@ const errors: Record<string, string> = {
 function errorMessage(value: unknown) { const code = value instanceof Error ? value.message : String(value); return errors[code] || `処理を完了できませんでした（${code}）。`; }
 async function action(fn: () => Promise<void>) { if (actionPending.value) return; actionPending.value = true; appError.value = ''; try { await fn(); } catch (e) { appError.value = errorMessage(e); } finally { actionPending.value = false; } }
 async function loadWorkspace() { const me = await api<{ login: string }>('/me'); login.value = me.login; await work.refresh(); await refreshRepositories(); }
-async function refreshRepositories() { repositories.value = await api<Repository[]>('/repositories'); if (!target.value) target.value = repositories.value[0]?.full_name || ''; }
+async function refreshRepositories() { repositories.value = await api<Repository[]>('/repositories'); if (repositoryChoice.value && repositoryChoice.value !== '__manual__' && !repositories.value.some(r => r.full_name === repositoryChoice.value)) repositoryChoice.value = ''; }
 async function signIn() { await action(async () => { if (config.value.demo) { await loginComplete(); await loadWorkspace(); } else { location.assign('/auth/github'); } }); }
-async function signOut() { await action(async () => { const owner = auth.currentUser?.uid; work.disconnect(true); keyDraft.value = ''; clearKey(); await nextTick(); if (owner) await clearFiles(owner).catch(() => {}); await logout(); login.value = ''; work.sessions = []; }); }
-async function createSession() { await action(async () => { const s = await api<NonNullable<typeof current.value>>('/sessions', { method: 'POST', body: JSON.stringify({ target: target.value, model: model.value }) }); await work.open(s); showNew.value = false; consent.value = false; keyDraft.value = ''; syncKey(); }); }
+async function signOut() { await action(async () => { const owner = auth.currentUser?.uid; work.disconnect(true); keyDraft.value = ''; clearKey(); await nextTick(); if (owner) await clearFiles(owner).catch(() => {}); await logout(); login.value = ''; work.sessions = []; repositories.value = []; repositoryChoice.value = ''; manualTarget.value = ''; }); }
+async function createSession() { await action(async () => { const s = await api<NonNullable<typeof current.value>>('/sessions', { method: 'POST', body: JSON.stringify({ target: target.value, model: model.value }) }); await work.open(s); showNew.value = false; repositoryChoice.value = ''; manualTarget.value = ''; consent.value = false; keyDraft.value = ''; syncKey(); }); }
 async function applyKey() {
  if (keyPending.value) return;
  appError.value = ''; keyPending.value = true;
@@ -73,6 +76,7 @@ async function refreshSavedKey() { try { hasSavedKey.value = !!(await savedKey(c
 async function forgetSavedKey() { try { await deleteSavedKey(config.value.aiProvider); hasSavedKey.value = false; keyChoice.value = 'new'; keyDraft.value = ''; rememberKey.value = false; clearKey(); syncKey(); } catch { appError.value = '保存済みのAPIキーを削除できませんでした。'; } }
 function syncKey() { const c = credentials(); keyValid.value = !!c.apiKey; }
 function send() { if (!canSend.value) return; try { work.send(mode.value, text.value.trim()); text.value = ''; } catch (e) { appError.value = errorMessage(e); } }
+function investigate(index: number) { try { work.send('investigate', '', crypto.randomUUID(), index); } catch (e) { appError.value = errorMessage(e); } }
 function resume() { try { work.send('resume'); } catch (e) { appError.value = errorMessage(e); } }
 function stop() { try { work.send('stop'); } catch (e) { appError.value = errorMessage(e); } }
 function end() { try { if (work.connected) work.send('end'); } finally { work.disconnect(true); keyDraft.value = ''; syncKey(); } }
@@ -138,8 +142,9 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
       <div class="card-heading"><div class="number-label">01</div><div><h2>{{ login ? '調べたいリポジトリを選択' : 'GitHubとつなげて、はじめる' }}</h2><p>{{ login ? '許可したリポジトリ・PR・Issueを参照できます。' : 'GitHub Appで、参照するリポジトリを選べます。' }}</p></div><Icon name="branch" :size="22" /></div>
       <div v-if="!login" class="login-area"><button class="primary-button" :disabled="loading || actionPending" @click="signIn"><Icon name="code" :size="18" />{{ config.demo ? '開発用ログイン' : 'GitHubでログイン' }}<Icon name="chevron" :size="16" /></button><span>コードの変更や投稿は行いません。</span></div>
       <form v-else @submit.prevent="createSession">
-       <label for="target">リポジトリ / PR / Issue</label><div class="input-with-icon"><Icon name="link" :size="17" /><input id="target" v-model="target" list="repos" placeholder="owner/repository または https://github.com/…" required maxlength="1024" /></div>
-       <datalist id="repos"><option v-for="r in repositories" :key="r.full_name" :value="r.full_name" /></datalist>
+       <label for="repository">リポジトリ</label>
+       <select id="repository" v-model="repositoryChoice" class="repository-select" required><option value="" disabled>リポジトリを選択してください</option><option v-for="r in repositories" :key="r.full_name" :value="r.full_name">{{ r.full_name }}</option><option value="__manual__">リポジトリ・PR・Issueを直接入力</option></select>
+       <div v-if="repositoryChoice === '__manual__'" class="manual-target"><label for="target">リポジトリ / PR / Issue</label><div class="input-with-icon"><Icon name="link" :size="17" /><input id="target" v-model="manualTarget" placeholder="owner/repository または https://github.com/…" required maxlength="1024" /></div></div>
        <div class="repository-actions"><span>{{ repositories.length }} 件のリポジトリに接続</span><button class="plain-button" type="button" @click="action(refreshRepositories)"><Icon name="refresh" :size="12" />再取得</button><a v-if="!config.demo" :href="config.installUrl" target="_blank" rel="noopener noreferrer">アクセスを設定<Icon name="external" :size="12" /></a></div>
        <div class="form-bottom"><div class="model-select"><label for="model">AIモデル</label><select id="model" v-model="model"><option v-for="m in config.models" :key="m">{{ m }}</option></select></div><button class="primary-button" :disabled="actionPending || !target"><span>セッションを作成</span><Icon name="chevron" :size="16" /></button></div>
       </form>
@@ -178,16 +183,21 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
        <p class="review-commits">Base <code>{{ current.review.base.slice(0, 12) }}</code> → Head <code>{{ current.review.head.slice(0, 12) }}</code></p>
        <p>{{ { planning: '計画作成中', diff: '差分を確認中', cross: 'ファイル間の整合性を確認中', done: '確認完了' }[current.review.phase] || current.review.phase }} · {{ current.review.steps.reduce((n, s) => n + s.files.filter(f => f.done).length, 0) }} / {{ current.review.totalFiles }} ファイルの処理済み（取得失敗・対象外を含む）</p>
        <details><summary>レビュー計画と処理状況</summary><div v-for="(step, i) in current.review.steps" :key="i" class="review-step"><strong>{{ i + 1 }}. {{ step.directory }} · {{ { pending: '未処理', running: '確認中', done: '処理済み', partial: '未確認あり' }[step.state] || step.state }}</strong><ul><li v-for="file in step.files" :key="file.index">{{ file.path || `一覧取得失敗（${file.index + 1}番目）` }} · {{ file.done ? '処理済み' : file.offset ? '差分の途中まで処理済み' : '未処理' }}</li></ul><p v-if="step.summary">{{ step.summary }}</p></div></details>
+       <ReviewDiffs :key="`${current.id}-${current.review.base}-${current.review.head}`" :session-id="current.id" :review="current.review" />
        <h3>指摘 {{ current.review.findings.length }} 件</h3>
        <p v-if="!current.review.findings.length">{{ current.review.phase === 'done' ? '確認した範囲では、保存された指摘はありません。' : '指摘は確認した区切りごとに表示されます。' }}</p>
        <article v-for="(finding, i) in current.review.findings" :key="i" class="review-finding">
         <h3><span class="finding-severity">{{ finding.severity }}</span> {{ finding.title }}</h3>
         <a :href="findingLink(finding)" target="_blank" rel="noopener noreferrer">{{ finding.path }}{{ finding.line ? ':' + finding.line : '（行未特定）' }} · {{ finding.side === 'LEFT' ? '変更前' : '変更後' }}</a>
-        <p><strong>問題:</strong> {{ finding.problem }}</p><p><strong>影響:</strong> {{ finding.impact }}</p><p><strong>根拠:</strong> {{ finding.evidence }}</p><p v-if="finding.suggestion"><strong>修正案:</strong> {{ finding.suggestion }}</p>
+        <p><strong>問題:</strong> {{ finding.problem }}</p><p><strong>影響:</strong> {{ finding.impact }}</p><FindingEvidence :evidence="finding.evidence" /><p v-if="finding.suggestion"><strong>修正案:</strong> {{ finding.suggestion }}</p>
+        <FindingIssue v-if="!config.demo && current.target.kind === 'pull' && current.target.number" :finding="finding" :repository="current.target.repository" :pull-number="current.target.number" :source-url="findingLink(finding)" />
        </article>
-       <details v-if="current.review.unverified.length" open><summary>未確認の範囲・制限 {{ current.review.unverified.length }} 件</summary><ul><li v-for="(item, i) in current.review.unverified" :key="i">{{ item }}</li></ul></details>
+       <details v-if="current.review.unverified.length" open><summary>未確認の範囲・制限 {{ current.review.unverified.length }} 件</summary>
+        <p>追加調査では関連情報を再確認します。取得や実行の制限は解消できない場合があります。</p>
+        <ul class="unverified-list"><li v-for="(item, i) in current.review.unverified" :key="i"><p>{{ item }}</p><button type="button" class="investigate-button" :disabled="running || !work.connected || (config.aiProvider !== 'demo' && !keyValid)" @click="investigate(i)">{{ current.review.investigations?.[i] ? 'もう一度調査' : '追加調査' }}</button><span v-if="current.review.pendingInvestigation === i + 1" class="investigation-status">{{ running ? '調査中' : '調査が中断されています。保存済みの状態から再開できます。' }}</span><div v-if="current.review.investigations?.[i]" class="investigation-result"><strong>追加調査の結果</strong><p>{{ current.review.investigations[i] }}</p></div></li></ul>
+       </details>
       </section>
-      <SourceFiles :key="current.id" :session="current" @open="openFile" @clear="closeFile" />
+      <SourceFiles v-if="!current.review" :key="current.id" :session="current" @open="openFile" @clear="closeFile" />
       <div v-if="running" class="progress-message"><span class="loading-dots">•••</span>{{ current.state === 'stopping' ? '停止を要求しています…' : work.progress || '処理を開始しています…' }}</div>
      </div>
      <div class="composer-area">

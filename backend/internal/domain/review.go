@@ -1,19 +1,21 @@
 package domain
 
 // Review stores only the plan, cursors and conclusions. Patches and source code
-// are transient and are read again at the pinned commits after interruption.
+// live in a separate, expiring cache and are fetched again on a cache miss.
 type Review struct {
-	Title        string       `json:"title"`
-	Body         string       `json:"body"`
-	Base         string       `json:"base"`
-	Head         string       `json:"head"`
-	TotalFiles   int          `json:"totalFiles"`
-	Phase        string       `json:"phase"`
-	Steps        []ReviewStep `json:"steps"`
-	Findings     []Finding    `json:"findings"`
-	Unverified   []string     `json:"unverified"`
-	CrossCursor  int          `json:"crossCursor"`
-	CrossSummary string       `json:"crossSummary"`
+	Title                string            `json:"title"`
+	Body                 string            `json:"body"`
+	Base                 string            `json:"base"`
+	Head                 string            `json:"head"`
+	TotalFiles           int               `json:"totalFiles"`
+	Phase                string            `json:"phase"`
+	Steps                []ReviewStep      `json:"steps"`
+	Findings             []Finding         `json:"findings"`
+	Unverified           []string          `json:"unverified"`
+	Investigations       map[string]string `json:"investigations,omitempty"`
+	PendingInvestigation int               `json:"pendingInvestigation,omitempty"`
+	CrossCursor          int               `json:"crossCursor"`
+	CrossSummary         string            `json:"crossSummary"`
 }
 type ReviewStep struct {
 	Directory string       `json:"directory"`
