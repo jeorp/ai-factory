@@ -121,11 +121,16 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		if step == 0 {
 			cp.Progress = "質問の意図と調査方針を整理しています"
 		}
+		budget := newChatBudget(step, calls, files)
+		if budget.FinalAnswerOnly {
+			cp.Progress = "取得済みの情報から回答をまとめています"
+			logger.Info("chat_final_answer_required", "step", step+1, "reads_used", calls, "files_used", files, "remaining_model_calls", budget.RemainingModelCalls)
+		}
 		measure()
 		if err := emit(cp); err != nil {
 			return err
 		}
-		input := BuildContext(in.Session, cp.Summary, instructions, ev, cp.Limitations, intent)
+		input := buildContext(in.Session, cp.Summary, instructions, ev, cp.Limitations, intent, &budget)
 		if len(input) > domain.MaxInputBytes {
 			return errors.New("ai_input_limit")
 		}
@@ -198,35 +203,48 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 			cp.Answer = decision.Answer
 			cp.Summary = domain.Clip(decision.Summary, 2048)
 			cp.Progress = "回答が完了しました"
-			measure()
-			return emit(cp)
-		}
-		if calls >= domain.MaxToolCalls {
-			cp.Answer = "取得回数の上限に達しました。確認範囲を絞って再度質問してください。"
-			cp.Limitations = append(cp.Limitations, "1回の質問につき最大6回の取得です。")
+			logger.Info("chat_answer_completed", "step", step+1, "reads_used", calls, "files_used", files)
 			measure()
 			return emit(cp)
 		}
 		read := *decision.Read
+		readLogger := chatReadLogger(logger, step, read, budget)
+		if budget.FinalAnswerOnly {
+			reason := "model_call_limit"
+			if budget.RemainingReads == 0 {
+				reason = "read_limit"
+			}
+			readLogger.Info("github_read_rejected", "reason", reason)
+			cp.Answer = chatBudgetFallback(cp)
+			cp.Limitations = append(cp.Limitations, "追加取得は実行していません: "+read.Kind+" "+read.Path)
+			cp.Progress = "取得済みの範囲で調査を終了しました"
+			logger.Info("chat_answer_fallback", "step", step+1, "reason", reason, "reads_used", calls, "files_used", files)
+			measure()
+			return emit(cp)
+		}
 		if err = read.Validate(); err != nil {
+			readLogger.Info("github_read_rejected", "reason", err.Error())
 			return err
 		}
 		cacheKeyBytes, _ := json.Marshal(read)
 		cacheKey := string(cacheKeyBytes)
 		content, ok := cache[cacheKey]
 		if ok {
-			logger.Info("github_read_cache_hit", "step", step+1, "kind", read.Kind)
+			readLogger.Info("github_read_cache_hit")
 			cp.Metrics.CacheHits++
 			cp.Limitations = append(cp.Limitations, "同じ取得要求が繰り返されたため、保存済みの一時結果を利用しました。")
 		} else {
 			if read.Kind == "file" {
-				files++
-				if files > domain.MaxFiles {
-					cp.Limitations = append(cp.Limitations, "ファイル取得は最大5件です。")
-					cp.Answer = "ファイル取得の上限に達しました。対象を絞って再度質問してください。"
+				if budget.RemainingFiles == 0 {
+					readLogger.Info("github_read_rejected", "reason", "file_limit")
+					cp.Limitations = append(cp.Limitations, "ファイル取得は最大5件です。追加要求は未取得です: "+read.Path)
 					measure()
-					return emit(cp)
+					if err = emit(cp); err != nil {
+						return err
+					}
+					continue
 				}
+				files++
 			}
 			calls++
 			cp.Metrics.ToolCalls++
@@ -238,9 +256,9 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 			var source domain.Source
 			var n int
 			readStart := time.Now()
-			logger.Info("github_read_started", "step", step+1, "kind", read.Kind)
+			readLogger.Info("github_read_started")
 			content, source, n, err = r.GitHub.Read(ctx, in.GitHubToken, in.Session.Target, read)
-			logger.Info("github_read_finished", "step", step+1, "kind", read.Kind, "duration_ms", time.Since(readStart).Milliseconds(), "outcome", outcome(err), "bytes", n)
+			readLogger.Info("github_read_finished", "duration_ms", time.Since(readStart).Milliseconds(), "outcome", outcome(err), "bytes", n)
 			cp.Metrics.FetchedBytes += n
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -289,6 +307,14 @@ func containsSource(s []domain.Source, url string) bool {
 	return false
 }
 func BuildContext(s domain.Session, summary string, instructions []domain.Message, ev []evidence, limits []string, plans ...IntentPlan) string {
+	var intent IntentPlan
+	if len(plans) > 0 && validIntent(plans[0]) {
+		intent = plans[0]
+	}
+	return buildContext(s, summary, instructions, ev, limits, intent, nil)
+}
+
+func buildContext(s domain.Session, summary string, instructions []domain.Message, ev []evidence, limits []string, intent IntentPlan, budget *chatBudget) string {
 	// Keep original user instructions independently of the model's lossy summary.
 	var pinned strings.Builder
 	for _, m := range instructions {
@@ -298,31 +324,33 @@ func BuildContext(s domain.Session, summary string, instructions []domain.Messag
 		return strings.Repeat("x", domain.MaxInputBytes+1)
 	}
 	history := []domain.Message{}
-	budget := 4500
+	historyBudget := 4500
 	for i := len(s.Messages) - 1; i >= 0 && len(history) < 6; i-- {
 		m := s.Messages[i]
 		if m.Role == "instruction" {
 			continue
 		}
-		if len(m.Text) > budget {
-			m.Text = domain.Clip(m.Text, budget)
+		if len(m.Text) > historyBudget {
+			m.Text = domain.Clip(m.Text, historyBudget)
 		}
 		history = append([]domain.Message{m}, history...)
-		budget -= len(m.Text)
-		if budget <= 0 {
+		historyBudget -= len(m.Text)
+		if historyBudget <= 0 {
 			break
 		}
 	}
 	limitText := strings.Join(limits, "\n")
-	var intent IntentPlan
-	if len(plans) > 0 && validIntent(plans[0]) {
-		intent = plans[0]
+	payload := map[string]any{"intent": intent, "target": s.Target, "activePullRequest": activePullRequest(s), "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 2048)}
+	if budget != nil {
+		payload["chatBudget"] = budget
 	}
-	body, _ := json.Marshal(map[string]any{"intent": intent, "target": s.Target, "activePullRequest": activePullRequest(s), "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 2048)})
+	body, _ := json.Marshal(payload)
 	// Drop oldest evidence to enforce a hard serialized-input cap; explicitly record the omission.
 	for len(body) > domain.MaxInputBytes && len(ev) > 0 {
 		ev = ev[1:]
-		body, _ = json.Marshal(map[string]any{"intent": intent, "target": s.Target, "activePullRequest": activePullRequest(s), "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 1024) + " 古い取得情報を入力上限のため省略しました。必要なら再取得してください。"})
+		payload["evidence"] = ev
+		payload["unverified"] = domain.Clip(limitText, 1024) + " 古い取得情報を入力上限のため省略しました。必要なら残りの取得枠内で再取得してください。"
+		body, _ = json.Marshal(payload)
 	}
 	return string(body)
 }

@@ -186,12 +186,12 @@ func TestRunLogsCorrelatedEventsWithoutSensitiveContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := logs.String()
-	for _, want := range []string{"trace-test", "session-test", "model_call_started", "model_call_finished", "github_read_started", "github_read_finished"} {
+	for _, want := range []string{"trace-test", "session-test", "model_call_started", "model_call_finished", "github_read_started", "github_read_finished", `"path":"private-path"`, `"remaining_reads":6`, `"remaining_files":5`} {
 		if !strings.Contains(output, want) {
 			t.Errorf("missing log %q", want)
 		}
 	}
-	for _, secret := range []string{"private-question", "private-answer", "private-path", "private-content", "private-key", "private-token"} {
+	for _, secret := range []string{"private-question", "private-answer", "private-content", "private-key", "private-token"} {
 		if strings.Contains(output, secret) {
 			t.Errorf("sensitive value logged: %q", secret)
 		}

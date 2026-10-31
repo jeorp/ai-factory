@@ -12,6 +12,7 @@ func decisionInstructions(schema map[string]any, input string) string {
 	var context struct {
 		ReviewTask   json.RawMessage `json:"reviewTask"`
 		PriorityTask []priorityItem  `json:"priorityTask"`
+		ChatBudget   *chatBudget     `json:"chatBudget"`
 		Target       struct {
 			Number int `json:"number"`
 		} `json:"target"`
@@ -24,6 +25,21 @@ func decisionInstructions(schema map[string]any, input string) string {
 		return prioritySystemPrompt
 	}
 	if len(context.ReviewTask) == 0 || string(context.ReviewTask) == "null" {
+		if budget := context.ChatBudget; budget != nil {
+			props := schema["properties"].(map[string]any)
+			if budget.FinalAnswerOnly || budget.RemainingReads <= 0 || budget.RemainingModelCalls <= 1 {
+				props["read"] = map[string]any{"type": "null"}
+				return systemPrompt + "\n今回は通常チャットの最終判断です。追加取得は禁止です。read=nullとして、取得済みの根拠・要約から質問への回答と未確認範囲をまとめてください。確認範囲を絞った再質問の要求だけで回答を終えないでください。"
+			}
+			if budget.RemainingFiles <= 0 {
+				// Both providers expose either anyOf or a nullable object here.
+				read := props["read"].(map[string]any)
+				if choices, ok := read["anyOf"].([]any); ok {
+					read = choices[1].(map[string]any)
+				}
+				read["properties"].(map[string]any)["kind"] = map[string]any{"type": "string", "enum": []string{"repository", "pull_request", "issue", "pull_requests", "issues"}}
+			}
+		}
 		return systemPrompt
 	}
 	var task reviewTask

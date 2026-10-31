@@ -54,7 +54,9 @@ WebSocket最初のフレームは `{type:"auth",token:"Firebase ID token"}`。�
 
 ## 会話処理の追跡
 
-各質問・再開に追跡 ID を発行し、画面と WebSocket の `trace` イベントに表示する。API の標準出力には JSON ログが出力され、`trace_id` で一回の実行、`session_id` で同じ会話の複数の実行を関連付けられる。`run_started` / `run_finished`、`model_call_started` / `model_call_finished`、`github_read_started` / `github_read_finished`、キャッシュ利用を記録する。終了イベントには所要時間と結果、モデル呼び出しにはトークン数を含む。質問や回答、取得内容、ファイルパス、キー、外部サービスのエラー本文は記録しない。ID は実行中のブラウザーに表示され、再読み込み後には復元されない。
+各質問・再開に追跡 ID を発行し、画面と WebSocket の `trace` イベントに表示する。API の標準出力には JSON ログが出力され、`trace_id` で一回の実行、`session_id` で同じ会話の複数の実行を関連付けられる。`run_started` / `run_finished`、`model_call_started` / `model_call_finished`、`github_read_started` / `github_read_finished`、キャッシュ利用を記録する。終了イベントには所要時間と結果、モデル呼び出しにはトークン数を含む。通常チャットの取得・キャッシュ利用・拒否ログには `kind`、`path`、`number`（PR・Issue番号）、`detail` と、その判断時点の `remaining_reads`・`remaining_files`・`remaining_model_calls` を含める。質問や回答、取得内容、キー、外部サービスのエラー本文は記録しない。ID は実行中のブラウザーに表示され、再読み込み後には復元されない。
+
+通常チャットでは、最終判断に切り替えたときに `chat_final_answer_required`、回答完了時に `chat_answer_completed` を記録する。AIが枠を超えた取得を要求した場合は `github_read_rejected` に対象と `reason`（`read_limit`・`file_limit`・`model_call_limit`）を記録し、取得を実行しない。最終判断でも取得を要求した場合は、保存済みの調査メモと未確認の案内で終了し、`chat_answer_fallback` を記録する。ファイル上限だけに達した場合は、残りの判断枠で回答を続ける。
 
 ローカルの Compose では `docker compose logs api` で確認する。本番では API の標準出力を収集するログ基盤で `trace_id` または `session_id` を検索する。これは構造化ログによる相関であり、外部サービス内部までの分散トレースではない。
 
