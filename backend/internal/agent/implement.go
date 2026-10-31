@@ -21,6 +21,7 @@ type Writer interface {
 	Authorize(context.Context, string, string) (github.Repository, error)
 	Commit(context.Context, string, github.Repository) (string, error)
 	RawFile(context.Context, string, string, string, string) (string, bool, error)
+	FileList(context.Context, string, string, string) ([]string, bool, error)
 	PutChange(context.Context, string, int, domain.FileChange) error
 	GetChange(context.Context, string, int, string) (domain.FileChange, bool)
 	Publish(context.Context, string, github.PublishRequest, github.PublishState, func(github.PublishState) error) (github.PublishState, error)
@@ -48,13 +49,22 @@ type ImplementResult struct {
 }
 
 const (
-	ImplementPlanCalls  = 8
-	ImplementPlanReads  = 6
+	ImplementPlanCalls  = 12
+	ImplementPlanReads  = 10
 	ImplementStepCalls  = 5
 	ImplementStepReads  = 3
 	ImplementMaxCalls   = 100
 	ImplementOutputToks = 16384
 	ImplementRunTime    = 30 * time.Minute
+
+	// Context budgets keep the extra code well inside implementInputFits.
+	planEvidenceKept   = 5
+	stepEvidenceKept   = 3
+	maxContextFiles    = 8
+	contextFileBytes   = 12000
+	contextTotalBytes  = 36000
+	previousDiffBytes  = 6000
+	previousTotalBytes = 20000
 )
 
 type implementFile struct {
@@ -246,7 +256,7 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 }
 
 // read performs a model-requested read pinned to the base commit.
-func (run *implementRun) read(ctx context.Context, read github.Read, ev *[]evidence) error {
+func (run *implementRun) read(ctx context.Context, read github.Read, ev *[]evidence, keep int) error {
 	if read.Kind != "file" && read.Kind != "repository" {
 		*ev = append(*ev, evidence{Read: read, Content: "この区切りではファイルとディレクトリだけ取得できます。"})
 		return nil
@@ -277,8 +287,8 @@ func (run *implementRun) read(ctx context.Context, read github.Read, ev *[]evide
 		}
 	}
 	*ev = append(*ev, evidence{Read: read, Content: content})
-	if len(*ev) > 3 {
-		*ev = (*ev)[len(*ev)-3:]
+	if len(*ev) > keep {
+		*ev = (*ev)[len(*ev)-keep:]
 	}
 	return nil
 }
@@ -310,21 +320,36 @@ func (run *implementRun) plan(ctx context.Context) error {
 	if err := run.save(ctx, "依頼内容と関連コードを確認して実装計画を作成しています"); err != nil {
 		return err
 	}
+	files, err := run.fileList(ctx)
+	if err != nil {
+		return err
+	}
+	impl.ContextFiles = nil
 	ev := []evidence{}
 	reads := 0
 	correction := ""
 	for call := 0; call < ImplementPlanCalls; call++ {
 		final := reads >= ImplementPlanReads || call == ImplementPlanCalls-1
 		task := implementTask{Mode: "plan", Request: impl.Request, BaseBranch: impl.BaseBranch, FollowUp: impl.ExpectedHead != "", ReadBudget: ImplementPlanReads - reads, FinalAnswer: final, Correction: correction}
-		d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev})
+		d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev, "repositoryFiles": files})
+		if err != nil && err.Error() == "ai_input_limit" && len(ev) > 0 {
+			ev = ev[1:]
+			correction = "入力上限のため古い取得結果を省略しました。"
+			// The request never reached the model, so it does not use up a call.
+			call--
+			continue
+		}
 		if err != nil {
 			return err
 		}
 		correction = ""
 		if d.Read != nil && !final {
 			reads++
-			if err := run.read(ctx, *d.Read, &ev); err != nil {
+			if err := run.read(ctx, *d.Read, &ev, planEvidenceKept); err != nil {
 				return err
+			}
+			if d.Read.Kind == "file" {
+				impl.ContextFiles = addContextFile(impl.ContextFiles, d.Read.Path)
 			}
 			run.cp.Summary = domain.Clip(d.Summary, 2048)
 			continue
@@ -428,6 +453,10 @@ func (run *implementRun) edit(ctx context.Context) error {
 			}
 			files = append(files, f)
 		}
+		related, previous, err := run.stepContext(ctx, step)
+		if err != nil {
+			return err
+		}
 		ev := []evidence{}
 		reads := 0
 		correction := ""
@@ -437,10 +466,22 @@ func (run *implementRun) edit(ctx context.Context) error {
 		for call := 0; call < ImplementStepCalls && result == nil; call++ {
 			final := reads >= ImplementStepReads || call == ImplementStepCalls-1
 			task := implementTask{Mode: "edit", Request: impl.Request, BaseBranch: impl.BaseBranch, Plan: impl.Plan, Step: impl.NextStep + 1, TotalSteps: len(impl.Steps), Files: files, Done: impl.Changes, ReadBudget: ImplementStepReads - reads, FinalAnswer: final, Correction: correction}
-			d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev})
-			if err != nil && err.Error() == "ai_input_limit" && len(ev) > 0 {
-				ev = nil
-				correction = "入力上限のため取得済みの関連コードを省略しました。"
+			d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev, "context": related, "previousChanges": previous})
+			// Shed the optional context before splitting the step.
+			// The request never reached the model, so shedding does not use up a
+			// call; it ends because ev, related and previous only shrink here and
+			// reads are bounded.
+			if err != nil && err.Error() == "ai_input_limit" && (len(ev) > 0 || len(related) > 0 || len(previous) > 0) {
+				switch {
+				case len(ev) > 0:
+					ev = nil
+				case len(related) > 0:
+					related = nil
+				default:
+					previous = nil
+				}
+				correction = "入力上限のため関連コードの一部を省略しました。"
+				call--
 				continue
 			}
 			if err != nil && err.Error() == "ai_input_limit" && len(step) > 1 {
@@ -458,7 +499,7 @@ func (run *implementRun) edit(ctx context.Context) error {
 			correction = ""
 			if d.Read != nil && !final {
 				reads++
-				if err := run.read(ctx, *d.Read, &ev); err != nil {
+				if err := run.read(ctx, *d.Read, &ev, stepEvidenceKept); err != nil {
 					return err
 				}
 				continue
@@ -544,6 +585,133 @@ func (run *implementRun) edit(ctx context.Context) error {
 	impl.Body = defaultBody(impl)
 	run.cp.Answer = formatChanges(impl)
 	return run.save(ctx, "変更を作成しました。差分を確認してPRを作成してください")
+}
+
+type contextFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type previousChange struct {
+	Path   string `json:"path"`
+	Action string `json:"action"`
+	Diff   string `json:"diff"`
+}
+
+// fileList gives the model the real paths of the base commit, newline separated.
+// The list is a planning aid: when it cannot be read the plan goes ahead with
+// repository reads only, and the plan path check still applies.
+func (run *implementRun) fileList(ctx context.Context) (string, error) {
+	paths, truncated, err := run.r.Writer.FileList(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, run.impl.BaseCommit)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		run.logger.Info("implement_file_list_unavailable", "error", err.Error())
+		return "[ファイル一覧を取得できませんでした。repositoryで確認してください]", nil
+	}
+	// Cut only at a line break so no partial path reaches the model.
+	var list strings.Builder
+	for _, p := range paths {
+		if list.Len()+len(p)+1 > github.MaxListedBytes {
+			truncated = true
+			break
+		}
+		list.WriteString(p + "\n")
+	}
+	if truncated {
+		list.WriteString("[一覧の一部（深い階層）を省略しました。必要ならrepositoryで確認してください]")
+	}
+	return strings.TrimSuffix(list.String(), "\n"), nil
+}
+
+func addContextFile(files []string, p string) []string {
+	if domain.ValidateChangePath(p) != nil {
+		return files
+	}
+	out := []string{}
+	for _, f := range files {
+		if f != p {
+			out = append(out, f)
+		}
+	}
+	out = append(out, p)
+	if len(out) > maxContextFiles {
+		out = out[len(out)-maxContextFiles:]
+	}
+	return out
+}
+
+// stepContext collects what a step needs beyond its own files: diffs of files
+// changed by earlier steps, so names and signatures stay consistent, and the
+// code read while planning, so definitions are not guessed.
+func (run *implementRun) stepContext(ctx context.Context, step []string) ([]contextFile, []previousChange, error) {
+	impl := run.impl
+	inStep := map[string]bool{}
+	for _, p := range step {
+		inStep[p] = true
+	}
+	changed := map[string]bool{}
+	previous := []previousChange{}
+	total := 0
+	for _, c := range impl.Changes {
+		changed[c.Path] = true
+		if inStep[c.Path] || total >= previousTotalBytes {
+			continue
+		}
+		f, ok := run.r.Writer.GetChange(ctx, impl.CacheID, impl.Version, c.Path)
+		if !ok {
+			continue
+		}
+		diff := "（削除）"
+		if c.Action != "delete" {
+			original := ""
+			if c.Action == "update" {
+				content, _, err := run.r.Writer.RawFile(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, impl.BaseCommit, c.Path)
+				if err != nil {
+					if ctx.Err() != nil {
+						return nil, nil, ctx.Err()
+					}
+					continue
+				}
+				original = content
+			}
+			diff = domain.CompactDiff(original, f.Content, min(previousDiffBytes, previousTotalBytes-total))
+		}
+		total += len(diff)
+		previous = append(previous, previousChange{Path: c.Path, Action: c.Action, Diff: diff})
+	}
+	candidates := append([]string{}, impl.ContextFiles...)
+	if impl.Plan != nil {
+		for _, f := range impl.Plan.Files {
+			if f.Action == "update" {
+				candidates = append(candidates, f.Path)
+			}
+		}
+	}
+	related := []contextFile{}
+	seen := map[string]bool{}
+	total = 0
+	for _, p := range candidates {
+		if inStep[p] || changed[p] || seen[p] || total >= contextTotalBytes {
+			continue
+		}
+		seen[p] = true
+		content, exists, err := run.r.Writer.RawFile(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, impl.BaseCommit, p)
+		if err != nil || !exists {
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
+			continue // directories, binaries and oversized files are simply left out
+		}
+		limit := min(contextFileBytes, contextTotalBytes-total)
+		if len(content) > limit {
+			content = domain.Clip(content, limit) + "\n[以降省略]"
+		}
+		total += len(content)
+		related = append(related, contextFile{Path: p, Content: content})
+	}
+	return related, previous, nil
 }
 
 // applyProposals turns model proposals into full file contents. Only files of

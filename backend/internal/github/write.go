@@ -72,6 +72,11 @@ type apiError struct{ Status int }
 func (e apiError) Error() string { return fmt.Sprintf("github_http_%d", e.Status) }
 
 func (c *Client) send(ctx context.Context, token, method, path string, in, out any) error {
+	return c.sendLimit(ctx, token, method, path, in, out, 512*1024)
+}
+
+// sendLimit is send with a caller-chosen response size cap.
+func (c *Client) sendLimit(ctx context.Context, token, method, path string, in, out any, limit int64) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -98,11 +103,11 @@ func (c *Client) send(ctx context.Context, token, method, path string, in, out a
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return apiError{resp.StatusCode}
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024+1))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return err
 	}
-	if len(b) > 512*1024 {
+	if int64(len(b)) > limit {
 		return errors.New("github_response_limit")
 	}
 	if out == nil || len(b) == 0 {
