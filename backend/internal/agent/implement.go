@@ -63,7 +63,6 @@ const (
 	maxContextFiles    = 8
 	contextFileBytes   = 12000
 	contextTotalBytes  = 36000
-	fileListBytes      = 30000
 	previousDiffBytes  = 6000
 	previousTotalBytes = 20000
 )
@@ -336,6 +335,8 @@ func (run *implementRun) plan(ctx context.Context) error {
 		if err != nil && err.Error() == "ai_input_limit" && len(ev) > 0 {
 			ev = ev[1:]
 			correction = "入力上限のため古い取得結果を省略しました。"
+			// The request never reached the model, so it does not use up a call.
+			call--
 			continue
 		}
 		if err != nil {
@@ -467,6 +468,9 @@ func (run *implementRun) edit(ctx context.Context) error {
 			task := implementTask{Mode: "edit", Request: impl.Request, BaseBranch: impl.BaseBranch, Plan: impl.Plan, Step: impl.NextStep + 1, TotalSteps: len(impl.Steps), Files: files, Done: impl.Changes, ReadBudget: ImplementStepReads - reads, FinalAnswer: final, Correction: correction}
 			d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev, "context": related, "previousChanges": previous})
 			// Shed the optional context before splitting the step.
+			// The request never reached the model, so shedding does not use up a
+			// call; it ends because ev, related and previous only shrink here and
+			// reads are bounded.
 			if err != nil && err.Error() == "ai_input_limit" && (len(ev) > 0 || len(related) > 0 || len(previous) > 0) {
 				switch {
 				case len(ev) > 0:
@@ -477,6 +481,7 @@ func (run *implementRun) edit(ctx context.Context) error {
 					previous = nil
 				}
 				correction = "入力上限のため関連コードの一部を省略しました。"
+				call--
 				continue
 			}
 			if err != nil && err.Error() == "ai_input_limit" && len(step) > 1 {
@@ -594,16 +599,30 @@ type previousChange struct {
 }
 
 // fileList gives the model the real paths of the base commit, newline separated.
+// The list is a planning aid: when it cannot be read the plan goes ahead with
+// repository reads only, and the plan path check still applies.
 func (run *implementRun) fileList(ctx context.Context) (string, error) {
 	paths, truncated, err := run.r.Writer.FileList(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, run.impl.BaseCommit)
 	if err != nil {
-		return "", err
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		run.logger.Info("implement_file_list_unavailable", "error", err.Error())
+		return "[ファイル一覧を取得できませんでした。repositoryで確認してください]", nil
 	}
-	list := domain.Clip(strings.Join(paths, "\n"), fileListBytes)
-	if truncated || len(list) < len(strings.Join(paths, "\n")) {
-		list += "\n[一覧の一部を省略しました。必要ならrepositoryで確認してください]"
+	// Cut only at a line break so no partial path reaches the model.
+	var list strings.Builder
+	for _, p := range paths {
+		if list.Len()+len(p)+1 > github.MaxListedBytes {
+			truncated = true
+			break
+		}
+		list.WriteString(p + "\n")
 	}
-	return list, nil
+	if truncated {
+		list.WriteString("[一覧の一部（深い階層）を省略しました。必要ならrepositoryで確認してください]")
+	}
+	return strings.TrimSuffix(list.String(), "\n"), nil
 }
 
 func addContextFile(files []string, p string) []string {

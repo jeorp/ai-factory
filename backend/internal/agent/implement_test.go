@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -20,6 +21,8 @@ type fakeWriter struct {
 	published []github.PublishRequest
 	failPut   bool
 	closed    bool
+	list      []string // overrides the listed paths when set
+	listErr   error
 }
 
 func newFakeWriter() *fakeWriter {
@@ -39,6 +42,12 @@ func (w *fakeWriter) RawFile(ctx context.Context, token, repo, commit, p string)
 	return v, ok, nil
 }
 func (w *fakeWriter) FileList(ctx context.Context, token, repo, commit string) ([]string, bool, error) {
+	if w.listErr != nil {
+		return nil, false, w.listErr
+	}
+	if w.list != nil {
+		return w.list, false, nil
+	}
 	paths := []string{}
 	for p := range w.files {
 		paths = append(paths, p)
@@ -424,5 +433,123 @@ func TestImplementationPassesFileListContextAndEarlierDiffs(t *testing.T) {
 	}
 	if !strings.Contains(stepInputs[1], `"previousChanges":[{"path":"src/a.go","action":"update","diff":"`) || !strings.Contains(stepInputs[1], `+func A() int { return Two() }`) {
 		t.Fatalf("second step lacks the earlier diff: %s", stepInputs[1])
+	}
+}
+
+func planOnly(t *testing.T, writer *fakeWriter, ai Provider) *domain.Implementation {
+	t.Helper()
+	session := baseSession()
+	session.RunKind = "implement"
+	session.Implementation = &domain.Implementation{Status: "planning", Request: "r", CacheID: "0123456789abcdef"}
+	reader := readerFunc(func(ctx context.Context, token string, target domain.Target, read github.Read) (string, domain.Source, int, error) {
+		return "package src", domain.Source{Label: read.Path, URL: "https://github.com/a/b/blob/" + implBase + "/" + read.Path}, 11, nil
+	})
+	var last Checkpoint
+	if err := (&Runner{AI: ai, GitHub: reader, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return last.Implementation
+}
+
+func simplePlan() *domain.ImplementationPlan {
+	return &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}
+}
+
+func TestPlanGoesOnWhenFileListCannotBeRead(t *testing.T) {
+	writer := newFakeWriter()
+	writer.listErr = errors.New("github_response_limit")
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		if !strings.Contains(input, "ファイル一覧を取得できませんでした") {
+			t.Fatal("plan input does not say the list is missing")
+		}
+		return Decision{Plan: simplePlan()}, Usage{}, nil
+	})
+	if impl := planOnly(t, writer, ai); impl.Status != "plan_ready" || impl.Plan == nil {
+		t.Fatalf("plan not made without the file list: %+v", impl)
+	}
+}
+
+func TestFileListIsCutAtLineBreaks(t *testing.T) {
+	writer := newFakeWriter()
+	for i := 0; i < 2000; i++ {
+		writer.list = append(writer.list, fmt.Sprintf("pkg/dir%04d/some_long_file_name.go", i))
+	}
+	known := map[string]bool{}
+	for _, p := range writer.list {
+		known[p] = true
+	}
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		var body struct {
+			Files string `json:"repositoryFiles"`
+		}
+		if err := json.Unmarshal([]byte(input), &body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Files) > github.MaxListedBytes+200 {
+			t.Fatalf("list too long: %d", len(body.Files))
+		}
+		lines := strings.Split(body.Files, "\n")
+		for _, l := range lines[:len(lines)-1] {
+			if !known[l] {
+				t.Fatalf("partial or unknown path in list: %q", l)
+			}
+		}
+		if !strings.Contains(lines[len(lines)-1], "省略") {
+			t.Fatalf("truncation not marked: %q", lines[len(lines)-1])
+		}
+		return Decision{Plan: simplePlan()}, Usage{}, nil
+	})
+	planOnly(t, writer, ai)
+}
+
+func TestPlanInputLimitRetriesKeepReadBudget(t *testing.T) {
+	writer := newFakeWriter()
+	reads := 0
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		var body struct {
+			Evidence []json.RawMessage `json:"evidence"`
+		}
+		json.Unmarshal([]byte(input), &body)
+		if len(body.Evidence) >= 2 {
+			// Only one earlier read fits, as with a few large files.
+			return Decision{}, Usage{}, errors.New("ai_input_limit")
+		}
+		if task := implementTaskOf(t, input); !task.FinalAnswer {
+			reads++
+			return Decision{Read: &github.Read{Kind: "file", Path: fmt.Sprintf("src/f%d.go", reads), Detail: "summary"}}, Usage{}, nil
+		}
+		return Decision{Plan: simplePlan()}, Usage{}, nil
+	})
+	impl := planOnly(t, writer, ai)
+	if reads != ImplementPlanReads || impl.Status != "plan_ready" {
+		t.Fatalf("reads %d, status %s", reads, impl.Status)
+	}
+}
+
+func TestEditInputLimitRetriesKeepCallBudget(t *testing.T) {
+	writer := newFakeWriter()
+	writer.files["src/ctx.go"] = "package src\n\ntype C struct{}\n"
+	modelCalls := 0
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		if strings.Contains(input, `"context":[{`) {
+			return Decision{}, Usage{}, errors.New("ai_input_limit")
+		}
+		modelCalls++
+		search := "return 9" // does not match: the model needs every call
+		if modelCalls == ImplementStepCalls {
+			search = "return 1"
+		}
+		return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "src/a.go", Action: "update", Edits: []domain.Edit{{Search: search, Replace: "return 2"}}}}}}, Usage{}, nil
+	})
+	session := baseSession()
+	session.RunKind = "implement"
+	plan := simplePlan()
+	session.Implementation = &domain.Implementation{Status: "editing", Request: "r", CacheID: "0123456789abcdef", BaseBranch: "main", BaseCommit: implBase, Plan: plan, Steps: domain.PlanSteps(plan.Files), ContextFiles: []string{"src/ctx.go"}}
+	var last Checkpoint
+	if err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if modelCalls != ImplementStepCalls || len(last.Implementation.Changes) != 1 {
+		t.Fatalf("model calls %d, changes %+v", modelCalls, last.Implementation.Changes)
 	}
 }
