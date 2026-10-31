@@ -475,7 +475,7 @@ func implementCommandProblem(session *domain.Session, cmd *command) string {
 			return "implementation_request_required"
 		}
 		// A half-written branch must be finished (or retried) before a new cycle.
-		if impl != nil && impl.Status == "publishing" && impl.RefUpdated {
+		if impl != nil && impl.Status == "publishing" && (impl.RefUpdated || impl.RefBranch != "") {
 			return "implementation_publish_incomplete"
 		}
 	case "implement_approve":
@@ -496,7 +496,7 @@ func implementCommandProblem(session *domain.Session, cmd *command) string {
 		if cmd.Title == "" || len(cmd.Title) > 256 || len(cmd.Body) > 12000 || !safeText(cmd.Title) || domain.ContainsSecret(cmd.Title+"\n"+cmd.Body) {
 			return "invalid_pull_request_no_secrets"
 		}
-		if impl.Status == "publishing" && impl.Commit != "" && impl.RefUpdated && cmd.Branch != impl.Branch {
+		if impl.Status == "publishing" && ((impl.RefUpdated && cmd.Branch != impl.Branch) || (impl.RefBranch != "" && cmd.Branch != impl.RefBranch)) {
 			return "branch_already_written"
 		}
 	}
@@ -518,7 +518,7 @@ func applyImplementCommand(session *domain.Session, cmd command) {
 		impl := session.Implementation
 		session.RunKind = "implement"
 		if impl.Status == "ready" {
-			impl.Commit, impl.RefUpdated = "", false
+			impl.Commit, impl.RefBranch, impl.RefUpdated = "", "", false
 		}
 		impl.Status, impl.Branch, impl.Title, impl.Body = "publishing", cmd.Branch, cmd.Title, cmd.Body
 	}

@@ -30,7 +30,8 @@ type Edit struct {
 	Replace string `json:"replace"`
 }
 
-var secretPattern = regexp.MustCompile(`(?:AIza|sk-|github_pat_|gh[opusr]_|xox[abp]-)[a-zA-Z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----`)
+// \b keeps words such as "risk-assessment" or "desk-layout" from matching "sk-".
+var secretPattern = regexp.MustCompile(`\b(?:AIza|sk-|github_pat_|gh[opusr]_|xox[abp]-)[a-zA-Z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----`)
 
 // ContainsSecret reports whether text contains a credential-like token.
 func ContainsSecret(text string) bool { return secretPattern.MatchString(text) }
@@ -72,7 +73,9 @@ func ValidateChangePath(p string) error {
 			return errors.New("invalid_change_path")
 		}
 	}
-	if strings.HasPrefix(lower, ".github/workflows/") || lower == ".gitmodules" {
+	// Workflows, local actions they run, and ownership rules change what runs
+	// or who must review; they stay out of AI-authored changes.
+	if strings.HasPrefix(lower, ".github/workflows/") || strings.HasPrefix(lower, ".github/actions/") || lower == ".gitmodules" || path.Base(lower) == "codeowners" {
 		return errors.New("protected_change_path")
 	}
 	for _, suffix := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".zip", ".mp4", ".woff", ".woff2", ".exe", ".lock", ".min.js", ".map"} {

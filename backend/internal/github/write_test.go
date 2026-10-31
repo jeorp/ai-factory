@@ -97,12 +97,15 @@ func (f *fakeGitHub) serve(r *http.Request) (*http.Response, error) {
 		f.refs[strings.TrimPrefix(route, "PATCH /git/refs/heads/")] = in["sha"].(string)
 		return reply(200, map[string]string{})
 	case route == "GET /pulls":
+		if r.URL.Query().Get("state") != "open" {
+			f.t.Fatal("existing PR lookup must be limited to open PRs")
+		}
 		return reply(200, f.pulls)
 	case route == "POST /pulls":
 		if in["draft"] != true || in["base"] != "main" {
 			f.t.Fatalf("pull request not draft against base: %+v", in)
 		}
-		p := map[string]any{"number": len(f.pulls) + 7, "html_url": fmt.Sprintf("https://github.com/owner/repo/pull/%d", len(f.pulls)+7)}
+		p := map[string]any{"number": len(f.pulls) + 7, "html_url": fmt.Sprintf("https://github.com/owner/repo/pull/%d", len(f.pulls)+7), "head": map[string]string{"sha": newCommit}}
 		f.pulls = append(f.pulls, p)
 		return reply(201, p)
 	}
@@ -128,7 +131,7 @@ func TestPublishCreatesBranchAndDraftPR(t *testing.T) {
 	f := newFake(t)
 	saves := 0
 	state, err := f.client().Publish(context.Background(), "token", request(), PublishState{}, func(PublishState) error { saves++; return nil })
-	if err != nil || state.Commit != newCommit || !state.RefUpdated || state.PullNumber != 7 || saves != 3 {
+	if err != nil || state.Commit != newCommit || !state.RefUpdated || state.PullNumber != 7 || saves != 4 {
 		t.Fatalf("publish failed: %+v %v saves=%d", state, err, saves)
 	}
 	if f.refs["ai-factory/add-a"] != newCommit || f.refs["main"] != baseSHA {
@@ -244,5 +247,26 @@ func TestPublishStopsWhenSaveFails(t *testing.T) {
 		if c == "POST /git/refs" {
 			t.Fatal("continued writing after save failure")
 		}
+	}
+}
+
+func TestPublishIgnoresOtherPRsOnSameBranchName(t *testing.T) {
+	f := newFake(t)
+	// An open PR on this branch whose head is not our commit is not reused.
+	f.pulls = []map[string]any{{"number": 3, "html_url": "https://github.com/owner/repo/pull/3", "head": map[string]string{"sha": strings.Repeat("e", 40)}}}
+	_, err := f.client().Publish(context.Background(), "token", request(), PublishState{}, func(PublishState) error { return nil })
+	if err == nil || err.Error() != "pull_request_conflict" {
+		t.Fatalf("foreign PR reused: %v", err)
+	}
+}
+
+func TestPublishRecordsBranchBeforeCreatingRef(t *testing.T) {
+	f := newFake(t)
+	var states []PublishState
+	if _, err := f.client().Publish(context.Background(), "token", request(), PublishState{}, func(s PublishState) error { states = append(states, s); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(states) < 2 || states[1].RefBranch != "ai-factory/add-a" || states[1].RefUpdated {
+		t.Fatalf("branch not recorded before ref creation: %+v", states)
 	}
 }

@@ -24,6 +24,7 @@ type Writer interface {
 	PutChange(context.Context, string, int, domain.FileChange) error
 	GetChange(context.Context, string, int, string) (domain.FileChange, bool)
 	Publish(context.Context, string, github.PublishRequest, github.PublishState, func(github.PublishState) error) (github.PublishState, error)
+	PullRequestOpen(context.Context, string, string, int, string, string) (bool, error)
 }
 
 // ImplementRequest is returned by the chat model to start the implementation workflow.
@@ -166,7 +167,13 @@ func (run *implementRun) save(ctx context.Context, progress string) error {
 		return err
 	}
 	run.cp.Progress = progress
-	run.cp.Implementation = run.impl
+	// The socket keeps the checkpoint after the ack while this run keeps
+	// mutating run.impl, so hand over a copy.
+	snapshot, err := cloneImplementation(run.impl)
+	if err != nil {
+		return err
+	}
+	run.cp.Implementation = snapshot
 	return run.emit(run.cp)
 }
 
@@ -278,6 +285,17 @@ func (run *implementRun) read(ctx context.Context, read github.Read, ev *[]evide
 
 func (run *implementRun) plan(ctx context.Context) error {
 	impl := run.impl
+	if impl.ExpectedHead != "" {
+		open, err := run.r.Writer.PullRequestOpen(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, impl.PullNumber, impl.Branch, impl.ExpectedHead)
+		if err != nil {
+			return err
+		}
+		if !open {
+			previous := impl.PullNumber
+			impl.DetachFollowUp()
+			impl.Unverified = append(impl.Unverified, fmt.Sprintf("PR #%d はマージ・クローズ済み、またはブランチが更新されているため、最新のデフォルトブランチから新しいブランチで作成します。", previous))
+		}
+	}
 	if impl.BaseCommit == "" {
 		repo, err := run.r.Writer.Authorize(ctx, run.in.GitHubToken, run.in.Session.Target.Repository)
 		if err != nil {
@@ -430,6 +448,19 @@ func (run *implementRun) edit(ctx context.Context) error {
 		if result == nil {
 			return errors.New("implementation_edit_failed")
 		}
+		// Check the running total now rather than failing only at publish time.
+		total := impl.ChangeBytes()
+		for _, f := range applied {
+			for _, c := range impl.Changes {
+				if c.Path == f.Path {
+					total -= c.Bytes
+				}
+			}
+			total += len(f.Content)
+		}
+		if total > domain.MaxChangeSetBytes {
+			return errors.New("change_set_size_limit")
+		}
 		covered := map[string]bool{}
 		for _, f := range applied {
 			if err := run.r.Writer.PutChange(ctx, impl.CacheID, impl.Version, f); err != nil {
@@ -546,13 +577,13 @@ func (run *implementRun) publish(ctx context.Context) error {
 		Branch: impl.Branch, Title: impl.Title, Body: impl.Body, Message: impl.Title,
 		Files: files, Approved: impl.ApprovedPaths(), ExpectedHead: impl.ExpectedHead,
 	}
-	state := github.PublishState{Commit: impl.Commit, RefUpdated: impl.RefUpdated, PullNumber: impl.PullNumber, PullURL: impl.PullURL}
+	state := github.PublishState{Commit: impl.Commit, RefBranch: impl.RefBranch, RefUpdated: impl.RefUpdated, PullNumber: impl.PullNumber, PullURL: impl.PullURL}
 	if impl.ExpectedHead != "" {
 		// A follow-up adds a commit; the PR fields belong to the earlier cycle.
 		state.PullNumber, state.PullURL = 0, ""
 	}
 	final, err := run.r.Writer.Publish(ctx, run.in.GitHubToken, req, state, func(s github.PublishState) error {
-		impl.Commit, impl.RefUpdated = s.Commit, s.RefUpdated
+		impl.Commit, impl.RefBranch, impl.RefUpdated = s.Commit, s.RefBranch, s.RefUpdated
 		if s.PullNumber > 0 {
 			impl.PullNumber, impl.PullURL = s.PullNumber, s.PullURL
 		}

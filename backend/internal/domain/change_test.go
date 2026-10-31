@@ -18,7 +18,7 @@ func TestApplyEditsRequiresUniqueMatch(t *testing.T) {
 }
 
 func TestValidateChangePath(t *testing.T) {
-	for _, p := range []string{"", "/etc/passwd", "../a", "a/../b", "a//b", "./a", ".git/config", "src/.git/x", ".github/workflows/ci.yaml", ".GitHub/Workflows/ci.yaml", ".gitmodules", "a\\b", "logo.png", "go.lock"} {
+	for _, p := range []string{"", "/etc/passwd", "../a", "a/../b", "a//b", "./a", ".git/config", "src/.git/x", ".github/workflows/ci.yaml", ".GitHub/Workflows/ci.yaml", ".gitmodules", ".github/actions/setup/action.yml", "CODEOWNERS", ".github/CODEOWNERS", "a\\b", "logo.png", "go.lock"} {
 		if ValidateChangePath(p) == nil {
 			t.Fatalf("path accepted: %q", p)
 		}
@@ -67,6 +67,19 @@ func TestValidBranchName(t *testing.T) {
 	for _, b := range []string{"main", "feature/x", "ai-factory/", "ai-factory/a..b", "ai-factory/x.lock", "ai-factory/Upper", "ai-factory/a b", "ai-factory/a/b/c"} {
 		if ValidBranchName(b) {
 			t.Fatalf("accepted %q", b)
+		}
+	}
+}
+
+func TestContainsSecretIgnoresOrdinaryWords(t *testing.T) {
+	for _, text := range []string{"risk-assessment-score", "desk-layout-component", "--mask-image-gradient", "task-runner-configuration"} {
+		if ContainsSecret(text) {
+			t.Fatalf("false positive: %q", text)
+		}
+	}
+	for _, text := range []string{"sk-abcdefghijklmnop", "key=sk-abcdefghijklmnop", "\"ghp_abcdefghijklmnopqrst\""} {
+		if !ContainsSecret(text) {
+			t.Fatalf("missed: %q", text)
 		}
 	}
 }

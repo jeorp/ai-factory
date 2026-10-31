@@ -11,26 +11,27 @@ import (
 // run (specification section 13). Changed file contents are never stored here;
 // they live in an expiring cache addressed by CacheID.
 type Implementation struct {
-	Request      string              `json:"request"`
-	BaseBranch   string              `json:"baseBranch"`
-	BaseCommit   string              `json:"baseCommit"`
-	Status       string              `json:"status"` // planning, plan_ready, editing, ready, publishing, published
-	Plan         *ImplementationPlan `json:"plan,omitempty"`
+	Request      string               `json:"request"`
+	BaseBranch   string               `json:"baseBranch"`
+	BaseCommit   string               `json:"baseCommit"`
+	Status       string               `json:"status"` // planning, plan_ready, editing, ready, publishing, published
+	Plan         *ImplementationPlan  `json:"plan,omitempty"`
 	Steps        []ImplementationStep `json:"steps,omitempty"`
-	NextStep     int                 `json:"nextStep"`
-	Changes      []ChangeSummary     `json:"changes"`
-	Unverified   []string            `json:"unverified"`
-	Summary      string              `json:"summary"`
-	CacheID      string              `json:"-"`
-	Version      int                 `json:"version"`
-	Branch       string              `json:"branch,omitempty"`
-	Title        string              `json:"title,omitempty"`
-	Body         string              `json:"body,omitempty"`
-	Commit       string              `json:"commit,omitempty"`
-	RefUpdated   bool                `json:"refUpdated,omitempty"`
-	PullNumber   int                 `json:"pullNumber,omitempty"`
-	PullURL      string              `json:"pullUrl,omitempty"`
-	ExpectedHead string              `json:"expectedHead,omitempty"`
+	NextStep     int                  `json:"nextStep"`
+	Changes      []ChangeSummary      `json:"changes"`
+	Unverified   []string             `json:"unverified"`
+	Summary      string               `json:"summary"`
+	CacheID      string               `json:"-"`
+	Version      int                  `json:"version"`
+	Branch       string               `json:"branch,omitempty"`
+	Title        string               `json:"title,omitempty"`
+	Body         string               `json:"body,omitempty"`
+	Commit       string               `json:"commit,omitempty"`
+	RefBranch    string               `json:"refBranch,omitempty"`
+	RefUpdated   bool                 `json:"refUpdated,omitempty"`
+	PullNumber   int                  `json:"pullNumber,omitempty"`
+	PullURL      string               `json:"pullUrl,omitempty"`
+	ExpectedHead string               `json:"expectedHead,omitempty"`
 }
 
 type ImplementationPlan struct {
@@ -172,4 +173,20 @@ func NextImplementation(prev *Implementation, request, cacheID string) *Implemen
 		next.Request = Clip(prev.Request+"\n\n追加の依頼: "+request, 4096)
 	}
 	return next
+}
+
+// DetachFollowUp turns a follow-up whose PR was merged, closed or moved into a
+// fresh cycle on a new branch from the current default branch.
+func (i *Implementation) DetachFollowUp() {
+	i.ExpectedHead, i.BaseBranch, i.BaseCommit = "", "", ""
+	i.Branch, i.Title, i.PullNumber, i.PullURL = "", "", 0, ""
+}
+
+// ChangeBytes is the total size of the generated contents.
+func (i *Implementation) ChangeBytes() int {
+	n := 0
+	for _, c := range i.Changes {
+		n += c.Bytes
+	}
+	return n
 }

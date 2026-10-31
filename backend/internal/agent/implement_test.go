@@ -19,6 +19,7 @@ type fakeWriter struct {
 	cache     map[string]domain.FileChange
 	published []github.PublishRequest
 	failPut   bool
+	closed    bool
 }
 
 func newFakeWriter() *fakeWriter {
@@ -277,5 +278,58 @@ func TestProvidersExposeImplementationContract(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func (w *fakeWriter) PullRequestOpen(ctx context.Context, token, repo string, number int, branch, head string) (bool, error) {
+	return !w.closed, nil
+}
+
+func TestFollowUpOnClosedPRStartsNewBranch(t *testing.T) {
+	writer := newFakeWriter()
+	writer.closed = true
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		if task := implementTaskOf(t, input); task.FollowUp {
+			t.Fatal("closed PR still treated as follow-up")
+		}
+		return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
+	})
+	session := baseSession()
+	session.RunKind = "implement"
+	prev := &domain.Implementation{Status: "published", BaseBranch: "main", BaseCommit: implBase, Commit: strings.Repeat("f", 40), Branch: "ai-factory/x-1", PullNumber: 4, PullURL: "https://github.com/a/b/pull/4", Request: "r"}
+	session.Implementation = domain.NextImplementation(prev, "追加", "0123456789abcdef")
+	var last Checkpoint
+	if err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	impl := last.Implementation
+	if impl.ExpectedHead != "" || impl.Branch != "" || impl.PullNumber != 0 || impl.BaseCommit != implBase || len(impl.Unverified) != 1 {
+		t.Fatalf("follow-up not detached: %+v", impl)
+	}
+}
+
+func TestImplementationStopsWhenTotalSizeExceeded(t *testing.T) {
+	writer := newFakeWriter()
+	big := strings.Repeat("x", 60*1024)
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		task := implementTaskOf(t, input)
+		changes := []ChangeProposal{}
+		for _, f := range task.Files {
+			changes = append(changes, ChangeProposal{Path: f.Path, Action: "create", Content: big})
+		}
+		return Decision{Implementation: &ImplementResult{Changes: changes}}, Usage{}, nil
+	})
+	files := []domain.PlannedFile{}
+	steps := []domain.ImplementationStep{}
+	for _, dir := range []string{"a", "b", "c", "d"} {
+		files = append(files, domain.PlannedFile{Path: dir + "/n.go", Action: "create", Approach: "x"})
+		steps = append(steps, domain.ImplementationStep{Files: []string{dir + "/n.go"}})
+	}
+	session := baseSession()
+	session.RunKind = "implement"
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: steps, Plan: &domain.ImplementationPlan{Summary: "s", Files: files}}
+	err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(Checkpoint) error { return nil })
+	if err == nil || err.Error() != "change_set_size_limit" || len(writer.cache) != 3 {
+		t.Fatalf("total size not enforced during editing: %v stored=%d", err, len(writer.cache))
 	}
 }

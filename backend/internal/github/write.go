@@ -35,6 +35,7 @@ type PublishRequest struct {
 // performs the remaining steps and never duplicates a commit, branch or PR.
 type PublishState struct {
 	Commit     string `json:"commit,omitempty"`
+	RefBranch  string `json:"refBranch,omitempty"`
 	RefUpdated bool   `json:"refUpdated,omitempty"`
 	PullNumber int    `json:"pullNumber,omitempty"`
 	PullURL    string `json:"pullUrl,omitempty"`
@@ -291,6 +292,14 @@ func (c *Client) Publish(ctx context.Context, token string, r PublishRequest, st
 			if exists {
 				return state, errors.New("branch_exists")
 			}
+			// Record the branch before creating it so a retry cannot switch to
+			// another name and leave this ref orphaned.
+			if state.RefBranch != r.Branch {
+				state.RefBranch = r.Branch
+				if err := save(state); err != nil {
+					return state, err
+				}
+			}
 			if err := c.send(ctx, token, "POST", "/repos/"+r.Repository+"/git/refs", map[string]string{"ref": "refs/heads/" + r.Branch, "sha": state.Commit}, nil); err != nil {
 				return state, err
 			}
@@ -314,14 +323,22 @@ func (c *Client) Publish(ctx context.Context, token string, r PublishRequest, st
 	type pull struct {
 		Number  int    `json:"number"`
 		HTMLURL string `json:"html_url"`
+		Head    struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
 	}
 	owner := strings.Split(r.Repository, "/")[0]
+	// Only an open PR whose head is this run's commit is ours to reuse; a
+	// closed PR from an earlier branch with the same name is not.
 	var existing []pull
-	if err := c.send(ctx, token, "GET", "/repos/"+r.Repository+"/pulls?state=all&head="+url.QueryEscape(owner+":"+r.Branch), nil, &existing); err != nil {
+	if err := c.send(ctx, token, "GET", "/repos/"+r.Repository+"/pulls?state=open&head="+url.QueryEscape(owner+":"+r.Branch), nil, &existing); err != nil {
 		return state, err
 	}
 	var p pull
 	if len(existing) > 0 {
+		if existing[0].Head.SHA != state.Commit {
+			return state, errors.New("pull_request_conflict")
+		}
 		p = existing[0]
 	} else if err := c.send(ctx, token, "POST", "/repos/"+r.Repository+"/pulls", map[string]any{"title": r.Title, "body": r.Body, "head": r.Branch, "base": r.BaseBranch, "draft": true}, &p); err != nil {
 		return state, err
@@ -331,4 +348,31 @@ func (c *Client) Publish(ctx context.Context, token string, r PublishRequest, st
 	}
 	state.PullNumber, state.PullURL = p.Number, p.HTMLURL
 	return state, save(state)
+}
+
+// PullRequestOpen reports whether a PR created earlier can still receive
+// follow-up commits: it is open and its branch still points at head.
+func (c *Client) PullRequestOpen(ctx context.Context, token, repository string, number int, branch, head string) (bool, error) {
+	if c.Demo {
+		return true, nil
+	}
+	if number < 1 || !domain.ValidCommit(head) {
+		return false, nil
+	}
+	var v struct {
+		State  string `json:"state"`
+		Merged bool   `json:"merged"`
+		Head   struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := c.send(ctx, token, "GET", fmt.Sprintf("/repos/%s/pulls/%d", repository, number), nil, &v); err != nil {
+		var api apiError
+		if errors.As(err, &api) && api.Status == 404 {
+			return false, nil
+		}
+		return false, err
+	}
+	return v.State == "open" && !v.Merged && v.Head.Ref == branch && v.Head.SHA == head, nil
 }
