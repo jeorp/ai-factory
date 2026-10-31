@@ -51,7 +51,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{16,80}$`)
-var keyPattern = regexp.MustCompile(`(?:sk-|github_pat_|gh[opusr]_)[a-zA-Z0-9_-]{12,}`)
+var keyPattern = regexp.MustCompile(`(?:AIza|sk-|github_pat_|gh[opusr]_)[a-zA-Z0-9_-]{12,}`)
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -67,7 +67,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) { reply(w, 200, map[string]bool{"ok": true}) })
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
-		reply(w, 200, map[string]any{"demo": s.Config.Demo, "models": s.Config.Models, "installUrl": "https://github.com/apps/" + s.Config.AppSlug + "/installations/new"})
+		reply(w, 200, map[string]any{"demo": s.Config.Demo, "aiProvider": s.Config.AIProvider, "models": s.Config.Models, "installUrl": "https://github.com/apps/" + s.Config.AppSlug + "/installations/new"})
 	})
 	mux.HandleFunc("GET /auth/github", s.login)
 	mux.HandleFunc("GET /auth/callback", s.callback)
@@ -187,7 +187,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, c credential) {
 		fail(w, 502, "commit_lookup_failed")
 		return
 	}
-	v := domain.Session{ID: randomID(), Title: target.Repository, Target: target, Model: body.Model, State: "auth_wait", Messages: []domain.Message{}, Sources: []domain.Source{}, Limitations: []string{}, UpdatedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(30 * 24 * time.Hour)}
+	v := domain.Session{OverviewPending: true, ID: randomID(), Title: target.Repository, Target: target, Model: body.Model, State: "auth_wait", Messages: []domain.Message{}, Sources: []domain.Source{}, Limitations: []string{}, UpdatedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(30 * 24 * time.Hour)}
 	if target.Kind != "repository" {
 		v.Title = body.Target
 	}

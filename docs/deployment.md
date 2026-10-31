@@ -16,7 +16,7 @@ Firebase HostingをWebSocket経路の前提にしない構成です。隣のプ�
 4. GitHub client secretと `openssl rand -base64 32` で生成したCookie鍵をSecret Managerに保存し、実行サービスアカウントだけに読み取りを許可する。
 5. Dockerビルド時に `VITE_FIREBASE_PROJECT_ID`、`VITE_FIREBASE_API_KEY`、`VITE_FIREBASE_AUTH_DOMAIN` をbuild argsで渡す。これらはブラウザー公開設定であり、OpenAIキーやGitHub secretを渡さない。既定の `WEB_BUILD_MODE=production` のままビルドする。
 6. `infra/cloud-run/service.yaml` の `REPLACE_*` を置換し、WEB_ORIGINを実際のHTTPS Originへ設定する。timeoutは3600秒。Goは55分でWebSocketを更新する。コンテナは非rootで起動する。
-7. Firestoreルール・TTL設定を反映する。CLI例: `firebase deploy --only firestore --project PROJECT_ID`。ExpiresAtのTTLが有効か管理画面でも確認する。
+7. Firestoreルール・TTL設定を反映する。CLI例: `firebase deploy --only firestore --project PROJECT_ID`。sessions と githubReadCache の ExpiresAt のTTLが有効か管理画面でも確認する。
 
 同一OriginのWeb表示、GitHubログイン、Appの許可リポジトリだけの参照、OpenAI回答、停止・切断・再接続、キー期限、別ユーザーからのアクセス拒否を実接続で検証してください。認証Cookieは最大8時間で再ログインし、GitHub refresh tokenは保存しません。
 

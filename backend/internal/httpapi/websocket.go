@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -142,6 +143,12 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			session.Summary = cp.Summary
+			session.RepositoryOverview = cp.RepositoryOverview
+			session.OverviewPending = cp.OverviewPending
+			if cp.Review != nil {
+				session.Review = cp.Review
+				session.Target.Commit = cp.Review.Head
+			}
 			session.Sources = cp.Sources
 			session.Metrics = cp.Metrics
 			session.Limitations = cp.Limitations
@@ -181,6 +188,8 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			instructions = nil
 			if wasStopping {
 				session.State = "stopped"
+			} else if runErr != nil && runErr.Error() == "review_run_budget_resume" {
+				session.State = "user_wait"
 			} else if runErr != nil {
 				if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 					session.State = "auth_wait"
@@ -195,6 +204,9 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			}
 			if send("session", session) != nil {
 				return
+			}
+			if runErr != nil && (strings.HasPrefix(runErr.Error(), "gemini_") || runErr.Error() == "pr_changed_create_new_review") {
+				problem(runErr.Error())
 			}
 		case cmd := <-inbound:
 			switch cmd.Type {
@@ -251,32 +263,36 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				if send("session", session) != nil {
 					return
 				}
-			case "message", "resume":
+			case "message", "resume", "review":
 				if cancelRun != nil {
 					problem("run_in_progress")
 					continue
 				}
-				if cmd.Type == "message" && (!idPattern.MatchString(cmd.ID) || !safeText(cmd.Text)) {
+				if cmd.Type == "review" && session.Target.Kind != "pull" {
+					problem("pull_request_required")
+					continue
+				}
+				if (cmd.Type == "message" || cmd.Type == "review") && (!idPattern.MatchString(cmd.ID) || !safeText(cmd.Text) || (cmd.APIKey != "" && strings.Contains(cmd.Text, cmd.APIKey))) {
 					problem("invalid_message_no_secrets")
 					continue
 				}
-				if cmd.Type == "message" && session.HasMessage(cmd.ID) {
+				if (cmd.Type == "message" || cmd.Type == "review") && session.HasMessage(cmd.ID) {
 					send("session", session)
 					continue
 				}
-				if cmd.Type == "resume" && (len(session.Messages) == 0 || session.State == "done") {
+				if cmd.Type == "resume" && ((len(session.Messages) == 0 && session.RunKind != "review") || session.State == "done") {
 					problem("nothing_to_resume")
 					continue
 				}
 				deadline := minTime(time.Now().Add(3*time.Minute), time.UnixMilli(cmd.KeyExpiresAt))
-				if !s.Config.Demo && (!strings.HasPrefix(cmd.APIKey, "sk-") || len(cmd.APIKey) < 20 || len(cmd.APIKey) > 512 || !deadline.After(time.Now())) {
+				if s.Config.AIProvider != "demo" && (!validAIKey(cmd.APIKey) || !deadline.After(time.Now())) {
 					session.State = "auth_wait"
 					save()
 					problem("ai_key_required")
 					send("session", session)
 					continue
 				}
-				if s.Config.Demo {
+				if s.Config.AIProvider == "demo" {
 					deadline = time.Now().Add(3 * time.Minute)
 					cmd.APIKey = ""
 				}
@@ -284,11 +300,17 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					problem("history_limit_create_new_session")
 					continue
 				}
-				if cmd.Type == "message" {
+				if cmd.Type == "message" || cmd.Type == "review" {
 					if err = session.Add("user", cmd.Text, cmd.ID); err != nil {
 						problem(err.Error())
 						continue
 					}
+				}
+				if cmd.Type == "review" {
+					session.RunKind = "review"
+					session.Review = nil
+				} else if cmd.Type == "message" {
+					session.RunKind = "chat"
 				}
 				session.State = "accepted"
 				if save() != nil {
@@ -305,7 +327,9 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				snapshot := *session
 				snapshot.Messages = append([]domain.Message{}, session.Messages...)
 				snapshot.Sources = append([]domain.Source{}, session.Sources...)
-				input := agent.Input{Session: snapshot, Key: cmd.APIKey, GitHubToken: c.Token, Instructions: instructions}
+				traceID := randomID()
+				logger := slog.Default().With("trace_id", traceID, "session_id", session.ID, "command", cmd.Type, "model", session.Model)
+				input := agent.Input{Session: snapshot, Key: cmd.APIKey, GitHubToken: c.Token, Instructions: instructions, Logger: logger}
 				cmd.APIKey = ""
 				session.State = "running"
 				if save() != nil {
@@ -318,10 +342,17 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					cancelRun = nil
 					return
 				}
+				if send("trace", map[string]string{"traceId": traceID}) != nil {
+					cancelRun()
+					cancelRun = nil
+					return
+				}
 				completion := done
 				go func() {
 					defer func() { input.Key = ""; input.GitHubToken = "" }()
-					completion <- s.Runner.Run(runCtx, input, func(cp agent.Checkpoint) error {
+					started := time.Now()
+					logger.Info("run_started")
+					runErr := s.Runner.Run(runCtx, input, func(cp agent.Checkpoint) error {
 						ack := make(chan error, 1)
 						select {
 						case updates <- update{cp, ack}:
@@ -335,6 +366,18 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 							return runCtx.Err()
 						}
 					})
+					status := "ok"
+					if errors.Is(runErr, context.Canceled) {
+						status = "canceled"
+					} else if errors.Is(runErr, context.DeadlineExceeded) {
+						status = "timeout"
+					} else if runErr != nil && runErr.Error() == "review_run_budget_resume" {
+						status = "yielded"
+					} else if runErr != nil {
+						status = "error"
+					}
+					logger.Info("run_finished", "outcome", status, "duration_ms", time.Since(started).Milliseconds())
+					completion <- runErr
 				}()
 			default:
 				problem("unknown_command")
@@ -342,6 +385,10 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+func validAIKey(key string) bool {
+	return len(key) > 0 && len(key) <= 512 && !strings.ContainsAny(key, " \t\r\n")
+}
+
 func minTime(a, b time.Time) time.Time {
 	if a.Before(b) {
 		return a

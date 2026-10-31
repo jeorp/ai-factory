@@ -51,6 +51,7 @@ func (s *Store) List(ctx context.Context, uid string) ([]domain.Session, error) 
 		if time.Now().Before(v.ExpiresAt) {
 			v.Messages = []domain.Message{}
 			v.Summary = ""
+			v.Review = nil
 			out = append(out, v)
 		}
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	c, err := httpapi.LoadConfig()
 	if err != nil {
 		log.Fatal(err)
@@ -37,10 +39,12 @@ func main() {
 	}
 	defer db.Close()
 	client := &http.Client{Timeout: 60 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
-	gh := &github.Client{HTTP: client, Demo: c.Demo}
+	gh := &github.Client{HTTP: client, Demo: c.Demo, Cache: &github.FirestoreReadCache{DB: db}}
 	var ai agent.Provider = &agent.OpenAI{HTTP: client}
-	if c.Demo {
+	if c.AIProvider == "demo" {
 		ai = agent.Demo{}
+	} else if c.AIProvider == "gemini" {
+		ai = &agent.Gemini{HTTP: client}
 	}
 	api := httpapi.New(c, auth, &store.Store{DB: db}, gh, &agent.Runner{AI: ai, GitHub: gh}, client)
 	server := &http.Server{Addr: ":" + c.Port, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 16 * 1024}

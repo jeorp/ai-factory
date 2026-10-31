@@ -63,3 +63,16 @@ func TestOriginAndSecretInputBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestAIKeyValidationDoesNotAssumeProviderFormat(t *testing.T) {
+	for _, key := range []string{"AIza-example-key", "different-format-key"} {
+		if !validAIKey(key) {
+			t.Fatal("valid key format rejected")
+		}
+	}
+	for _, key := range []string{"", "with space", "with\nnewline", strings.Repeat("x", 513)} {
+		if validAIKey(key) {
+			t.Fatal("invalid key accepted")
+		}
+	}
+}
