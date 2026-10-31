@@ -119,7 +119,7 @@ func TestProvidersAcceptBatchedReviewInputsButKeepChatLimits(t *testing.T) {
 						}
 						response = map[string]any{"status": "completed", "output": []any{map[string]any{"content": []any{map[string]any{"type": "output_text", "text": string(decision)}}}}}
 					} else {
-						if request["generationConfig"].(map[string]any)["maxOutputTokens"] != float64(8192) {
+						if request["generationConfig"].(map[string]any)["maxOutputTokens"] != float64(8192+geminiThinkingHeadroom) {
 							t.Fatal("batch output budget missing")
 						}
 						response = map[string]any{"candidates": []any{map[string]any{"finishReason": "STOP", "content": map[string]any{"parts": []any{map[string]any{"text": string(decision)}}}}}}

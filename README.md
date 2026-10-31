@@ -69,6 +69,6 @@ npm run build:local
 
 ### Gemini Developer APIを試す
 
-`.env` に `AI_PROVIDER=gemini` と `GEMINI_MODELS=gemini-3.5-flash-lite` を設定し、`docker compose up --build -d` で再起動します。画面でGoogle AI StudioのGemini APIキーを入力してください。キーは環境変数に保存せず、セッションごとに一時的に利用します。GitHubも固定デモにするには `PROVIDER=demo` を指定します。
+`.env` に `AI_PROVIDER=gemini` を設定し（モデルの選択肢は `GEMINI_MODELS=gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.1-pro-preview` のようにカンマ区切りで指定。Proは無料枠なし）、`docker compose up --build -d` で再起動します。画面でGoogle AI StudioのGemini APIキーを入力してください。キーは環境変数に保存せず、セッションごとに一時的に利用します。GitHubも固定デモにするには `PROVIDER=demo` を指定します。
 
 無料枠の利用可否や上限はGoogleのプロジェクトとモデルに依存します。課金済みプロジェクトでは料金が発生する場合があります。無料枠では送信した情報がGoogleのサービス改善に使用される場合があるため、非公開コードを送る前に利用条件を確認してください。Vertex AIとは別のAPIです。
