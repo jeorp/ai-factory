@@ -3,6 +3,11 @@ package agent
 import "ai-factory/backend/internal/domain"
 
 func addReviewSchema(schema map[string]any) {
+	schema["properties"].(map[string]any)["startReview"] = map[string]any{"anyOf": []any{
+		map[string]any{"type": "null"},
+		map[string]any{"type": "object", "additionalProperties": false, "required": []string{"number"}, "properties": map[string]any{"number": map[string]any{"type": "integer"}}},
+	}}
+	schema["required"] = append(schema["required"].([]string), "startReview")
 	props := map[string]any{}
 	names := []string{"severity", "path", "line", "side", "title", "problem", "impact", "evidence", "suggestion"}
 	for _, name := range names {

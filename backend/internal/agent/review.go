@@ -41,7 +41,9 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 	}
 	modelCalls := 0
 	cp := Checkpoint{Summary: in.Session.Summary, Sources: append([]domain.Source{}, in.Session.Sources...), Metrics: in.Session.Metrics}
-	cp.Metrics.LastInputTokens, cp.Metrics.LastOutputTokens, cp.Metrics.HasLastUsage = 0, 0, false
+	if !in.ContinueMetrics {
+		cp.Metrics.LastInputTokens, cp.Metrics.LastOutputTokens, cp.Metrics.HasLastUsage = 0, 0, false
+	}
 	// Deep-copy mutable cursors/results: the socket owns its durable snapshot.
 	raw, _ := json.Marshal(in.Session.Review)
 	var review *domain.Review
@@ -284,6 +286,9 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			}
 			if err != nil {
 				return Decision{}, err
+			}
+			if d.StartReview != nil {
+				return Decision{}, errors.New("review_already_running")
 			}
 			b, _ := json.Marshal(d)
 			if echoes(string(b), in) {

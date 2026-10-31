@@ -89,7 +89,7 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	if json.Unmarshal([]byte(text.String()), &d) != nil {
 		return d, usage, errors.New("gemini_invalid_output")
 	}
-	if len(d.Answer) > 16*1024 || len(d.Summary) > 2048 || !validIntent(d.Intent) || !validReviewResult(d.Review) {
+	if len(d.Answer) > 16*1024 || len(d.Summary) > 2048 || !validIntent(d.Intent) || !validReviewResult(d.Review) || !validReviewAction(d) {
 		return d, usage, errors.New("gemini_output_limit")
 	}
 	if d.Read != nil {

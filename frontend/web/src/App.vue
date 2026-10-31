@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api, auth, loginComplete, logout } from './lib/auth';
 import { clearKey, credentials, deleteSavedKey, savedKey, saveKey, setKey } from './lib/keyVault';
 import { estimateCost, formatCost, pricing } from './lib/pricing';
 import { useWorkspace } from './stores/workspace';
 import { busy, states, type Config, type Repository, type Finding } from './types';
 import Icon from './components/Icon.vue';
+import SourceFiles from './components/SourceFiles.vue';
+import { clearFiles } from './lib/fileCache';
+import { fileKey, type SourceFile } from './lib/sourceFiles';
+
+const CodeViewer = defineAsyncComponent(() => import('./components/CodeViewer.vue'));
 
 const work = useWorkspace();
 const config = ref<Config>({ demo: false, aiProvider: 'openai', models: [], installUrl: '' });
@@ -13,13 +18,25 @@ const login = ref(''); const loading = ref(true); const actionPending = ref(fals
 const repositories = ref<Repository[]>([]); const target = ref(''); const model = ref(''); const text = ref('');
 const keyDraft = ref(''); const keyChoice = ref<'saved' | 'new'>('new'); const keyPending = ref(false); const rememberKey = ref(false); const hasSavedKey = ref(false); const keyValid = ref(false); const consent = ref(false); const mode = ref('message');
 const showNew = ref(false); const showDetails = ref(window.matchMedia('(min-width: 1100px)').matches); const deleteID = ref(''); const transcript = ref<HTMLElement>();
+const openedFile = ref<SourceFile>(); const codePanel = ref<HTMLElement>(); let fileOpener: HTMLElement | undefined;
+async function openFile(file: SourceFile, opener?: HTMLElement) {
+ fileOpener = opener;
+ openedFile.value = file;
+ await nextTick(); codePanel.value?.focus({ preventScroll: true });
+}
+async function closeFile() {
+ openedFile.value = undefined;
+ await nextTick(); if (fileOpener?.isConnected) fileOpener.focus({ preventScroll: true });
+ fileOpener = undefined;
+}
+function escapeFile(event: KeyboardEvent) { if (event.key === 'Escape' && openedFile.value) { event.preventDefault(); void closeFile(); } }
 const current = computed(() => work.current); const running = computed(() => busy(current.value));
 const sessionCost = computed(() => current.value ? estimateCost(config.value.aiProvider, current.value.model, current.value.metrics.inputTokens || 0, current.value.metrics.outputTokens || 0) : undefined);
 const sessionPricing = computed(() => current.value ? pricing(config.value.aiProvider, current.value.model) : undefined);
 const canSend = computed(() => !!text.value.trim() && work.connected && (mode.value === 'instruction' || (!running.value && (config.value.aiProvider === 'demo' || keyValid.value))));
-const hints = ['このリポジトリの構成を教えて', 'READMEからセットアップ手順を整理して', '公開中のIssueを確認したい'];
+const hints = ['このリポジトリの構成を教えて', 'READMEからセットアップ手順を整理して', 'PR一覧を見せて', '取得したPRをレビューして'];
 const errors: Record<string, string> = {
- pr_changed_create_new_review: 'PRのベースまたはヘッドが更新されました。「新しくレビュー」で最新のPRを確認してください。', pull_request_required: 'PR URLからセッションを作成してください。',
+ pr_changed_create_new_review: 'PRのベースまたはヘッドが更新されました。チャットで「もう一度レビューして」と依頼してください。', pull_request_required: 'チャットでレビューするPRの番号かURLを教えてください。',
  login_required: 'ログインの有効期限が切れました。GitHubでログインし直してください。', github_login_required: 'GitHubでログインしてください。',
  repository_forbidden: 'このリポジトリを参照できません。GitHub Appのアクセス許可を確認してください。',
  session_busy: '別の接続でセッションを使用中です。接続を閉じて、最大45秒ほど待ってください。', server_busy: '接続数の上限に達しています。少し待ってから再接続してください。',
@@ -36,7 +53,7 @@ async function action(fn: () => Promise<void>) { if (actionPending.value) return
 async function loadWorkspace() { const me = await api<{ login: string }>('/me'); login.value = me.login; await work.refresh(); await refreshRepositories(); }
 async function refreshRepositories() { repositories.value = await api<Repository[]>('/repositories'); if (!target.value) target.value = repositories.value[0]?.full_name || ''; }
 async function signIn() { await action(async () => { if (config.value.demo) { await loginComplete(); await loadWorkspace(); } else { location.assign('/auth/github'); } }); }
-async function signOut() { await action(async () => { work.disconnect(true); keyDraft.value = ''; clearKey(); await logout(); login.value = ''; work.sessions = []; }); }
+async function signOut() { await action(async () => { const owner = auth.currentUser?.uid; work.disconnect(true); keyDraft.value = ''; clearKey(); await nextTick(); if (owner) await clearFiles(owner).catch(() => {}); await logout(); login.value = ''; work.sessions = []; }); }
 async function createSession() { await action(async () => { const s = await api<NonNullable<typeof current.value>>('/sessions', { method: 'POST', body: JSON.stringify({ target: target.value, model: model.value }) }); await work.open(s); showNew.value = false; consent.value = false; keyDraft.value = ''; syncKey(); }); }
 async function applyKey() {
  if (keyPending.value) return;
@@ -56,7 +73,6 @@ async function refreshSavedKey() { try { hasSavedKey.value = !!(await savedKey(c
 async function forgetSavedKey() { try { await deleteSavedKey(config.value.aiProvider); hasSavedKey.value = false; keyChoice.value = 'new'; keyDraft.value = ''; rememberKey.value = false; clearKey(); syncKey(); } catch { appError.value = '保存済みのAPIキーを削除できませんでした。'; } }
 function syncKey() { const c = credentials(); keyValid.value = !!c.apiKey; }
 function send() { if (!canSend.value) return; try { work.send(mode.value, text.value.trim()); text.value = ''; } catch (e) { appError.value = errorMessage(e); } }
-function reviewPR() { try { work.send('review', text.value.trim() || `PR #${current.value?.target.number} をレビューしてください。`); text.value = ''; } catch (e) { appError.value = errorMessage(e); } }
 function resume() { try { work.send('resume'); } catch (e) { appError.value = errorMessage(e); } }
 function stop() { try { work.send('stop'); } catch (e) { appError.value = errorMessage(e); } }
 function end() { try { if (work.connected) work.send('end'); } finally { work.disconnect(true); keyDraft.value = ''; syncKey(); } }
@@ -74,16 +90,17 @@ function date(value: string) { return new Intl.DateTimeFormat('ja-JP', { month: 
 let keyTimer: ReturnType<typeof setInterval>;
 const pagehide = () => { clearKey(); work.disconnect(true); };
 onMounted(async () => {
- keyTimer = setInterval(syncKey, 1000); window.addEventListener('pagehide', pagehide);
+ keyTimer = setInterval(syncKey, 1000); window.addEventListener('pagehide', pagehide); window.addEventListener('keydown', escapeFile);
  try { const response = await fetch('/api/config'); if (!response.ok) throw new Error('APIの設定を取得できません'); config.value = await response.json(); await refreshSavedKey(); model.value = config.value.models[0] || ''; await auth.authStateReady();
   if (new URLSearchParams(location.search).has('login')) { history.replaceState({}, '', '/'); await loginComplete(); }
   if (auth.currentUser) await loadWorkspace();
  } catch (e) { appError.value = errorMessage(e); } finally { loading.value = false; }
 });
-onUnmounted(() => { clearInterval(keyTimer); window.removeEventListener('pagehide', pagehide); clearKey(); work.disconnect(true); });
+onUnmounted(() => { clearInterval(keyTimer); window.removeEventListener('pagehide', pagehide); window.removeEventListener('keydown', escapeFile); clearKey(); work.disconnect(true); });
 watch(() => current.value?.messages.length, async () => { await nextTick(); transcript.value?.scrollTo({ top: transcript.value.scrollHeight, behavior: 'smooth' }); });
 watch(() => [current.value?.id, current.value?.state] as const, ([id, state], [previousId, previous]) => { if (id === previousId && state === 'failed' && previous && ['running', 'accepted', 'stopping'].includes(previous) && ['gemini_key_invalid', 'openai_http_401'].includes(current.value?.limitations?.at(-1) || '')) { clearKey(); syncKey(); appError.value = 'APIキーが無効です。保存済みのキーを削除するか、新しいキーを入力してください。'; } });
 watch(() => current.value?.id, () => { keyDraft.value = ''; text.value = ''; consent.value = false; rememberKey.value = false; void refreshSavedKey(); syncKey(); });
+watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; fileOpener = undefined; });
 </script>
 
 <template>
@@ -108,7 +125,7 @@ watch(() => current.value?.id, () => { keyDraft.value = ''; text.value = ''; con
   </aside>
 
   <main class="main-panel">
-   <header class="topbar"><div class="breadcrumb">ワークスペース<Icon name="chevron" :size="13" /><strong>GitHub チャット</strong></div><div class="top-actions"><span class="badge" :class="{ demo: config.demo }"><span class="status-dot"></span>{{ config.demo ? 'デモモード' : 'READ ONLY' }}</span><button v-if="current" class="icon-button" aria-label="参照情報の表示を切り替え" @click="showDetails = !showDetails"><Icon name="grid" :size="17" /></button></div></header>
+   <header class="topbar"><div class="breadcrumb">ワークスペース<Icon name="chevron" :size="13" /><strong>GitHub チャット</strong></div><div class="top-actions"><span class="badge" :class="{ demo: config.demo }"><span class="status-dot"></span>{{ config.demo ? 'デモモード' : 'READ ONLY' }}</span><button v-if="current" class="icon-button" aria-label="参照情報の表示を切り替え" @click="openedFile = undefined; showDetails = !showDetails"><Icon name="grid" :size="17" /></button></div></header>
    <div v-if="appError || work.error" class="error-banner" role="alert">{{ appError || errorMessage(work.error) }}<button class="plain-button" @click="appError = ''; work.error = ''">閉じる</button></div>
    <div v-if="config.demo" class="demo-banner">{{ config.aiProvider === 'demo' ? '固定デモです。実際のGitHubやAIには接続しません。' : 'GitHubは固定デモです。質問とサンプル情報はGeminiへ送信されます。' }}</div>
 
@@ -132,7 +149,7 @@ watch(() => current.value?.id, () => { keyDraft.value = ''; text.value = ''; con
     </div>
    </div>
 
-   <div v-else class="conversation-layout" :class="{ 'details-hidden': !showDetails }">
+   <div v-else class="conversation-layout" :class="{ 'details-hidden': !showDetails && !openedFile, 'code-open': !!openedFile }">
     <section class="conversation">
      <div class="conversation-header"><div><span class="section-caption">GITHUB SESSION</span><h2><Icon name="folder" :size="19" />{{ current.target.repository }}</h2></div><div><span class="session-state" :class="{ pulse: running }">{{ states[current.state] }}</span><button class="plain-button" @click="end">終了</button></div></div>
      <div v-if="config.aiProvider !== 'demo' && !keyValid" class="key-card">
@@ -153,12 +170,8 @@ watch(() => current.value?.id, () => { keyDraft.value = ''; text.value = ''; con
        <button class="primary-button" :disabled="!consent || keyPending">接続する</button>
       </form>
      </div>
-     <div v-if="current.target.kind === 'pull'" class="review-toolbar">
-      <span>PR #{{ current.target.number }} · 差分を分割してレビューします。入力欄にレビュー観点を指定できます。</span>
-      <button class="primary-button" :disabled="running || !work.connected || (config.aiProvider !== 'demo' && !keyValid)" @click="reviewPR">{{ current.review ? '新しくレビュー' : 'PRレビューを開始' }}</button>
-     </div>
      <div ref="transcript" class="transcript" role="log" aria-label="会話履歴" aria-live="polite">
-      <div v-if="!current.messages.length" class="chat-empty"><span class="assistant-mark"><Icon name="grid" :size="24" /></span><h2>何から読み解きましょう？</h2><p>構成やファイル、PR・Issueについて質問してください。</p><div class="suggestions"><button v-for="hint in hints" :key="hint" @click="selectHint(hint)">{{ hint }}<Icon name="chevron" :size="14" /></button></div></div>
+      <div v-if="!current.messages.length" class="chat-empty"><span class="assistant-mark"><Icon name="grid" :size="24" /></span><h2>何から読み解きましょう？</h2><p>PRを取得したあと、「このPRをレビューして」と続けて依頼できます。</p><div class="suggestions"><button v-for="hint in hints" :key="hint" @click="selectHint(hint)">{{ hint }}<Icon name="chevron" :size="14" /></button></div></div>
       <article v-for="message in current.messages" :key="message.id" class="message" :class="message.role"><div class="message-avatar"><Icon v-if="message.role === 'assistant'" name="grid" :size="16" /><Icon v-else-if="message.role === 'instruction'" name="branch" :size="16" /><span v-else>{{ login[0]?.toUpperCase() }}</span></div><div class="message-content"><div class="message-label">{{ message.role === 'assistant' ? 'AI Factory' : message.role === 'instruction' ? '追加指示' : 'あなた' }}<span v-if="message.role === 'instruction'" class="instruction-state">{{ message.applied ? '反映済み' : '受付済み・次の区切りで反映' }}</span></div><div class="message-text">{{ message.text }}</div></div></article>
       <section v-if="current.review" class="review-results" aria-label="PRレビュー結果">
        <h2>{{ current.review.title }}</h2>
@@ -174,16 +187,20 @@ watch(() => current.value?.id, () => { keyDraft.value = ''; text.value = ''; con
        </article>
        <details v-if="current.review.unverified.length" open><summary>未確認の範囲・制限 {{ current.review.unverified.length }} 件</summary><ul><li v-for="(item, i) in current.review.unverified" :key="i">{{ item }}</li></ul></details>
       </section>
+      <SourceFiles :key="current.id" :session="current" @open="openFile" @clear="closeFile" />
       <div v-if="running" class="progress-message"><span class="loading-dots">•••</span>{{ current.state === 'stopping' ? '停止を要求しています…' : work.progress || '処理を開始しています…' }}</div>
      </div>
      <div class="composer-area">
       <div v-if="work.reconnecting" class="connection-notice">再接続中です。保存した会話を復元しています。</div>
       <div v-if="['auth_wait', 'failed', 'stopped', 'user_wait'].includes(current.state) && (current.messages.length || current.runKind === 'review')" class="resume-row"><span>保存した区切りから続行できます。</span><button class="plain-button" :disabled="running || !work.connected || (config.aiProvider !== 'demo' && !keyValid)" @click="resume"><Icon name="refresh" :size="13" />保存済みの状態から再開</button></div>
-      <div class="composer"><textarea v-model="text" :placeholder="mode === 'instruction' ? '次の区切りで反映する追加指示…' : 'このリポジトリについて質問する…'" aria-label="メッセージ" rows="2" maxlength="4096" @keydown="keydown" /><div class="composer-toolbar"><div><select v-model="mode" aria-label="メッセージの種類"><option value="message">質問する</option><option value="instruction">追加指示</option></select><span class="composer-model">{{ current.model }}</span></div><button v-if="running" class="stop-button" :disabled="current.state === 'stopping'" @click="stop"><Icon name="stop" :size="13" />停止</button><button class="send-button" :disabled="!canSend" aria-label="送信" @click="send"><Icon name="arrow" :size="17" /></button></div></div>
-      <div class="composer-caption"><span><span class="status-dot" :class="{ offline: !work.connected }"></span>{{ work.connected ? '接続中' : '未接続' }} · 読み取り専用</span><span>Enterで送信</span></div>
+      <div class="composer"><textarea v-model="text" :placeholder="mode === 'instruction' ? '次の区切りで反映する追加指示…' : '質問や「このPRをレビューして」など…'" aria-label="メッセージ" rows="2" maxlength="4096" @keydown="keydown" /><div class="composer-toolbar"><div><select v-model="mode" aria-label="メッセージの種類"><option value="message">チャット</option><option value="instruction">追加指示</option></select><span class="composer-model">{{ current.model }}</span></div><button v-if="running" class="stop-button" :disabled="current.state === 'stopping'" @click="stop"><Icon name="stop" :size="13" />停止</button><button class="send-button" :disabled="!canSend" aria-label="送信" @click="send"><Icon name="arrow" :size="17" /></button></div></div>
+      <div class="composer-caption"><span><span class="status-dot" :class="{ offline: !work.connected }"></span>{{ work.connected ? '接続中' : '未接続' }} · 読み取り専用<span v-if="current.activePullRequest"> · 対象 PR #{{ current.activePullRequest }}</span></span><span>Enterで送信</span></div>
      </div>
     </section>
-    <aside v-if="showDetails" class="context-panel">
+    <aside v-if="openedFile" ref="codePanel" class="code-panel" aria-label="コードパネル" tabindex="-1">
+     <CodeViewer :key="fileKey(openedFile)" :file="openedFile" panel @close="closeFile" />
+    </aside>
+    <aside v-else-if="showDetails" class="context-panel">
      <div class="context-title"><Icon name="grid" :size="16" /><h2>セッションの情報</h2></div>
      <div class="context-block"><h3>対象リポジトリ</h3><strong class="repo-name">{{ current.target.repository }}</strong><div class="commit"><Icon name="branch" :size="13" /><code>{{ current.target.commit.slice(0, 12) }}</code><span>固定</span></div><p>{{ current.review ? 'レビューは表示されたベース・ヘッドを固定して確認します。コメントは取得時点の情報です。' : 'ファイルはこのコミットを参照します。PR・Issueは取得時点の情報です。' }}</p></div>
      <div class="context-block"><h3>セッションの利用量</h3><dl class="metrics"><div><dt>入力トークン</dt><dd>{{ (current.metrics.inputTokens || 0).toLocaleString() }}</dd></div><div><dt>出力トークン</dt><dd>{{ (current.metrics.outputTokens || 0).toLocaleString() }}</dd></div><div><dt>合計トークン</dt><dd>{{ ((current.metrics.inputTokens || 0) + (current.metrics.outputTokens || 0)).toLocaleString() }}</dd></div><div><dt>概算コスト（USD）</dt><dd>{{ sessionCost === undefined ? '算出できません' : formatCost(sessionCost) }}</dd></div></dl><p v-if="sessionPricing">標準料金での概算です。キャッシュ割引や無料枠などは反映していません。<br /><a :href="sessionPricing.url" target="_blank" rel="noopener noreferrer">料金表を確認 ↗</a></p><p v-else>このモデルの料金情報がないため、コストは算出できません。</p></div>

@@ -105,6 +105,7 @@ type Session struct {
 	Target             Target              `json:"target"`
 	Model              string              `json:"model"`
 	RunKind            string              `json:"runKind"`
+	ActivePullRequest  int                 `json:"activePullRequest"`
 	Review             *Review             `json:"review,omitempty"`
 	State              string              `json:"state"`
 	Messages           []Message           `json:"messages"`
@@ -129,6 +130,22 @@ func (s *Session) Normalize() {
 	}
 	if s.Limitations == nil {
 		s.Limitations = []string{}
+	}
+	if r := s.Review; r != nil {
+		if r.Steps == nil {
+			r.Steps = []ReviewStep{}
+		}
+		if r.Findings == nil {
+			r.Findings = []Finding{}
+		}
+		if r.Unverified == nil {
+			r.Unverified = []string{}
+		}
+		for i := range r.Steps {
+			if r.Steps[i].Files == nil {
+				r.Steps[i].Files = []ReviewFile{}
+			}
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { auth, api } from '../lib/auth';
 import { clearKey, credentials } from '../lib/keyVault';
+import { clearFiles } from '../lib/fileCache';
 import type { Session } from '../types';
 
 export const useWorkspace = defineStore('workspace', () => {
@@ -9,7 +10,11 @@ export const useWorkspace = defineStore('workspace', () => {
  let socket: WebSocket | undefined; let generation = 0; let retry: ReturnType<typeof setTimeout> | undefined; let attempts = 0;
  async function refresh() { sessions.value = await api<Session[]>('/sessions'); }
  function disconnect(clear = false) { generation++; clearTimeout(retry); socket?.close(); socket = undefined; connected.value = false; reconnecting.value = false; if (clear) { clearKey(); current.value = null; } }
- function normalize(session: Session) { session.messages ||= []; session.sources ||= []; session.limitations ||= []; return session; }
+ function normalize(session: Session) {
+  session.messages ||= []; session.sources ||= []; session.limitations ||= [];
+  if (session.review) { session.review.steps ||= []; session.review.findings ||= []; session.review.unverified ||= []; for (const step of session.review.steps) step.files ||= []; }
+  return session;
+ }
  function update(session: Session) { current.value = normalize(session); const i = sessions.value.findIndex(s => s.id === session.id); if (i >= 0) sessions.value[i] = session; else sessions.value.unshift(session); }
  async function open(session: Session) {
   if (current.value?.id !== session.id) { clearKey(); traceId.value = ''; } disconnect(); attempts = 0; error.value = '';
@@ -51,6 +56,7 @@ export const useWorkspace = defineStore('workspace', () => {
    catch (e) { if (!(e instanceof Error) || e.message !== 'session_busy' || attempt >= 5) throw e; await new Promise(resolve => setTimeout(resolve, 500)); }
   }
   sessions.value = sessions.value.filter(s => s.id !== id);
+  if (auth.currentUser) await clearFiles(auth.currentUser.uid, id).catch(() => {});
  }
  return { sessions, current, connected, progress, error, reconnecting, traceId, refresh, open, disconnect, send, remove };
 });

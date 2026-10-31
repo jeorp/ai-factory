@@ -17,6 +17,10 @@ type Reader interface {
 	Read(context.Context, string, domain.Target, github.Read) (string, domain.Source, int, error)
 }
 type Checkpoint struct {
+	Target             *domain.Target
+	RunKind            string
+	ResetReview        bool
+	ActivePullRequest  int
 	RepositoryOverview *domain.RepositoryOverview
 	OverviewPending    bool
 	Review             *domain.Review
@@ -37,11 +41,12 @@ type evidence struct {
 	Content string      `json:"content"`
 }
 type Input struct {
-	Session      domain.Session
-	Key          string
-	GitHubToken  string
-	Instructions <-chan domain.Message
-	Logger       *slog.Logger
+	Session         domain.Session
+	Key             string
+	GitHubToken     string
+	Instructions    <-chan domain.Message
+	Logger          *slog.Logger
+	ContinueMetrics bool
 }
 
 // Run owns only transient evidence. Each emitted checkpoint must be durably saved before continuing.
@@ -73,6 +78,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 	cp.Metrics.HasLastUsage = false
 	ev := []evidence{}
 	cache := map[string]string{}
+	successfulReads := map[string]bool{}
 	files := 0
 	calls := 0
 	instructions := []domain.Message{}
@@ -160,6 +166,18 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		if validIntent(decision.Intent) {
 			intent = decision.Intent
 		}
+		if decision.StartReview != nil {
+			if !validReviewAction(decision) {
+				return errors.New("invalid_review_action")
+			}
+			// Carry directives consumed during chat routing into the review worker.
+			for _, m := range instructions {
+				if !in.Session.HasMessage(m.ID) {
+					in.Session.Messages = append(in.Session.Messages, m)
+				}
+			}
+			return r.reviewFromChat(ctx, in, cp, *decision.StartReview, emit)
+		}
 		if decision.Read == nil {
 			if strings.TrimSpace(decision.Answer) == "" {
 				return errors.New("empty_ai_answer")
@@ -218,6 +236,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 				content = "取得できませんでした: " + err.Error()
 				cp.Limitations = append(cp.Limitations, content)
 			} else {
+				successfulReads[cacheKey] = true
 				if !containsSource(cp.Sources, source.URL) {
 					cp.Sources = append(cp.Sources, source)
 					if len(cp.Sources) > 40 {
@@ -230,6 +249,10 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 				}
 			}
 			cache[cacheKey] = content
+		}
+		if read.Kind == "pull_request" && successfulReads[cacheKey] {
+			in.Session.ActivePullRequest = read.Number
+			cp.ActivePullRequest = read.Number
 		}
 		// Only two recent bounded observations. Full results are never put into saved history.
 		ev = append(ev, evidence{Read: read, Content: content})
@@ -282,11 +305,11 @@ func BuildContext(s domain.Session, summary string, instructions []domain.Messag
 	if len(plans) > 0 && validIntent(plans[0]) {
 		intent = plans[0]
 	}
-	body, _ := json.Marshal(map[string]any{"intent": intent, "target": s.Target, "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 2048)})
+	body, _ := json.Marshal(map[string]any{"intent": intent, "target": s.Target, "activePullRequest": activePullRequest(s), "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 2048)})
 	// Drop oldest evidence to enforce a hard serialized-input cap; explicitly record the omission.
 	for len(body) > domain.MaxInputBytes && len(ev) > 0 {
 		ev = ev[1:]
-		body, _ = json.Marshal(map[string]any{"intent": intent, "target": s.Target, "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 1024) + " 古い取得情報を入力上限のため省略しました。必要なら再取得してください。"})
+		body, _ = json.Marshal(map[string]any{"intent": intent, "target": s.Target, "activePullRequest": activePullRequest(s), "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 1024) + " 古い取得情報を入力上限のため省略しました。必要なら再取得してください。"})
 	}
 	return string(body)
 }

@@ -2,6 +2,7 @@
 withDefaults(defineProps<{ name: string; size?: number }>(), { size: 20 });
 const paths: Record<string, string> = {
  grid: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
+ copy: 'M9 9h12v12H9z M15 9V3H3v12h6',
  plus: 'M12 5v14 M5 12h14', chat: 'M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z',
  code: 'm8 7-5 5 5 5 M16 7l5 5-5 5 M14 4l-4 16', arrow: 'M12 19V5 M5 12l7-7 7 7',
  link: 'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',

@@ -2,7 +2,7 @@ export interface Source { label: string; url: string }
 export interface Message { id: string; role: 'user' | 'assistant' | 'instruction'; text: string; at: string; applied: boolean }
 export interface Session {
  id: string; title: string; target: { repository: string; commit: string; kind: string; number: number }; model: string;
- runKind?: string; review?: Review;
+ runKind?: string; activePullRequest?: number; review?: Review;
  state: string; messages: Message[]; summary: string; sources: Source[]; limitations: string[];
  metrics: { inputTokens: number; outputTokens: number; lastInputTokens?: number; lastOutputTokens?: number; hasLastUsage?: boolean; maxInputBytes: number; fetchedBytes: number; toolCalls: number; cacheHits: number; durationMs: number; heapPeakBytes: number };
  updatedAt: string; expiresAt: string;

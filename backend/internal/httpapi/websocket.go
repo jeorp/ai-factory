@@ -143,6 +143,18 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			session.Summary = cp.Summary
+			if cp.Target != nil {
+				session.Target = *cp.Target
+			}
+			if cp.RunKind != "" {
+				session.RunKind = cp.RunKind
+			}
+			if cp.ResetReview {
+				session.Review = nil
+			}
+			if cp.ActivePullRequest > 0 {
+				session.ActivePullRequest = cp.ActivePullRequest
+			}
 			session.RepositoryOverview = cp.RepositoryOverview
 			session.OverviewPending = cp.OverviewPending
 			if cp.Review != nil {

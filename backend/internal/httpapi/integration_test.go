@@ -50,6 +50,25 @@ func (p *controlledAI) Next(ctx context.Context, key, model, input string) (agen
 	if strings.Contains(input, `"reviewTask":`) {
 		return agent.Decision{Summary: "レビュー区切りの要点", Review: &domain.ReviewResult{Findings: []domain.Finding{}, Unverified: []string{}}}, agent.Usage{InputTokens: 42}, nil
 	}
+	var chat struct {
+		Active  int              `json:"activePullRequest"`
+		History []domain.Message `json:"recentHistory"`
+	}
+	if json.Unmarshal([]byte(input), &chat) == nil && len(chat.History) > 0 {
+		latest := ""
+		for i := len(chat.History) - 1; i >= 0; i-- {
+			if chat.History[i].Role == "user" {
+				latest = chat.History[i].Text
+				break
+			}
+		}
+		if latest == "PRを取得して" && chat.Active == 0 {
+			return agent.Decision{Read: &github.Read{Kind: "pull_request", Number: 7, Detail: "summary"}}, agent.Usage{InputTokens: 42}, nil
+		}
+		if latest == "このPRをレビューして" {
+			return agent.Decision{StartReview: &agent.ReviewRequest{}}, agent.Usage{InputTokens: 42}, nil
+		}
+	}
 	return agent.Decision{Answer: text, Summary: "確認済みの要点"}, agent.Usage{InputTokens: 42}, nil
 }
 func TestEmulatorSessionLifecycle(t *testing.T) {
@@ -72,7 +91,7 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	}
 	defer db.Close()
 	ai := &controlledAI{Gate: make(chan struct{}), Started: make(chan struct{}, 5)}
-	gh := &github.Client{Demo: true}
+	gh := &github.Client{Demo: true, Cache: &github.FirestoreReadCache{DB: db}}
 	storage := &store.Store{DB: db}
 	cfg := Config{Local: true, Demo: false, Project: project, Origin: "http://app.test", Models: []string{"gpt-5-mini"}, CookieKey: []byte(strings.Repeat("a", 32))}
 	api := New(cfg, auth, storage, gh, &agent.Runner{AI: ai, GitHub: gh}, http.DefaultClient)
@@ -127,6 +146,36 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 		t.Fatalf("create failed %d", resp.StatusCode)
 	}
 	initialID := session.ID
+	// The browser uses the same authorized, pinned read cache as the AI.
+	filePath := "/api/v1/sessions/" + initialID + "/file?path=src/" + randomID() + ".go"
+	for i := 0; i < 2; i++ {
+		resp = request(one, "GET", filePath, nil)
+		var file struct {
+			Repository, Commit, Path, Content string
+			Cached                            bool
+		}
+		err := json.NewDecoder(resp.Body).Decode(&file)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != 200 || file.Repository != session.Target.Repository || file.Commit != session.Target.Commit || file.Content == "" || file.Cached != (i == 1) {
+			t.Fatalf("file cache retrieval %d: %+v status=%d err=%v", i, file, resp.StatusCode, err)
+		}
+	}
+	for _, test := range []struct {
+		who    identity
+		path   string
+		status int
+	}{
+		{two, filePath, 404},
+		{one, filePath + "&commit=" + strings.Repeat("b", 40), 422},
+		{one, "/api/v1/sessions/" + initialID + "/file?path=../secret", 422},
+		{one, "/api/v1/sessions/" + initialID + "/file?path=image.png", 422},
+	} {
+		resp = request(test.who, "GET", test.path, nil)
+		resp.Body.Close()
+		if resp.StatusCode != test.status {
+			t.Fatalf("file boundary: status %d, want %d", resp.StatusCode, test.status)
+		}
+	}
 	t.Cleanup(func() { storage.Delete(ctx, one.uid, initialID) })
 	resp = request(two, "GET", "/api/v1/sessions/"+session.ID, nil)
 	resp.Body.Close()
@@ -285,5 +334,41 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	if strings.Contains(string(raw), "sk-test-private-key") || strings.Contains(string(raw), "@@ -") {
 		t.Fatal("credentials or patches persisted")
 	}
-	t.Log(fmt.Sprintf("verified: user isolation, exclusive lease, directives, cancellation, reconnect, review stop/resume/persistence (%d model calls)", ai.Calls.Load()))
+	// Retrieve a PR from a repository chat, then review it in the same chat.
+	ws.Close()
+	four := user()
+	resp = request(four, "POST", "/api/v1/sessions", map[string]string{"target": "demo/ai-factory", "model": "gpt-5-mini"})
+	var chatSession domain.Session
+	json.NewDecoder(resp.Body).Decode(&chatSession)
+	resp.Body.Close()
+	if resp.StatusCode != 201 {
+		t.Fatal("chat session creation failed")
+	}
+	t.Cleanup(func() { storage.Delete(ctx, four.uid, chatSession.ID) })
+	session = chatSession
+	ws = dial(four)
+	defer ws.Close()
+	wait(ws, func(s domain.Session) bool { return s.ID == chatSession.ID })
+	ws.WriteJSON(command{Type: "message", ID: randomID(), Text: "PRを取得して", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	retrieved := wait(ws, func(s domain.Session) bool { return s.State == "done" })
+	if retrieved.Target.Kind != "repository" || retrieved.ActivePullRequest != 7 {
+		t.Fatal("retrieved PR was not retained in the repository chat")
+	}
+	retained, e := storage.Get(ctx, four.uid, chatSession.ID)
+	if e != nil || retained.ActivePullRequest != 7 {
+		t.Fatal("PR selection was not persisted")
+	}
+	ws.WriteJSON(command{Type: "message", ID: randomID(), Text: "このPRをレビューして", APIKey: "sk-test-private-key-123456", KeyExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	chatReviewed := wait(ws, func(s domain.Session) bool { return s.State == "done" && s.Review != nil })
+	if chatReviewed.ID != chatSession.ID || chatReviewed.RunKind != "review" || chatReviewed.Target.Number != 7 || chatReviewed.Review.Phase != "done" || len(chatReviewed.Messages) != 4 {
+		t.Fatalf("chat review handoff failed: %+v", chatReviewed)
+	}
+	resp = request(four, "GET", "/api/v1/sessions/"+chatSession.ID, nil)
+	var restoredReview domain.Session
+	err = json.NewDecoder(resp.Body).Decode(&restoredReview)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != 200 || restoredReview.Review == nil || restoredReview.Review.Findings == nil || restoredReview.Review.Unverified == nil || len(restoredReview.Review.Steps) != len(chatReviewed.Review.Steps) {
+		t.Fatalf("review reload cannot render empty findings: %+v %v", restoredReview.Review, err)
+	}
+	t.Log(fmt.Sprintf("verified: isolation, directives, stop/resume, PR retrieval and full review in one conversation (%d model calls)", ai.Calls.Load()))
 }
