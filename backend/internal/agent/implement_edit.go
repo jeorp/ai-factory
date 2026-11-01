@@ -57,6 +57,18 @@ func (run *implementRun) edit(ctx context.Context) error {
 	if len(impl.Changes) == 0 {
 		return errors.New("implementation_no_changes")
 	}
+	if impl.ChangeRevision == impl.EditStartRevision {
+		impl.Unverified = appendUnique(impl.Unverified, "実際の変更がないため実装を完了できません。")
+		if impl.RepairFeedback != "" && impl.Verification != nil {
+			impl.Verification.Unverified = appendUnique(impl.Verification.Unverified, "実際の修復が行われませんでした。")
+			impl.Status = "verification_blocked"
+			return run.save(ctx, "実際の修復がないため公開を止めています")
+		}
+		if err := run.save(ctx, "実際の変更がないため実装を停止しました"); err != nil {
+			return err
+		}
+		return errors.New("implementation_edit_blocked")
+	}
 	impl.Status = "verifying"
 	return run.verify(ctx)
 }
@@ -196,7 +208,7 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 			continue
 		}
 		changes, err := applyProposals(step, impl, originals, d.Implementation.Changes)
-		if len(d.Implementation.Changes) == 0 && len(d.Implementation.AdditionalFiles) == 0 && len(d.Implementation.Unverified) > 0 {
+		if len(d.Implementation.Changes) == 0 && len(d.Implementation.AdditionalFiles) == 0 && len(d.Implementation.Unverified) > 0 && len(changes) == 0 {
 			for _, reason := range d.Implementation.Unverified {
 				impl.Unverified = appendUnique(impl.Unverified, domain.Clip(reason, 512))
 			}

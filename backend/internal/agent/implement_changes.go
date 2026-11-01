@@ -27,11 +27,10 @@ func (run *implementRun) savedChange(ctx context.Context, path string) (domain.F
 }
 
 // retainedChange uses the verified contents loaded for this step. Draft
-// revisions retain saved changes; CI fixes may also retain files from the exact
-// published PR head, provided the repair makes another real change.
+// revisions and repair rounds retain only already saved changes.
 func retainedChange(impl *domain.Implementation, originals map[string]string, path string) (domain.FileChange, bool) {
 	ciFix := impl.CIRepair && impl.PullNumber > 0 && domain.ValidCommit(impl.ExpectedHead) && impl.BaseCommit == impl.ExpectedHead
-	if !impl.Revising && !ciFix {
+	if !impl.Revising && !ciFix && impl.RepairFeedback == "" {
 		return domain.FileChange{}, false
 	}
 	content, ok := originals[path]
@@ -42,9 +41,6 @@ func retainedChange(impl *domain.Implementation, originals map[string]string, pa
 		if c.Path == path && c.Action == impl.PlannedAction(path) {
 			return domain.FileChange{Path: path, Action: c.Action, Content: content}, true
 		}
-	}
-	if ciFix && impl.PlannedAction(path) == "update" {
-		return domain.FileChange{Path: path, Action: "update", Content: content}, true
 	}
 	return domain.FileChange{}, false
 }
@@ -59,10 +55,6 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 	}
 	out := []domain.FileChange{}
 	seen := map[string]bool{}
-	// Retained files alone do not complete a revision or CI repair. A step made
-	// only of retained files is accepted when this cycle has already written a
-	// change, or when a later step can still make one.
-	materialChange := impl.ChangeRevision > 0 || impl.NextStep < len(impl.Steps)-1
 	for _, p := range proposals {
 		if !inStep[p.Path] {
 			return nil, errors.New("change_path_not_in_step")
@@ -80,13 +72,11 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 		switch p.Action {
 		case "delete":
 			out = append(out, domain.FileChange{Path: p.Path, Action: "delete"})
-			materialChange = true
 		case "create":
 			if p.Content == "" || len(p.Edits) > 0 {
 				return nil, errors.New("create_requires_content")
 			}
 			out = append(out, domain.FileChange{Path: p.Path, Action: "create", Content: p.Content})
-			materialChange = true
 		case "update":
 			content := p.Content
 			if len(p.LineEdits) > 0 {
@@ -112,8 +102,6 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 				if _, retained := retainedChange(impl, originals, p.Path); !retained {
 					return nil, &proposalEditError{path: p.Path, err: errors.New("update_without_change")}
 				}
-			} else {
-				materialChange = true
 			}
 			out = append(out, domain.FileChange{Path: p.Path, Action: "update", Content: content})
 		default:
@@ -126,11 +114,6 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 				out = append(out, f)
 			}
 		}
-	}
-	// In a revision, files left uncovered are reported as unfinished by the
-	// step and by verification, so only an all-retained step is rejected here.
-	if len(out) > 0 && !materialChange && !(impl.Revising && len(out) < len(step)) {
-		return nil, &proposalEditError{path: out[0].Path, err: errors.New("update_without_change")}
 	}
 	return out, nil
 }

@@ -14,6 +14,7 @@ type projectDocumentation struct {
 	Content     string `json:"content,omitempty"`
 	Truncated   bool   `json:"truncated,omitempty"`
 	Unavailable bool   `json:"unavailable,omitempty"`
+	Modified    bool   `json:"modified,omitempty"`
 }
 
 // Keep the repository's documented contract in every implementation phase,
@@ -59,4 +60,24 @@ func (run *implementRun) loadProjectDocumentation(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// currentProjectDocumentation overlays a saved README so verification sees the
+// contract produced by the implementation rather than the obsolete base.
+func (run *implementRun) currentProjectDocumentation(ctx context.Context) (*projectDocumentation, error) {
+	doc := run.projectDocumentation
+	content, changed, err := run.changedContent(ctx, "README.md")
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return doc, nil
+	}
+	for _, secret := range []string{run.in.Key, run.in.GitHubToken} {
+		if secret != "" {
+			content = strings.ReplaceAll(content, secret, "***MASKED_SECRET***")
+		}
+	}
+	content = domain.MaskSecrets(content)
+	return &projectDocumentation{Path: "README.md", Content: domain.Clip(content, projectDocumentationBytes), Truncated: len(content) > projectDocumentationBytes, Modified: true}, nil
 }

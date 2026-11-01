@@ -45,8 +45,12 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 	payload["instructions"] = run.pinned()
 	payload["target"] = run.target()
 	payload["repositoryOverview"] = run.in.Session.RepositoryOverview
-	if run.projectDocumentation != nil {
-		payload["projectDocumentation"] = run.projectDocumentation
+	doc, err := run.currentProjectDocumentation(ctx)
+	if err != nil {
+		return Decision{}, err
+	}
+	if doc != nil {
+		payload["projectDocumentation"] = doc
 	}
 	if run.impl.CIRepair {
 		payload["ciRepair"] = true
@@ -56,6 +60,11 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 		payload["ciEvidence"] = run.ciEvidence
 	}
 	body, _ := json.Marshal(payload)
+	if !implementInputFits(body) && doc != nil {
+		// Keep an explicit indication that the documentation was omitted.
+		payload["projectDocumentation"] = &projectDocumentation{Path: doc.Path, Unavailable: true}
+		body, _ = json.Marshal(payload)
+	}
 	if !implementInputFits(body) {
 		return Decision{}, errors.New("ai_input_limit")
 	}
