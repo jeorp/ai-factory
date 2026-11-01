@@ -27,6 +27,7 @@ func (run *implementRun) checkPublishedCI(ctx context.Context) error {
 	impl := run.impl
 	deadline := time.Now().Add(run.r.CIWait)
 	for {
+		noChecks := false
 		result := &domain.ImplementationCI{Commit: impl.Commit, State: "pending", Checks: []domain.ImplementationCheck{}, Unverified: []string{}}
 		impl.CI = result
 		if err := run.save(ctx, "公開したコミットのGitHub CIを確認しています"); err != nil {
@@ -77,6 +78,7 @@ func (run *implementRun) checkPublishedCI(ctx context.Context) error {
 						unknown = true
 					}
 				}
+				noChecks = snapshot.Total == 0 && len(snapshot.Checks) == 0
 				switch {
 				case snapshot.Truncated || snapshot.Total > len(snapshot.Checks):
 					result.State = "unverified"
@@ -93,6 +95,13 @@ func (run *implementRun) checkPublishedCI(ctx context.Context) error {
 					result.State = "passed"
 				}
 			}
+		}
+		if result.State == "pending" && noChecks && run.r.CIWait > 0 && !time.Now().Before(deadline) {
+			// A repository or branch without CI never registers checks. Stop
+			// after one full wait instead of polling forever; zero checks are
+			// never treated as success.
+			result.State = "unverified"
+			result.Unverified = []string{"待機時間内にCIのチェックが登録されませんでした。GitHubでCIの設定を確認してください。"}
 		}
 		if result.State != "pending" || !time.Now().Before(deadline) {
 			if result.State == "pending" && run.r.CIWait > 0 {

@@ -214,3 +214,24 @@ func TestCIFixCannotRetainAnUnverifiedBase(t *testing.T) {
 		t.Fatal("retained a file from a different PR head")
 	}
 }
+
+func TestRevisionCannotCompleteWithoutAnyNewChange(t *testing.T) {
+	impl := &domain.Implementation{Revising: true, Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "a.go", Action: "update"}}}, Changes: []domain.ChangeSummary{{Path: "a.go", Action: "update"}}}
+	for _, proposals := range [][]ChangeProposal{nil, {{Path: "a.go", Action: "update", Content: "saved a"}}} {
+		_, err := applyProposals([]string{"a.go"}, impl, map[string]string{"a.go": "saved a"}, proposals)
+		if err == nil || !strings.Contains(err.Error(), "update_without_change") {
+			t.Fatalf("revision completed without a new change: %v", err)
+		}
+	}
+	// An earlier step of this revision already wrote a change.
+	impl.ChangeRevision = 1
+	if _, err := applyProposals([]string{"a.go"}, impl, map[string]string{"a.go": "saved a"}, nil); err != nil {
+		t.Fatalf("retained step rejected after a written change: %v", err)
+	}
+	// A retained-only step may precede the step that makes the change.
+	impl.ChangeRevision = 0
+	impl.Steps = []domain.ImplementationStep{{Files: []string{"a.go"}}, {Files: []string{"b.go"}}}
+	if _, err := applyProposals([]string{"a.go"}, impl, map[string]string{"a.go": "saved a"}, nil); err != nil {
+		t.Fatalf("retained first step rejected: %v", err)
+	}
+}
