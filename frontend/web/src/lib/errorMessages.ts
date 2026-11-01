@@ -1,0 +1,46 @@
+// User-facing messages for error and limitation codes sent by the API.
+export const errorMessages: Record<string, string> = {
+ review_read_not_allowed: 'AIがレビュー中に利用できない情報の取得を繰り返したため停止しました。保存済みの状態から再開してください。',
+ pr_changed_create_new_review: 'PRのベースまたはヘッドが更新されました。チャットで「もう一度レビューして」と依頼してください。', pull_request_required: 'チャットでレビューするPRの番号かURLを教えてください。',
+ login_required: 'ログインの有効期限が切れました。GitHubでログインし直してください。', github_login_required: 'GitHubでログインしてください。',
+ repository_forbidden: 'このリポジトリを参照できません。GitHub Appのアクセス許可を確認してください。',
+ session_busy: '別の接続でセッションを使用中です。接続を閉じて、最大45秒ほど待ってください。', server_busy: '接続数の上限に達しています。少し待ってから再接続してください。',
+ ai_key_required: 'AIのAPIキーを入力してください。有効期間は入力から最大1時間です。',
+ connection_failed: '接続できませんでした。APIの起動状態を確認してください。', connection_required: '再接続してから送信してください。',
+ invalid_message_no_secrets: '本文は4,096バイト以内にし、APIキーなどの認証情報を含めないでください。',
+ invalid_instruction: '追加指示は4,096バイト以内にし、認証情報を含めないでください。', instruction_limit: '追加指示は4,096バイト以内にしてください。',
+ history_limit_create_new_session: '会話の保存上限に達しました。新しいセッションを作成してください。',
+ invalid_repository: 'owner/repository またはGitHubのリポジトリ・PR・Issue URLを指定してください。', invalid_github_url: 'GitHub.comのリポジトリ・PR・Issue URLを指定してください。',
+ store_unavailable: '保存先に接続できません。Firebase EmulatorまたはFirestoreを確認してください。', openai_http_401: 'OpenAI APIキーを確認してください。', openai_http_429: 'OpenAIの利用枠またはレート制限に達しました。', gemini_key_invalid: 'Gemini APIキーが無効と判定されました。Google AI Studioでキーを確認してください。', gemini_api_disabled: 'Gemini APIの利用設定またはキーの制限を確認してください。', gemini_bad_request: 'Geminiへのリクエスト形式が拒否されました。', gemini_precondition: 'Geminiプロジェクトの利用条件を確認してください。', gemini_http_400: 'Geminiがリクエストを拒否しました。キーやモデルの設定を確認してください。', gemini_http_404: 'このプロジェクトでモデルを利用できません。新しいセッションで利用可能なモデルを選択してください。', gemini_http_403: 'Gemini APIキーやプロジェクトの設定を確認してください。', gemini_http_429: 'Geminiの利用枠またはレート制限に達しました。',
+ gemini_output_limit: 'Geminiの応答を処理できませんでした。サーバーを最新版に更新して再試行してください。',
+ gemini_answer_too_long: 'Geminiの回答または要約がアプリの長さ制限を超えました。質問の範囲を絞って再試行してください。',
+ gemini_incomplete: 'Geminiの応答が途中で終了しました。再試行してください。',
+ gemini_invalid_intent: 'Geminiが質問の意図や調査方針を適切な形式で返せませんでした。再試行してください。',
+ gemini_invalid_review: 'Geminiがレビュー結果を適切な形式で返せませんでした。再試行してください。',
+ gemini_invalid_review_action: 'Geminiがレビュー開始の指示を適切な形式で返せませんでした。再試行してください。',
+ invalid_implementation_result: 'AIが実装の結果を適切な形式で返せませんでした。保存済みの状態から再開してください。',
+ implementation_ci_pending: 'CIに実行中のジョブがあります。全ジョブの完了後に再開してください。', implementation_verification_incomplete: '受け入れ条件や指摘が未解決のため公開できません。追加修正または未確認事項の再調査を依頼してください。', implementation_ci_incomplete: '全CI失敗を確認できるログが入力上限を超えました。対象ジョブやログを絞って再実行してください。', implementation_not_published: '公開済みのPRがありません。', implementation_ci_not_failed: '対象コミットのCI失敗がまだ確認できていません。CIを再確認してください。',
+ implementation_ci_forbidden: 'GitHub AppがCI情報の読み取りを403で拒否されました。ChecksとActionsのRead-only権限を確認し、必要な権限更新を承認してからGitHubでログインし直してください。AIキーの再入力では解消しません。', implementation_ci_unavailable: 'CIの失敗情報を取得できないため変更を中断しました。対象PRの失敗ログや、GitHub Appのアクセス許可を確認してください。',
+ implementation_request_required: '実装してほしい内容を入力してください。', implementation_plan_required: '承認できる実装計画がありません。チャットで実装を依頼してください。',
+ implementation_not_ready: 'PRを作成できる変更がありません。', implementation_publish_incomplete: 'ブランチへの書き込みが途中です。「PRの作成を再試行」で完了させてください。',
+ implementation_changes_expired: '変更内容の保存期限（1時間）が切れました。チャットでもう一度実装を依頼してください。',
+ implementation_plan_failed: 'AIが有効な実装計画を作成できませんでした。依頼を具体的にして再試行してください。', implementation_edit_failed: 'AIの変更を元のファイルに適用できませんでした。保存済みの状態から再開するか、依頼を分けてください。', implementation_edit_blocked: 'AIが変更を作成できない理由を保存しました。実装パネルの未確認事項を確認し、不足している情報を追加してください。',
+ implementation_no_changes: '計画したファイルに変更が作成されませんでした。依頼を具体的にして再試行してください。', implementation_verification_failed: '変更全体の整合性確認を完了できませんでした。保存済みの状態から再開してください。', implementation_amend_not_pending: '承認待ちの追加ファイルがありません。', invalid_implementation_amend: '追加ファイルへの回答を送れませんでした。',
+ pull_request_not_found: '指定したPRが見つかりません。PR番号を確認してください。', pull_request_closed: '指定したPRはマージ・クローズ済みです。新しいPRとして依頼してください。', pull_request_not_ai_branch: 'AIファクトリーが作成したPR（ai-factory/で始まるブランチ）にだけ修正を追加できます。', pull_request_from_fork: 'フォークからのPRには修正を追加できません。',
+ change_file_exists: '追加しようとしたファイルが既に存在します。計画を作り直してください。', change_file_missing: '変更・削除しようとしたファイルが見つかりません。計画を作り直してください。',
+ change_file_size_limit: '1ファイル100 KiBを超えるファイルは変更できません。', change_contains_secret: '変更内容に認証情報のような文字列が含まれているため作成を中止しました。',
+ protected_change_path: '.github/workflows・シンボリックリンク・サブモジュールは変更できません。', change_path_not_approved: '計画で承認していないファイルは変更できません。',
+ repository_write_forbidden: 'このリポジトリへの書き込み権限がありません。GitHub AppにContentsとPull requestsの書き込みを許可してください。',
+ branch_exists: '同じ名前のブランチが既にあります。ブランチ名を変更して再試行してください。', branch_moved: '作成済みのブランチが他の更新で進んでいます。最新の状態を確認してから改めて依頼してください。', branch_already_written: 'ブランチへの書き込みが済んでいるため、ブランチ名は変更できません。',
+ invalid_branch: 'ブランチ名は ai-factory/ で始まる英小文字・数字で指定してください。', invalid_pull_request_no_secrets: 'PRのタイトルと本文を確認してください。認証情報は含められません。',
+ github_http_422: 'GitHubが書き込みを拒否しました。ブランチ名や権限を確認してください。', github_http_403: 'GitHubへの書き込みが拒否されました。GitHub Appの権限を確認してください。',
+};
+
+/** Message for an error code (or Error whose message is a code), falling back to a generic message. */
+export function errorMessage(value: unknown) {
+ const code = value instanceof Error ? value.message : String(value);
+ return errorMessages[code] || `処理を完了できませんでした（${code}）。`;
+}
+
+/** Message for a limitation code, falling back to the raw text the server stored. */
+export function limitationMessage(code: string) { return errorMessages[code] || code; }
