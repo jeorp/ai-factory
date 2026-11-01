@@ -10,11 +10,13 @@ AI Factory is a chat app for exploring GitHub repositories, reviewing pull reque
 | Pull request review | Reviews diffs in batches and shows findings with evidence and areas that remain unverified |
 | Implementation | Creates changes after plan approval and opens a draft pull request after diff review |
 
-The stack uses Vue 3, TypeScript, Vue Router, Pinia, Go, Firebase Auth, Firestore, and Docker Compose, following `../system-design-skill-developer`. You can choose OpenAI or the Gemini Developer API. In production, the Go API serves the built Vue app from the same Cloud Run service so WebSocket connections and authentication cookies share one origin.
+The frontend uses Vue 3, TypeScript, Vue Router, and Pinia. The backend uses Go, with Firebase Auth for authentication and Firestore for storage. Docker Compose runs the API and Firebase emulators locally. You can choose OpenAI or the Gemini Developer API for live AI responses. In production, the Go API serves the built Vue app from the same Cloud Run service so WebSocket connections and authentication cookies share one origin.
 
 ## Run locally
 
-You need Docker, Go 1.27.2 or later, npm, and a supported Node.js LTS release (22.12 or later in the 22.x line, or 24.x). Run these commands from the repository root:
+You need Docker with Docker Compose, npm, and a supported Node.js LTS release (22.12 or later in the 22.x line, or 24.x). Go is built inside Docker; install Go 1.27.2 or later on your machine only if you want to run the API or Go checks directly.
+
+The default demo needs no `.env` file, GitHub App, AI API key, or Firebase cloud project. Start Docker, then run these commands from the repository root:
 
 ```sh
 docker compose up --build -d --wait
@@ -23,7 +25,13 @@ npm ci
 npm run dev
 ```
 
-Open the [web app](http://127.0.0.1:5175/), use the demo login button, create a session, and send a question. The default mode is a **fixed demo**: it does not connect to GitHub or OpenAI and needs no API key. Firebase Emulator still handles authentication and stores the session. URLs shown as references in the demo are examples, not evidence of real code. The app's interface is currently in Japanese.
+The app's interface is currently in Japanese. To try it:
+
+1. Open the [web app](http://127.0.0.1:5175/) and click **開発用ログイン** (demo login).
+2. Select the sample repository and click **セッションを作成** (create session).
+3. Send a question, such as `このリポジトリの構成を教えて` (explain the repository structure).
+
+The default mode is a **fixed demo**: it returns sample responses without connecting to GitHub or an AI provider. Firebase Emulator handles authentication and stores the session locally. URLs shown as references in the demo are examples, not evidence of real code.
 
 | Service | URL |
 | --- | --- |
@@ -64,7 +72,7 @@ Selecting or editing review findings, posting them to GitHub, checking the head 
 
 ## Connect to live services
 
-Live GitHub and AI access require a GitHub App owned by the user and an API key for the selected AI provider. Follow the [development guide](docs/development.md) for setup, [architecture and limits](docs/architecture.md) for the design, and [Cloud Run deployment guide](docs/deployment.md) for deployment. Credentials have not been registered and the app has not been deployed to the cloud.
+To use your own repositories and receive live AI responses, configure a GitHub App you own and an API key for the selected AI provider. Follow the [development guide](docs/development.md) for setup, [architecture and limits](docs/architecture.md) for the design, and [Cloud Run deployment guide](docs/deployment.md) to deploy your own instance.
 
 To try the Gemini Developer API, set `AI_PROVIDER=gemini` in `.env` and restart with `docker compose up --build -d`. For example, set `GEMINI_MODELS=gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.1-pro-preview` to choose the available models (Pro has no free tier). Enter a Gemini API key from Google AI Studio in the app. The key is not stored in an environment variable; it is used temporarily for each session. Set `PROVIDER=demo` to keep GitHub in fixed-demo mode.
 
