@@ -23,12 +23,14 @@ import (
 )
 
 type implementationRecoveryAI struct {
+	calls          atomic.Int32
 	invalid        atomic.Bool
 	rejected       atomic.Int32
 	verifyComplete atomic.Bool
 }
 
 func (p *implementationRecoveryAI) Next(ctx context.Context, key, model, input string) (agent.Decision, agent.Usage, error) {
+	p.calls.Add(1)
 	var body struct {
 		Task *struct {
 			Mode string                     `json:"mode"`
@@ -48,6 +50,23 @@ func (p *implementationRecoveryAI) Next(ctx context.Context, key, model, input s
 		return agent.Decision{}, agent.Usage{}, errors.New("invalid_implementation_result")
 	}
 	return (agent.Demo{}).Next(ctx, key, model, input)
+}
+
+type implementationCIReader struct {
+	*github.Client
+	complete atomic.Bool
+}
+
+func (r *implementationCIReader) Read(ctx context.Context, token string, target domain.Target, read github.Read) (string, domain.Source, int, error) {
+	if read.Kind != "check_runs" {
+		return r.Client.Read(ctx, token, target, read)
+	}
+	status, conclusion := "in_progress", ""
+	if r.complete.Load() {
+		status, conclusion = "completed", "success"
+	}
+	raw, _ := json.Marshal(map[string]any{"total_count": 1, "check_runs": []map[string]any{{"name": "test", "status": status, "conclusion": conclusion, "head_sha": target.Commit}}})
+	return string(raw), domain.Source{}, len(raw), nil
 }
 
 // Exercises plan → approval → changes → diff → publish over the real
@@ -75,7 +94,8 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 	storage := &store.Store{DB: db}
 	cfg := Config{Local: true, AIProvider: "demo", Project: project, Origin: "http://app.test", Models: []string{"gpt-5-mini"}, CookieKey: []byte(strings.Repeat("a", 32))}
 	ai := &implementationRecoveryAI{}
-	api := New(cfg, auth, storage, gh, &agent.Runner{AI: ai, GitHub: gh, Writer: gh}, http.DefaultClient)
+	ci := &implementationCIReader{Client: gh}
+	api := New(cfg, auth, storage, gh, &agent.Runner{AI: ai, GitHub: ci, Writer: gh, CIWait: time.Nanosecond}, http.DefaultClient)
 	srv := httptest.NewServer(api.Handler())
 	defer srv.Close()
 
@@ -272,13 +292,32 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 			t.Fatalf("unsafe publish accepted: %+v", bad)
 		}
 	}
-	published := sendWhenIdle(command{Type: "implement_publish", Branch: impl.Branch, Title: "READMEに説明を追加", Body: "AIが作成しました"}, func(s domain.Session) bool {
-		return s.State == "done" && s.Implementation != nil && s.Implementation.Status == "published"
+	modelCalls := ai.calls.Load()
+	waiting := sendWhenIdle(command{Type: "implement_publish", Branch: impl.Branch, Title: "READMEに説明を追加", Body: "AIが作成しました"}, func(s domain.Session) bool {
+		return s.State == "ci_wait"
 	})
-	if published.Implementation.PullNumber != 1 || !strings.Contains(published.Messages[len(published.Messages)-1].Text, "Draft PR") {
-		t.Fatalf("publish: %+v", published.Implementation)
+	if waiting.Implementation.Status != "checking_ci" || waiting.Implementation.CI.State != "pending" || len(waiting.Messages) != len(revised.Messages) {
+		t.Fatalf("pending CI claimed completion: %+v", waiting)
 	}
 	stored, err := storage.Get(ctx, uid, session.ID)
+	if err != nil || stored.State != "ci_wait" || stored.Implementation.Commit != waiting.Implementation.Commit {
+		t.Fatalf("CI wait was not persisted: %+v %v", stored, err)
+	}
+	ws.WriteJSON(command{Type: "stop"})
+	wait(func(s domain.Session) bool { return s.State == "stopped" }, "")
+	ws.WriteJSON(command{Type: "resume"})
+	wait(func(s domain.Session) bool { return s.State == "ci_wait" }, "")
+	ci.complete.Store(true)
+	published := sendWhenIdle(command{Type: "resume"}, func(s domain.Session) bool {
+		return s.State == "done" && s.Implementation != nil && s.Implementation.Status == "published"
+	})
+	if published.Implementation.PullNumber != 1 || !strings.Contains(published.Messages[len(published.Messages)-1].Text, "/commit/"+published.Implementation.Commit+"/checks") {
+		t.Fatalf("publish: %+v", published.Implementation)
+	}
+	if ai.calls.Load() != modelCalls || published.Implementation.Commit != waiting.Implementation.Commit || published.Implementation.PullNumber != waiting.Implementation.PullNumber || published.Implementation.CI.State != "passed" {
+		t.Fatalf("CI resume called AI or changed publication: %+v", published.Implementation)
+	}
+	stored, err = storage.Get(ctx, uid, session.ID)
 	if err != nil || stored.Implementation == nil || stored.Implementation.Status != "published" || stored.Implementation.CacheID == "" || stored.Implementation.Verification == nil {
 		t.Fatalf("not persisted: %+v %v", stored, err)
 	}

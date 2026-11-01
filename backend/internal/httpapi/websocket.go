@@ -225,6 +225,8 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			instructions = nil
 			if wasStopping {
 				session.State = "stopped"
+			} else if errors.Is(runErr, agent.ErrCIWaiting) {
+				session.State = "ci_wait"
 			} else if runErr != nil && runErr.Error() == "review_run_budget_resume" {
 				session.State = "user_wait"
 			} else if runErr != nil {
@@ -256,6 +258,12 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				send("ended", nil)
 				return
 			case "stop":
+				if cancelRun == nil && session.State == "ci_wait" {
+					session.State = "stopped"
+					if save() != nil || send("session", session) != nil {
+						return
+					}
+				}
 				if cancelRun != nil {
 					session.State = "stopping"
 					cancelRun()
@@ -435,7 +443,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 						status = "canceled"
 					} else if errors.Is(runErr, context.DeadlineExceeded) {
 						status = "timeout"
-					} else if runErr != nil && runErr.Error() == "review_run_budget_resume" {
+					} else if errors.Is(runErr, agent.ErrCIWaiting) || (runErr != nil && runErr.Error() == "review_run_budget_resume") {
 						status = "yielded"
 					} else if runErr != nil {
 						status = "error"

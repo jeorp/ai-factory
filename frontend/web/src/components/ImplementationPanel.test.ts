@@ -43,10 +43,21 @@ describe('implementation verification and CI results', () => {
  });
  it('offers a repair for a failed CI result tied to the published commit',async()=>{
   const impl=implementation('published');impl.ci={commit:'d'.repeat(40),state:'failed',checks:[{name:'backend',status:'completed',conclusion:'failure',jobId:42}],unverified:[]};
-  const html=await renderImpl(impl);expect(html).toContain('CI失敗・修正が必要');expect(html).toContain('dddddddddddd');expect(html).toContain('CIの失敗を修正');expect(html).toContain('CIを再確認');
+  impl.commit='d'.repeat(40);
+  const html=await renderImpl(impl);expect(html).toContain('CI失敗・修正が必要');expect(html).toContain(`/commit/${impl.commit}/checks`);expect(html).toContain('CIの失敗を修正');expect(html).toContain('CIを再確認');expect(html).not.toContain('backend:');
  });
  it('keeps pending CI separate from success',async()=>{
   const impl=implementation('published');impl.ci={commit:'d'.repeat(40),state:'pending',checks:[],unverified:[]};
   const html=await renderImpl(impl);expect(html).toContain('CI待ち');expect(html).not.toContain('CI成功');expect(html).not.toContain('CIの失敗を修正');
+ });
+ it('shows only the CI link while waiting and hides job details and earlier implementation output',async()=>{
+  const impl=implementation('checking_ci');impl.commit='d'.repeat(40);impl.pullUrl='https://github.com/a/b/pull/7';impl.pullNumber=7;
+  impl.ci={commit:impl.commit,state:'pending',checks:[{name:'private-job-name',status:'in_progress',conclusion:'',jobId:42}],unverified:['internal diagnostic']};
+  impl.verification={issues:[],unverified:[]};
+  for (const state of ['running','ci_wait']) {
+   const html=await renderToString(createSSRApp(ImplementationPanel,{sessionId:'session',repository:'a/b',implementation:impl,sessionState:state,running:true,canRun:false,connected:true}));
+   expect(html).toContain('CIの完了待ち');expect(html).toContain(`href="https://github.com/a/b/commit/${impl.commit}/checks"`);
+   for(const text of ['private-job-name','internal diagnostic','戻り値を修正','AIによる整合性確認','PR #7','CIを再確認','保存済みの状態から再開','CI成功']) expect(html).not.toContain(text);
+  }
  });
 });

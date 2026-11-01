@@ -38,7 +38,7 @@ type Runner struct {
 	AI     Provider
 	GitHub Reader
 	Writer Writer
-	CIWait time.Duration // production waits for CI; zero performs one snapshot
+	CIWait time.Duration // wait per batch, then yield ErrCIWaiting; zero performs one snapshot
 }
 type evidence struct {
 	Read    github.Read `json:"read"`

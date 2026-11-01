@@ -98,7 +98,11 @@ func (r *Runner) runImplementation(ctx context.Context, in Input, emit func(Chec
 		run.logger = slog.Default()
 	}
 	defer func() {
-		run.logger.Info("implement_run_finished", "phase", impl.Status, "step", impl.NextStep+1, "model_calls", run.calls, "outcome", outcome(runErr), "error_code", implementationErrorCode(runErr))
+		result, code := outcome(runErr), implementationErrorCode(runErr)
+		if errors.Is(runErr, ErrCIWaiting) {
+			result, code = "yielded", ""
+		}
+		run.logger.Info("implement_run_finished", "phase", impl.Status, "step", impl.NextStep+1, "model_calls", run.calls, "outcome", result, "error_code", code)
 	}()
 	run.cp = Checkpoint{Summary: in.Session.Summary, Sources: append([]domain.Source{}, in.Session.Sources...), Limitations: append([]string{}, in.Session.Limitations...), Metrics: in.Session.Metrics, Implementation: impl}
 	// Earlier failed attempts are recorded in logs; do not keep showing those

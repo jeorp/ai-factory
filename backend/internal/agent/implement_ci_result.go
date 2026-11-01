@@ -3,12 +3,17 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"ai-factory/backend/internal/domain"
 	"ai-factory/backend/internal/github"
 )
+
+// ErrCIWaiting yields the read-only wait without completing the implementation.
+// A connected client can resume it without an AI key or another publication.
+var ErrCIWaiting = errors.New("implementation_ci_wait")
 
 func ciFailedConclusion(conclusion string) bool {
 	switch conclusion {
@@ -90,12 +95,17 @@ func (run *implementRun) checkPublishedCI(ctx context.Context) error {
 			}
 		}
 		if result.State != "pending" || !time.Now().Before(deadline) {
+			if result.State == "pending" && run.r.CIWait > 0 {
+				if err := run.save(ctx, "CIの完了を待っています"); err != nil {
+					return err
+				}
+				return ErrCIWaiting
+			}
 			impl.Status = "published"
-			message := map[string]string{"passed": "取得したGitHub CIのチェックがすべて成功しました。", "failed": "GitHub CIが失敗しました。「CIの失敗を修正」で失敗ログを取得して修正を計画できます。", "unverified": "GitHub CIの成功を確認できていません。", "pending": "GitHub CIは未完了、またはチェックがまだありません。「CIを再確認」で確認できます。"}[result.State]
-			run.cp.Answer = fmt.Sprintf("Draft PR: %s\nコミット: %s\n%s", impl.PullURL, impl.Commit, message)
-			return run.save(ctx, message)
+			run.cp.Answer = fmt.Sprintf("[CIを確認](https://github.com/%s/commit/%s/checks)", run.in.Session.Target.Repository, impl.Commit)
+			return run.save(ctx, "CIの確認が完了しました")
 		}
-		if err := run.save(ctx, "GitHub CIの完了を待っています"); err != nil {
+		if err := run.save(ctx, "CIの完了を待っています"); err != nil {
 			return err
 		}
 		timer := time.NewTimer(min(10*time.Second, time.Until(deadline)))

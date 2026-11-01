@@ -2,7 +2,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { api } from '../lib/auth';
 import { lineDiff, type DiffLine } from '../lib/lineDiff';
-import { implementationInterrupted, implementationStatus } from '../lib/implementationStatus';
+import { implementationCILink, implementationInterrupted, implementationStatus } from '../lib/implementationStatus';
 import type { Implementation } from '../types';
 
 const props = defineProps<{ sessionId: string; repository: string; implementation: Implementation; sessionState: string; running: boolean; canRun: boolean; connected: boolean }>();
@@ -11,6 +11,7 @@ const impl = computed(() => props.implementation);
 const labels = { create: '追加', update: '変更', delete: '削除' } as const;
 const interrupted = computed(() => implementationInterrupted(impl.value, props.sessionState));
 const statusLabel = computed(() => implementationStatus(impl.value, props.sessionState));
+const ciLink = computed(() => implementationCILink(props.repository, impl.value));
 const branch = ref(''); const title = ref(''); const body = ref(''); const confirmed = ref(false);
 watch(() => [impl.value.status, impl.value.version, impl.value.branch, impl.value.title] as const, () => {
  branch.value = impl.value.branch || ''; title.value = impl.value.title || ''; body.value = (impl.value.body || '').slice(0, 12000); confirmed.value = false;
@@ -52,6 +53,7 @@ onUnmounted(() => { active = false; controller.abort(); });
    <p v-else-if="!canRun && impl.status!=='checking_ci'">画面上部でAPIキーを接続してから再開してください。</p>
    <button class="primary-button" :disabled="running || !connected || (!canRun && impl.status!=='checking_ci')" @click="emit('resume')">保存済みの状態から再開</button>
   </div>
+  <template v-if="impl.status !== 'checking_ci'">
   <p class="impl-request">{{ impl.request }}</p>
   <p v-if="impl.baseCommit" class="impl-base">ベース <code>{{ impl.baseBranch }}</code> <code>{{ impl.baseCommit.slice(0, 12) }}</code><template v-if="followUp"> · 作成済みのブランチ <code>{{ impl.branch }}</code> に追加コミット</template></p>
 
@@ -115,16 +117,16 @@ onUnmounted(() => { active = false; controller.abort(); });
    <label>{{ followUp ? 'コミットメッセージ' : 'PRタイトル' }}<input v-model="title" maxlength="256" /></label>
    <label v-if="!followUp">PR本文<textarea v-model="body" rows="8" maxlength="12000" /></label>
    <label class="consent"><input v-model="confirmed" type="checkbox" />差分を確認しました。{{ repository }} に新しいブランチを作成し、{{ followUp ? '追加コミットします' : 'Draft PRを作成します' }}。</label>
-   <p>アプリ内ではコードやテストを実行していません。作成後は対象コミットのGitHub CIを最大5分待ち、結果を表示します。未完了ならCIを再確認できます。完了したGitHubへの書き込みは自動では取り消されません。</p>
+   <p>作成後はGitHub CIの完了を待ちます。テストの詳細はCIのリンクから確認できます。</p>
    <button class="primary-button" :disabled="!canPublish">{{ impl.status === 'publishing' ? 'PRの作成を再試行' : followUp ? '追加コミットを作成' : 'Draft PRを作成' }}</button>
   </form>
+  </template>
 
-  <section v-if="impl.ci" aria-label="GitHub CIの実行結果">
-   <h3>GitHub CI</h3><p>対象コミット: <code>{{ impl.ci.commit.slice(0,12) }}</code> · {{ { pending: '未完了・チェック待ち', passed: '取得したチェックはすべて成功', failed: '失敗・修正が必要', unverified: '成功を確認できていません' }[impl.ci.state] }}</p>
-   <ul><li v-for="(check,i) in impl.ci.checks" :key="i">{{ check.name }}: {{ check.conclusion || check.status }}</li></ul><p v-for="item in impl.ci.unverified" :key="item">{{ item }}</p>
-   <div v-if="impl.status==='published'" class="impl-actions"><button class="plain-button" :disabled="running || !connected" @click="emit('checkCi')">CIを再確認</button><button v-if="impl.ci.state==='failed'" class="primary-button" :disabled="running || !canRun" @click="emit('fixCi')">CIの失敗を修正</button></div>
+  <section v-if="(impl.status === 'checking_ci' || impl.status === 'published') && ciLink" aria-label="GitHub CI">
+   <a :href="ciLink" target="_blank" rel="noopener noreferrer">CIを確認</a>
   </section>
-  <p v-if="(impl.status === 'published' || impl.status === 'checking_ci') && impl.pullUrl" class="impl-done">作成済み: <a :href="safeLink(impl.pullUrl)" target="_blank" rel="noopener noreferrer">PR #{{ impl.pullNumber }}</a> · ブランチ <code>{{ impl.branch }}</code>。追加の修正はチャットで依頼すると、このブランチに追加コミットできます。</p>
+  <div v-if="impl.status==='published' && impl.ci" class="impl-actions"><button v-if="impl.ci.state!=='passed'" class="plain-button" :disabled="running || !connected" @click="emit('checkCi')">CIを再確認</button><button v-if="impl.ci.state==='failed'" class="primary-button" :disabled="running || !canRun" @click="emit('fixCi')">CIの失敗を修正</button></div>
+  <p v-if="impl.status === 'published' && impl.pullUrl" class="impl-done">作成済み: <a :href="safeLink(impl.pullUrl)" target="_blank" rel="noopener noreferrer">PR #{{ impl.pullNumber }}</a> · ブランチ <code>{{ impl.branch }}</code>。追加の修正はチャットで依頼すると、このブランチに追加コミットできます。</p>
  </section>
 </template>
 

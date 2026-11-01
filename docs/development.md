@@ -94,6 +94,8 @@ PR取得に成功した番号は `activePullRequest` に保存する。通常メ
 
 WebSocketコマンド: `implement`（依頼文、AIキー必須）、`implement_approve`（計画の承認、AIキー必須）、`implement_publish`（`branch` / `title` / `body`、AIキー不要）。`resume` は保存した区切りから計画・変更作成・PR作成を再開する。変更後のファイル本文は `GET /api/v1/sessions/{id}/change?path=...` で元ファイルと一緒に返す。
 
+PR作成後は対象コミットのCIを10秒間隔で最大5分確認する。未完了なら `ErrCIWaiting` で実行を区切り、実装の `checking_ci` とセッションの `ci_wait` を保存する。ブラウザーは接続中に10秒後の `resume` を送って確認を続ける。この継続ではAIキーを送らず、モデル呼び出し・再公開・完了メッセージの追加も行わない。切断中はアプリの確認が止まり、再接続後に継続する。`stop` は実行中と区切りの間の待機の両方を停止する。画面は待機状態と固定コミットの `/commit/{sha}/checks` リンクを表示し、ジョブ一覧やログは表示しない。結果取得不能や不完全な結果は未確認として止め、CI成功と区別する。`CIWait=0` はデモ・評価用に1回だけスナップショットを取得する。
+
 Emulator統合テスト `TestEmulatorImplementationLifecycle` は固定デモのAIとGitHubで、計画・承認・差分・不正なブランチ名や秘密情報の拒否・PR作成・Firestoreへの保存を実WebSocket経由で確認する。Emulatorはfirebase-toolsで起動できる:
 
 ```sh
