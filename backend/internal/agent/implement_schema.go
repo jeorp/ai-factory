@@ -133,11 +133,10 @@ func changeItemsSchema(files []implementFile, edits, lineEdits map[string]any) m
 	variant := func(path map[string]any, actions []string) map[string]any {
 		e, l, content := edits, lineEdits, map[string]any{"type": "string"}
 		if len(actions) == 1 && actions[0] != "update" {
-			// create carries full content only; delete carries nothing.
+			// create carries full content only; delete carries nothing. The
+			// content of delete is not constrained by an empty-string enum,
+			// which not every provider accepts; the server ignores it.
 			e, l = noItems(edits), noItems(lineEdits)
-			if actions[0] == "delete" {
-				content = map[string]any{"type": "string", "enum": []string{""}}
-			}
 		}
 		return object(map[string]any{
 			"path": path, "action": map[string]any{"type": "string", "enum": actions},

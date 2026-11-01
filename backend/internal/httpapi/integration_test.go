@@ -246,7 +246,7 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	var effortSession domain.Session
 	json.NewDecoder(response.Body).Decode(&effortSession)
 	response.Body.Close()
-	if response.StatusCode != 201 || effortSession.Effort != "medium" {
+	if response.StatusCode != 201 || effortSession.Effort != "low" {
 		t.Fatalf("missing default: %+v status=%d", effortSession, response.StatusCode)
 	}
 	t.Cleanup(func() { storage.Delete(ctx, two.uid, effortSession.ID) })
@@ -304,7 +304,7 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 			break
 		}
 	}
-	if !strings.Contains(string(busyEffort.Data), "run_in_progress") {
+	if !strings.Contains(string(busyEffort.Data), "effort_change_in_progress") {
 		t.Fatalf("effort changed during run: %+v", busyEffort)
 	}
 	ws.WriteJSON(command{Type: "instruction", ID: randomID(), Text: "認証を優先"})

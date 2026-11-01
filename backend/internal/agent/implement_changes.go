@@ -58,11 +58,12 @@ func validateProposalStructure(step []string, impl *domain.Implementation, propo
 		}
 		issue.Path = p.Path
 		if at, ok := first[p.Path]; ok {
-			issue.Code, issue.FirstChange = "change_path_duplicate", at
-			issues = append(issues, issue)
-			continue
+			// Keep checking the duplicate's action and fields so a wrong action
+			// in it is reported in the same correction, not one call later.
+			issues = append(issues, changeIssue{Code: "change_path_duplicate", Change: i + 1, Path: p.Path, SubmittedAction: issue.SubmittedAction, FirstChange: at})
+		} else {
+			first[p.Path] = i + 1
 		}
-		first[p.Path] = i + 1
 		planned := impl.PlannedAction(p.Path)
 		switch {
 		case !validChangeActions[p.Action]:
