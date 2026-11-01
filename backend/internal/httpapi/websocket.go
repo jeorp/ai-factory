@@ -206,7 +206,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				}
 			case "set_effort":
 				if cancelRun != nil {
-					problem("run_in_progress")
+					problem("effort_change_in_progress")
 					continue
 				}
 				levels := s.effortOptions(session.Model)
@@ -216,7 +216,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				}
 				session.Effort = cmd.Effort
 				if session.Effort == "" {
-					session.Effort = domain.DefaultEffort(levels)
+					session.Effort = domain.DefaultEffort(session.Model, levels)
 				}
 				if save() != nil || send("session", session) != nil {
 					return

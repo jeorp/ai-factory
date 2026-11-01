@@ -38,11 +38,13 @@ const transcript = ref<HTMLElement>();
 
 // New session form.
 const repositories = ref<Repository[]>([]); const repositoryChoice = ref(''); const manualTarget = ref(''); const model = ref('');
-const effort = ref('medium');
+// The server decides each model's default level (medium only where it is known to be supported).
+const defaultEffort = (m: string) => { const levels = config.value.modelEfforts?.[m] || []; const d = config.value.modelEffortDefaults?.[m]; return d && levels.includes(d) ? d : levels[0] || ''; };
+const effort = ref('');
 const newEfforts = computed(() => config.value.modelEfforts?.[model.value] || []);
-watch(newEfforts, levels => { if (!levels.includes(effort.value)) effort.value = levels.includes('medium') ? 'medium' : levels[0] || ''; });
+watch([model, newEfforts], () => { effort.value = defaultEffort(model.value); }, { immediate: true });
 const currentEfforts = computed(() => config.value.modelEfforts?.[current.value?.model || ''] || []);
-const currentEffort = computed(() => current.value?.effort || (currentEfforts.value.includes('medium') ? 'medium' : currentEfforts.value[0] || ''));
+const currentEffort = computed(() => current.value?.effort || defaultEffort(current.value?.model || ''));
 const target = computed(() => repositoryChoice.value === '__manual__' ? manualTarget.value.trim() : repositoryChoice.value);
 
 // AI key and composer.

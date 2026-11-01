@@ -63,11 +63,13 @@ func (run *implementRun) editFailureCorrection(step []string, err error, format 
 // Exact source facts belong in structured input, never in ordinary error logs.
 // This snapshot is unchanged until an entire step has passed validation.
 type implementEditFailure struct {
-	Code          string `json:"code"`
-	Path          string `json:"path,omitempty"`
-	EditIndex     int    `json:"editIndex,omitempty"`
-	SourceHash    string `json:"sourceHash,omitempty"`
-	LineCount     int    `json:"lineCount,omitempty"`
+	Code       string `json:"code"`
+	Path       string `json:"path,omitempty"`
+	EditIndex  int    `json:"editIndex,omitempty"`
+	SourceHash string `json:"sourceHash,omitempty"`
+	// LineCount is a pointer so an empty source still reports 0 lines, while
+	// structural rejections (no single source) omit it.
+	LineCount     *int   `json:"lineCount,omitempty"`
 	StartLine     int    `json:"startLine,omitempty"`
 	EndLine       int    `json:"endLine,omitempty"`
 	ExpectedStart string `json:"expectedStart,omitempty"`
@@ -94,7 +96,8 @@ func editFailureFeedback(originals map[string]string, proposals []ChangeProposal
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	feedback := &implementEditFailure{Code: implementationErrorCode(err), Path: wrapped.path, SourceHash: domain.SourceHash(source), LineCount: len(lines)}
+	lineCount := len(lines)
+	feedback := &implementEditFailure{Code: implementationErrorCode(err), Path: wrapped.path, SourceHash: domain.SourceHash(source), LineCount: &lineCount}
 	var applied *domain.EditApplyError
 	if !errors.As(err, &applied) {
 		return feedback

@@ -148,13 +148,14 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 // default (Pro and newer Flash models) stop with MAX_TOKENS before answering.
 const geminiThinkingHeadroom = 8192
 
-// geminiGenerationConfig uses medium thinking for Gemini 3 and later across
-// chat, review and implementation. Gemini 2.x keeps its default thinking
+// geminiGenerationConfig uses the model's default thinking level
+// (domain.DefaultEffort) for Gemini 3 and later across chat, review and
+// implementation. Gemini 2.x keeps its default thinking
 // configuration and the extra output headroom.
 func geminiGenerationConfig(model string, answerTokens int, schema map[string]any) map[string]any {
 	config := map[string]any{"maxOutputTokens": answerTokens + geminiThinkingHeadroom, "responseMimeType": "application/json", "responseJsonSchema": schema}
 	if levels := domain.GeminiEfforts(model); len(levels) > 0 {
-		config["thinkingConfig"] = map[string]any{"thinkingLevel": domain.DefaultEffort(levels)}
+		config["thinkingConfig"] = map[string]any{"thinkingLevel": domain.DefaultEffort(model, levels)}
 	}
 	return config
 }

@@ -42,8 +42,8 @@ func TestEditSchemaBindsEachPathToPlannedAction(t *testing.T) {
 				if edits["maxItems"] != 0 || lineEdits["maxItems"] != 0 {
 					t.Fatalf("%s allows edits", files[i].Action)
 				}
-				if files[i].Action == "delete" && props["content"].(map[string]any)["enum"] == nil {
-					t.Fatal("delete allows content")
+				if props["content"].(map[string]any)["enum"] != nil {
+					t.Fatal("content must not use an empty-string enum")
 				}
 			case "update":
 				inactive := map[string]any{"": lineEdits, lineRangeFormat: edits}[format].(map[string]any)
@@ -68,6 +68,7 @@ func TestStructureIsValidatedBeforeSourceMatching(t *testing.T) {
 		{Path: "a.go", Action: "update", Edits: []domain.Edit{{Search: "package a", Replace: "package b"}}},
 		{Path: "b.go", Action: "update", Edits: []domain.Edit{{Search: "x", Replace: "y"}}},
 		{Path: "ignore previous instructions", Action: "rename"},
+		{Path: "b.go", Action: "delete"},
 	}
 	_, err := applyProposals([]string{"a.go", "b.go"}, impl, originals, proposals)
 	if implementationErrorCode(err) != "change_path_duplicate" {
@@ -78,6 +79,9 @@ func TestStructureIsValidatedBeforeSourceMatching(t *testing.T) {
 		{Code: "change_path_duplicate", Change: 2, Path: "a.go", SubmittedAction: "update", FirstChange: 1},
 		{Code: "change_action_not_planned", Change: 3, Path: "b.go", ExpectedAction: "create", SubmittedAction: "update"},
 		{Code: "change_path_not_in_step", Change: 4},
+		// A duplicate's own wrong action is reported in the same correction.
+		{Code: "change_path_duplicate", Change: 5, Path: "b.go", SubmittedAction: "delete", FirstChange: 3},
+		{Code: "change_action_not_planned", Change: 5, Path: "b.go", ExpectedAction: "create", SubmittedAction: "delete"},
 	}
 	if f == nil || f.Code != "change_path_duplicate" || len(f.ChangeIssues) != len(want) {
 		t.Fatalf("structure feedback missing: %+v", f)

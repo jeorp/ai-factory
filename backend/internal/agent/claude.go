@@ -63,7 +63,7 @@ func (p *Claude) Next(ctx context.Context, key, model, input string) (Decision, 
 		MaxTokens:    int64(maxOutput + claudeThinkingHeadroom),
 		System:       []anthropic.TextBlockParam{{Text: instructions}},
 		Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(input))},
-		OutputConfig: anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortLow, Format: anthropic.JSONOutputFormatParam{Schema: schema}},
+		OutputConfig: anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortLow, Format: anthropic.JSONOutputFormatParam{Schema: claudeOutputSchema(schema)}},
 	}
 	if body, err := json.Marshal(params); err != nil || len(body) > aiRequestLimit(input) {
 		return Decision{}, Usage{}, errors.New("ai_request_limit")
@@ -201,4 +201,40 @@ func claudeError(err error, onVertex bool) error {
 		return fmt.Errorf("claude_http_%d", apierr.StatusCode)
 	}
 	return errors.New("claude_unavailable")
+}
+
+// claudeOutputSchema drops array size limits that Claude structured output
+// does not accept (maxItems, and minItems other than 0 or 1). The full schema
+// stays in the instructions, and the server validates the same limits after
+// the response, so only the decoding constraint is relaxed.
+func claudeOutputSchema(v any) map[string]any {
+	out, _ := stripArrayLimits(v).(map[string]any)
+	return out
+}
+
+func stripArrayLimits(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, item := range t {
+			if k == "maxItems" {
+				continue
+			}
+			if k == "minItems" {
+				if n, ok := item.(int); ok && n > 1 {
+					continue
+				}
+			}
+			out[k] = stripArrayLimits(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = stripArrayLimits(item)
+		}
+		return out
+	default:
+		return v
+	}
 }

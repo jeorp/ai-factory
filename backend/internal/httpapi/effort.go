@@ -22,3 +22,15 @@ func (s *Server) modelEfforts() map[string][]string {
 	}
 	return out
 }
+
+// modelEffortDefaults is the level a new session gets when none is chosen, so
+// the UI preselects exactly what the server would store.
+func (s *Server) modelEffortDefaults() map[string]string {
+	out := map[string]string{}
+	for _, model := range s.Config.Models {
+		if levels := s.effortOptions(model); len(levels) > 0 {
+			out[model] = domain.DefaultEffort(model, levels)
+		}
+	}
+	return out
+}

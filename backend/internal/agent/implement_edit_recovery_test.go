@@ -140,7 +140,7 @@ func TestAnchorRecoveryKeepsExactSourceAcrossAdditionalRead(t *testing.T) {
 					return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{p}}}, Usage{}, nil
 				}
 				f := task.EditFailure
-				if f == nil || f.Code != "edit_line_anchor_mismatch" || f.Path != p.Path || f.SourceHash != domain.SourceHash(original) || f.LineCount != 4 || f.EditIndex != 1 || f.StartLine != 3 || f.EndLine != 3 || f.ExpectedStart != "実装を開始しないでください。" || f.ExpectedEnd != f.ExpectedStart || !strings.Contains(task.Correction, "editFailure") {
+				if f == nil || f.Code != "edit_line_anchor_mismatch" || f.Path != p.Path || f.SourceHash != domain.SourceHash(original) || f.LineCount == nil || *f.LineCount != 4 || f.EditIndex != 1 || f.StartLine != 3 || f.EndLine != 3 || f.ExpectedStart != "実装を開始しないでください。" || f.ExpectedEnd != f.ExpectedStart || !strings.Contains(task.Correction, "editFailure") {
 					t.Fatalf("exact retry evidence missing on call %d: %+v", calls, task)
 				}
 				if calls == 3 {
@@ -169,7 +169,7 @@ func TestEditFailureFeedbackUsesValidUnclippedBoundaries(t *testing.T) {
 		proposal := ChangeProposal{Path: "a.go", LineEdits: []domain.LineEdit{{StartLine: 1, EndLine: 2}}}
 		err := &proposalEditError{path: "a.go", err: &domain.EditApplyError{Code: "edit_line_anchor_mismatch", Index: 1}}
 		f := editFailureFeedback(map[string]string{"a.go": source}, []ChangeProposal{proposal}, err)
-		if f.LineCount != 2 || f.ExpectedStart != "first" || f.ExpectedEnd != "last" || f.SourceHash != domain.SourceHash(source) {
+		if f.LineCount == nil || *f.LineCount != 2 || f.ExpectedStart != "first" || f.ExpectedEnd != "last" || f.SourceHash != domain.SourceHash(source) {
 			t.Fatalf("incorrect source coordinates: %+v", f)
 		}
 	}
@@ -178,7 +178,7 @@ func TestEditFailureFeedbackUsesValidUnclippedBoundaries(t *testing.T) {
 		p := ChangeProposal{Path: "a.go", LineEdits: []domain.LineEdit{{StartLine: lines[0], EndLine: lines[1]}}}
 		err := &proposalEditError{path: "a.go", err: &domain.EditApplyError{Code: "edit_line_range_invalid", Index: 1}}
 		f := editFailureFeedback(map[string]string{"a.go": source}, []ChangeProposal{p}, err)
-		if f.LineCount != 3 {
+		if f.LineCount == nil || *f.LineCount != 3 {
 			t.Fatalf("phantom trailing line: %+v", f)
 		}
 		if lines[0] == 3 {
