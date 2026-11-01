@@ -275,7 +275,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					deadline = time.Now().Add(6 * time.Minute)
 					cmd.APIKey = ""
 				}
-				if s.Config.AIProvider != "demo" && !publishOnly && (!validAIKey(cmd.APIKey) || !deadline.After(time.Now())) {
+				if s.Config.AIProvider != "demo" && !publishOnly && (!validAIKey(cmd.APIKey, s.Config.ModelProviders[session.Model]) || !deadline.After(time.Now())) {
 					session.State = "auth_wait"
 					save()
 					problem("ai_key_required")
@@ -355,8 +355,19 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
-func validAIKey(key string) bool {
-	return len(key) > 0 && len(key) <= 512 && !strings.ContainsAny(key, " \t\r\n")
+
+// maxAIKeyBytes caps API keys. Vertex AI takes a Google OAuth access token,
+// which Google allows to grow up to 2048 bytes (for example with service
+// account impersonation), so its cap is larger.
+func maxAIKeyBytes(provider string) int {
+	if provider == "vertex" {
+		return 2048
+	}
+	return 512
+}
+
+func validAIKey(key, provider string) bool {
+	return len(key) > 0 && len(key) <= maxAIKeyBytes(provider) && !strings.ContainsAny(key, " \t\r\n")
 }
 
 func minTime(a, b time.Time) time.Time {

@@ -9,6 +9,9 @@ interface Options {
  onError: (message: string) => void;
 }
 
+/** Vertex AI takes a Google OAuth access token, which can grow up to 2048 bytes; API keys stay within 512. */
+export function maxKeyLength(provider: string) { return provider === 'vertex' ? 2048 : 512; }
+
 /** State and actions behind the AI API key card. */
 export function useApiKey({ provider, sessionId, onError }: Options) {
  const state = reactive({
@@ -26,7 +29,7 @@ export function useApiKey({ provider, sessionId, onError }: Options) {
   try {
    const key = state.choice === 'saved' ? await savedKey(provider()) : state.draft.trim();
    if (id !== sessionId()) return;
-   if (!state.consent || !key || key.length > 512 || /\s/.test(key)) { onError('送信内容を確認し、AIのAPIキーを選択または入力してください。'); return; }
+   if (!state.consent || !key || key.length > maxKeyLength(provider()) || /\s/.test(key)) { onError('送信内容を確認し、AIのAPIキーを選択または入力してください。'); return; }
    if (state.choice === 'new' && state.remember) { await saveKey(provider(), key); state.hasSaved = true; }
    if (id !== sessionId()) return;
    setKey(key); state.draft = ''; sync();

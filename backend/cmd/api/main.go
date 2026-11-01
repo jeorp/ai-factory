@@ -40,12 +40,23 @@ func main() {
 	defer db.Close()
 	client := &http.Client{Timeout: 60 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 	gh := &github.Client{HTTP: client, Demo: c.Demo, Cache: &github.FirestoreReadCache{DB: db}}
-	var ai agent.Provider = &agent.OpenAI{HTTP: client}
-	if c.AIProvider == "demo" {
-		ai = agent.Demo{}
-	} else if c.AIProvider == "gemini" {
-		ai = &agent.Gemini{HTTP: client}
+	providers := map[string]agent.Provider{}
+	for _, name := range c.ModelProviders {
+		switch name {
+		case "demo":
+			providers[name] = agent.Demo{}
+		case "openai":
+			providers[name] = &agent.OpenAI{HTTP: client}
+		case "gemini":
+			providers[name] = &agent.Gemini{HTTP: client}
+		case "vertex":
+			// The SDK's own client has no overall timeout; the run deadline bounds streamed answers.
+			providers[name] = &agent.Claude{Vertex: true, Project: c.VertexProject, Region: c.VertexRegion}
+		case "anthropic":
+			providers[name] = &agent.Claude{}
+		}
 	}
+	ai := agent.ModelRouter{Providers: providers, ModelProviders: c.ModelProviders}
 	ciWait := 5 * time.Minute
 	if c.Demo {
 		ciWait = 0

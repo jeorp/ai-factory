@@ -11,6 +11,26 @@
 - Geminiは思考トークンを `maxOutputTokens` に含めるため、回答枠に8192トークンの余裕を加えている。思考トークンも出力として課金される。
 - 料金表示（`frontend/web/src/lib/pricing.ts`）は2026-10-31時点の200kトークン以下の単価。未登録のモデルは料金を推定しない。
 
+## Vertex AI経由のClaude
+
+`.env` に `AI_PROVIDER=vertex`（Geminiと併用する場合は `AI_PROVIDER=gemini,vertex`）、`VERTEX_PROJECT_ID=<GCPプロジェクトID>` を設定し、Composeを再ビルドして起動する。`VERTEX_REGION` の既定は `global`、`CLAUDE_MODELS`（カンマ区切り、先頭が既定）の既定は `claude-haiku-5-5,claude-sonnet-5-5`。
+
+1. GCPプロジェクトでVertex AI APIを有効にし、Model Gardenで使うClaudeモデル（例: Claude Haiku 5.5）を開いてEnableする（利用規約への同意が必要）。
+2. 利用するGoogleアカウントに `roles/aiplatform.user` を付与する。
+3. ターミナルで `gcloud auth print-access-token` を実行し、表示されたアクセストークンを画面に入力する。サーバーはGoogleの認証情報を保持せず、トークンは約1時間で失効する。
+
+- `AI_PROVIDER` にカンマ区切りで複数のプロバイダーを並べると、画面の「AIモデル」に全モデルが並び、選んだモデルのプロバイダーで実行する。キー入力欄もモデルに合わせてGeminiのAPIキーとVertex AIのトークンを切り替える。
+- Claudeには `output_config.effort=low` と構造化出力（JSON Schema）を指定し、思考トークンを含めるため `max_tokens` に8192トークンの余裕を加えている。
+- 401はトークン失効（`claude_token_invalid`）、404はモデル未Enableまたはリージョン・モデル名の誤り（`claude_model_unavailable`）として表示する。
+- Vertex AIのClaude料金はGoogleの料金表に従う。料金表示には未登録のため、費用は推定しない。
+
+## Anthropic APIで直接Claude
+
+`.env` に `AI_PROVIDER=anthropic`（併用する場合は `AI_PROVIDER=gemini,vertex,anthropic`）を設定し、Composeを再ビルドして起動する。Anthropic Consoleで発行したAPIキー（`sk-ant-…`）を画面から入力する。モデルは `ANTHROPIC_MODELS`（既定 `claude-haiku-5-5,claude-sonnet-5-5`）。
+
+- Vertex AIと併用すると同じClaudeモデルが両方に並ぶため、Vertex AIのモデルは `vertex/` を付けたID（例 `vertex/claude-haiku-5-5`）で区別する。画面では「（Vertex AI）」「（Anthropic API）」と表示する。
+- 料金表示はClaude APIの単価（100kトークン以下）で推定する。
+
 # 開発・実接続
 
 ## 実データを読む

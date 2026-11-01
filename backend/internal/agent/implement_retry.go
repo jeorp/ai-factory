@@ -23,7 +23,7 @@ func implementationResultReason(err error) string {
 // the phase's call budget and a smaller consecutive-invalid-response budget.
 func (run *implementRun) retryInvalidResponse(ctx context.Context, phase string, attempt int, invalids, retries *int, err error) (string, bool, error) {
 	switch implementationErrorCode(err) {
-	case "invalid_implementation_result", "gemini_invalid_output", "openai_invalid_output":
+	case "invalid_implementation_result", "gemini_invalid_output", "openai_invalid_output", "claude_invalid_output":
 	default:
 		return "", false, nil
 	}

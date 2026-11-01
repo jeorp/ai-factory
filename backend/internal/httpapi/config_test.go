@@ -49,3 +49,53 @@ func TestGeminiModelsAllowlistRejectsInvalidEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestVertexClaudeConfig(t *testing.T) {
+	setLocalGeminiEnv(t)
+	t.Setenv("AI_PROVIDER", "vertex")
+	t.Setenv("CLAUDE_MODELS", "")
+	t.Setenv("VERTEX_REGION", "")
+	t.Setenv("VERTEX_PROJECT_ID", "")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected VERTEX_PROJECT_ID to be required")
+	}
+	t.Setenv("VERTEX_PROJECT_ID", "my-project-123")
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"vertex/claude-haiku-5-5", "vertex/claude-sonnet-5-5"}; !reflect.DeepEqual(c.Models, want) || c.VertexRegion != "global" || c.VertexProject != "my-project-123" {
+		t.Fatalf("unexpected config: %+v", c)
+	}
+	t.Setenv("CLAUDE_MODELS", "claude-haiku-4-5@20251001, claude-sonnet-5-5")
+	if c, err = LoadConfig(); err != nil || c.Models[0] != "vertex/claude-haiku-4-5@20251001" {
+		t.Fatalf("unexpected models: %v %v", c.Models, err)
+	}
+	t.Setenv("CLAUDE_MODELS", "gemini-3.8-flash")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected non-Claude model to be rejected")
+	}
+}
+
+func TestGeminiAndVertexTogether(t *testing.T) {
+	setLocalGeminiEnv(t)
+	t.Setenv("AI_PROVIDER", "gemini,vertex,anthropic")
+	t.Setenv("ANTHROPIC_MODELS", "")
+	t.Setenv("GEMINI_MODELS", "gemini-3.8-flash")
+	t.Setenv("CLAUDE_MODELS", "claude-haiku-5-5")
+	t.Setenv("VERTEX_PROJECT_ID", "my-project-123")
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"gemini-3.8-flash", "vertex/claude-haiku-5-5", "claude-haiku-5-5", "claude-sonnet-5-5"}; !reflect.DeepEqual(c.Models, want) || c.AIProvider != "gemini" {
+		t.Fatalf("unexpected models: %v %s", c.Models, c.AIProvider)
+	}
+	if c.ModelProviders["gemini-3.8-flash"] != "gemini" || c.ModelProviders["vertex/claude-haiku-5-5"] != "vertex" || c.ModelProviders["claude-haiku-5-5"] != "anthropic" {
+		t.Fatalf("unexpected model providers: %v", c.ModelProviders)
+	}
+	t.Setenv("AI_PROVIDER", "gemini,demo")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected demo to be rejected in a provider list")
+	}
+}
