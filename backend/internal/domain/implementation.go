@@ -22,6 +22,8 @@ type Implementation struct {
 	Unverified   []string             `json:"unverified"`
 	Summary      string               `json:"summary"`
 	ContextFiles []string             `json:"contextFiles,omitempty"` // files read while planning, given to every step
+	PendingFiles []PendingFile        `json:"pendingFiles,omitempty"` // files the AI asked to add mid-way, awaiting approval
+	Declined     []string             `json:"declined,omitempty"`     // additions the user turned down; not proposed again
 	FixTarget    bool                 `json:"fixTarget,omitempty"`    // the user named PullNumber; never fall back to a new PR
 	CacheID      string               `json:"-"`
 	Version      int                  `json:"version"`
@@ -48,6 +50,35 @@ type PlannedFile struct {
 	Path     string `json:"path"`
 	Action   string `json:"action"`
 	Approach string `json:"approach"`
+}
+
+// PendingFile is a file the AI found it must also change while editing. It is
+// added to the plan only after the user approves.
+type PendingFile struct {
+	Path     string `json:"path"`
+	Action   string `json:"action"`
+	Approach string `json:"approach"`
+	Reason   string `json:"reason"`
+}
+
+// ResolveAmendment adds the pending files to the plan when approved, or records
+// them as left out. Either way editing continues with the remaining steps.
+func (i *Implementation) ResolveAmendment(approve bool) {
+	if approve && i.Plan != nil {
+		added := []PlannedFile{}
+		for _, f := range i.PendingFiles {
+			added = append(added, PlannedFile{Path: f.Path, Action: f.Action, Approach: f.Approach})
+		}
+		i.Plan.Files = append(i.Plan.Files, added...)
+		i.Steps = append(i.Steps, PlanSteps(added)...)
+	} else {
+		for _, f := range i.PendingFiles {
+			i.Unverified = append(i.Unverified, "追加を見送ったファイル: "+f.Path+"（"+f.Reason+"）")
+			i.Declined = append(i.Declined, f.Path)
+		}
+	}
+	i.PendingFiles = nil
+	i.Status = "editing"
 }
 
 // ImplementationStep is a group of planned files. Firestore cannot store nested arrays.

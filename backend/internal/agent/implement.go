@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"strings"
 	"time"
 
@@ -49,6 +50,9 @@ type ChangeProposal struct {
 type ImplementResult struct {
 	Changes    []ChangeProposal `json:"changes"`
 	Unverified []string         `json:"unverified"`
+	// AdditionalFiles are files outside the plan that the change also needs.
+	// They are added only after the user approves.
+	AdditionalFiles []domain.PendingFile `json:"additionalFiles"`
 }
 
 const (
@@ -90,6 +94,7 @@ type implementTask struct {
 	ReadBudget  int                        `json:"readBudget"`
 	FinalAnswer bool                       `json:"finalAnswerOnly,omitempty"`
 	Correction  string                     `json:"correction,omitempty"`
+	Declined    []string                   `json:"declinedFiles,omitempty"`
 }
 
 // NewCacheID returns an unguessable key for one implementation's change cache.
@@ -364,7 +369,7 @@ func (run *implementRun) plan(ctx context.Context) error {
 	if err := run.save(ctx, "依頼内容と関連コードを確認して実装計画を作成しています"); err != nil {
 		return err
 	}
-	files, err := run.fileList(ctx)
+	files, allPaths, err := run.fileList(ctx)
 	if err != nil {
 		return err
 	}
@@ -378,6 +383,7 @@ func (run *implementRun) plan(ctx context.Context) error {
 	}
 	reads := 0
 	correction := ""
+	gapReviewed := false
 	for call := 0; call < ImplementPlanCalls; call++ {
 		final := reads >= ImplementPlanReads || call == ImplementPlanCalls-1
 		task := implementTask{Mode: "plan", Request: impl.Request, BaseBranch: impl.BaseBranch, FollowUp: impl.ExpectedHead != "", ReadBudget: ImplementPlanReads - reads, FinalAnswer: final, Correction: correction}
@@ -429,6 +435,16 @@ func (run *implementRun) plan(ctx context.Context) error {
 			run.logger.Info("implement_plan_path_mismatch", "count", len(problems))
 			correction = "計画のパスがベースコミットと一致しません: " + strings.Join(problems, " / ") + "。変更・削除は実在するファイルだけ、追加は存在しないパスだけにしてください。パスが不明ならrepositoryまたはfileで確認してください。"
 			continue
+		}
+		if !gapReviewed && call < ImplementPlanCalls-1 {
+			// Ask the model once to reconsider files it likely missed: tests next
+			// to planned files and files it read while planning.
+			gapReviewed = true
+			if related := relatedFiles(d.Plan, impl.ContextFiles, allPaths); len(related) > 0 {
+				run.logger.Info("implement_plan_gap_review", "count", len(related))
+				correction = "計画の見直し: 次のファイルは計画にありませんが、関連する可能性があります: " + strings.Join(related, "、") + "。変更した定義・関数・型の利用箇所やテストで変更が必要なものは計画に加えてください。必要なら読んで確認できます。不要なら同じ計画をそのまま返してください。"
+				continue
+			}
 		}
 		impl.Plan = d.Plan
 		impl.Steps = domain.PlanSteps(d.Plan.Files)
@@ -561,7 +577,7 @@ func (run *implementRun) edit(ctx context.Context) error {
 		split := false
 		for call := 0; call < ImplementStepCalls && result == nil; call++ {
 			final := reads >= ImplementStepReads || call == ImplementStepCalls-1
-			task := implementTask{Mode: "edit", Request: impl.Request, BaseBranch: impl.BaseBranch, Plan: impl.Plan, Step: impl.NextStep + 1, TotalSteps: len(impl.Steps), Files: files, Done: impl.Changes, ReadBudget: ImplementStepReads - reads, FinalAnswer: final, Correction: correction}
+			task := implementTask{Mode: "edit", Request: impl.Request, BaseBranch: impl.BaseBranch, Plan: impl.Plan, Step: impl.NextStep + 1, TotalSteps: len(impl.Steps), Files: files, Done: impl.Changes, Declined: impl.Declined, ReadBudget: ImplementStepReads - reads, FinalAnswer: final, Correction: correction}
 			d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev, "context": related, "previousChanges": previous})
 			// Shed the optional context before splitting the step.
 			// The request never reached the model, so shedding does not use up a
@@ -605,11 +621,11 @@ func (run *implementRun) edit(ctx context.Context) error {
 				continue
 			}
 			changes, err := applyProposals(step, impl, originals, d.Implementation.Changes)
-			if err == nil {
+			if err == nil && (len(changes) > 0 || len(d.Implementation.AdditionalFiles) == 0) {
 				err = domain.ValidateChangeSet(changes, approved)
 			}
 			if err != nil {
-				correction = "前回の変更は適用できませんでした: " + err.Error() + "。searchは元ファイル内で一意に一致する原文をそのまま指定し、計画どおりのpathとactionだけを返してください。"
+				correction = "前回の変更は適用できませんでした: " + err.Error() + "。searchは元ファイル内で一意に一致する原文をそのまま指定し、計画どおりのpathとactionだけを返してください。計画外のファイルも変更が必要ならchangesに入れず、additionalFilesで提案してください。"
 				continue
 			}
 			applied, result = changes, d.Implementation
@@ -651,19 +667,37 @@ func (run *implementRun) edit(ctx context.Context) error {
 				impl.Changes = append(impl.Changes, summary)
 			}
 		}
-		for _, p := range step {
-			if !covered[p] {
-				impl.Unverified = append(impl.Unverified, "計画にあるが変更されなかったファイル: "+p)
+		pending, rejected, err := run.checkAdditions(ctx, result.AdditionalFiles)
+		if err != nil {
+			return err
+		}
+		// A step that changed nothing because it first needs other files is
+		// repeated after the user decides, instead of being marked unchanged.
+		holdStep := len(applied) == 0 && len(pending) > 0
+		if !holdStep {
+			for _, p := range step {
+				if !covered[p] {
+					impl.Unverified = append(impl.Unverified, "計画にあるが変更されなかったファイル: "+p)
+				}
 			}
 		}
 		for _, u := range result.Unverified {
 			impl.Unverified = append(impl.Unverified, domain.Clip(u, 512))
 		}
+		impl.Unverified = append(impl.Unverified, rejected...)
 		if len(impl.Unverified) > 20 {
 			impl.Unverified = impl.Unverified[len(impl.Unverified)-20:]
 		}
 		impl.Summary = run.cp.Summary
-		impl.NextStep++
+		if !holdStep {
+			impl.NextStep++
+		}
+		if len(pending) > 0 {
+			impl.PendingFiles = pending
+			impl.Status = "amend_ready"
+			run.cp.Answer = formatAmendment(impl)
+			return run.save(ctx, "計画にないファイルの追加について承認を待っています")
+		}
 		if err := run.save(ctx, fmt.Sprintf("変更を保存しました（%d/%d）", impl.NextStep, len(impl.Steps))); err != nil {
 			return err
 		}
@@ -683,6 +717,110 @@ func (run *implementRun) edit(ctx context.Context) error {
 	return run.save(ctx, "変更を作成しました。差分を確認してPRを作成してください")
 }
 
+// maxPendingFiles bounds one amendment request.
+const maxPendingFiles = 5
+
+// checkAdditions validates files the model asked to add to the plan. Accepted
+// ones wait for the user's approval; the rest are reported as unverified.
+func (run *implementRun) checkAdditions(ctx context.Context, files []domain.PendingFile) ([]domain.PendingFile, []string, error) {
+	impl := run.impl
+	planned := map[string]bool{}
+	for _, f := range impl.Plan.Files {
+		planned[f.Path] = true
+	}
+	declined := map[string]bool{}
+	for _, p := range impl.Declined {
+		declined[p] = true
+	}
+	pending := []domain.PendingFile{}
+	rejected := []string{}
+	reject := func(f domain.PendingFile, why string) {
+		rejected = append(rejected, domain.Clip("追加の提案を受け付けられませんでした: "+f.Path+"（"+why+"）", 512))
+	}
+	for _, f := range files {
+		f.Path, f.Approach, f.Reason = strings.TrimSpace(f.Path), domain.Clip(strings.TrimSpace(f.Approach), 1024), domain.Clip(strings.TrimSpace(f.Reason), 512)
+		switch {
+		case domain.ValidateChangePath(f.Path) != nil:
+			reject(f, "変更できないパス")
+			continue
+		case planned[f.Path]:
+			continue // already in the plan; nothing to approve
+		case declined[f.Path]:
+			reject(f, "利用者が見送り済み")
+			continue
+		case f.Action != "create" && f.Action != "update" && f.Action != "delete":
+			reject(f, "不明な操作")
+			continue
+		case f.Reason == "" || f.Approach == "":
+			reject(f, "理由または方針がない")
+			continue
+		case len(pending) >= maxPendingFiles || len(impl.Plan.Files)+len(pending) >= domain.MaxChangeFiles:
+			reject(f, "ファイル数の上限")
+			continue
+		}
+		_, exists, err := run.r.Writer.RawFile(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, impl.BaseCommit, f.Path)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
+			switch err.Error() {
+			case "change_file_size_limit", "change_not_text", "invalid_change_path", "protected_change_path", "binary_or_generated_file_excluded":
+				reject(f, err.Error())
+				continue
+			}
+			return nil, nil, err
+		}
+		if (f.Action == "create") == exists {
+			reject(f, "ベースコミットでの有無が操作と合わない")
+			continue
+		}
+		planned[f.Path] = true
+		pending = append(pending, f)
+	}
+	return pending, rejected, nil
+}
+
+// relatedFiles lists files the plan may have missed: test files next to
+// planned files, and files the model read while planning but left out.
+func relatedFiles(plan *domain.ImplementationPlan, read []string, all []string) []string {
+	planned := map[string]bool{}
+	for _, f := range plan.Files {
+		planned[f.Path] = true
+	}
+	exists := map[string]bool{}
+	for _, p := range all {
+		exists[p] = true
+	}
+	out := []string{}
+	add := func(p string) {
+		if planned[p] || domain.ValidateChangePath(p) != nil || (len(all) > 0 && !exists[p]) {
+			return
+		}
+		planned[p] = true
+		out = append(out, p)
+	}
+	for _, f := range plan.Files {
+		if f.Action == "create" {
+			continue
+		}
+		dir, base := path.Split(f.Path)
+		ext := path.Ext(base)
+		stem := strings.TrimSuffix(base, ext)
+		for _, c := range []string{stem + "_test" + ext, stem + ".test" + ext, stem + ".spec" + ext, stem + ".test.ts", stem + ".spec.ts"} {
+			if len(all) > 0 {
+				add(dir + c)
+			}
+		}
+	}
+	for _, p := range read {
+		add(p)
+	}
+	if len(out) > 10 {
+		out = out[:10]
+	}
+	return out
+}
+
 type contextFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -697,14 +835,14 @@ type previousChange struct {
 // fileList gives the model the real paths of the base commit, newline separated.
 // The list is a planning aid: when it cannot be read the plan goes ahead with
 // repository reads only, and the plan path check still applies.
-func (run *implementRun) fileList(ctx context.Context) (string, error) {
+func (run *implementRun) fileList(ctx context.Context) (string, []string, error) {
 	paths, truncated, err := run.r.Writer.FileList(ctx, run.in.GitHubToken, run.in.Session.Target.Repository, run.impl.BaseCommit)
 	if err != nil {
 		if ctx.Err() != nil {
-			return "", ctx.Err()
+			return "", nil, ctx.Err()
 		}
 		run.logger.Info("implement_file_list_unavailable", "error", err.Error())
-		return "[ファイル一覧を取得できませんでした。repositoryで確認してください]", nil
+		return "[ファイル一覧を取得できませんでした。repositoryで確認してください]", nil, nil
 	}
 	// Cut only at a line break so no partial path reaches the model.
 	var list strings.Builder
@@ -718,7 +856,7 @@ func (run *implementRun) fileList(ctx context.Context) (string, error) {
 	if truncated {
 		list.WriteString("[一覧の一部（深い階層）を省略しました。必要ならrepositoryで確認してください]")
 	}
-	return strings.TrimSuffix(list.String(), "\n"), nil
+	return strings.TrimSuffix(list.String(), "\n"), paths, nil
 }
 
 func addContextFile(files []string, p string) []string {
@@ -963,6 +1101,15 @@ func actionLabel(a string) string {
 		return "削除"
 	}
 	return "変更"
+}
+
+func formatAmendment(impl *domain.Implementation) string {
+	var b strings.Builder
+	b.WriteString("作業の途中で、計画にないファイルも変更が必要だと分かりました。追加してよければ承認してください。見送ると、これらのファイルは変更せずに残りの作業を続けます。\n\n【追加したいファイル】\n")
+	for _, f := range impl.PendingFiles {
+		b.WriteString(fmt.Sprintf("- %s（%s）: %s\n  理由: %s\n", f.Path, actionLabel(f.Action), f.Approach, f.Reason))
+	}
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func formatPlan(impl *domain.Implementation) string {

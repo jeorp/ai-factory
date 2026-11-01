@@ -682,3 +682,115 @@ func TestFollowUpOnMovedPRBuildsOnNewHead(t *testing.T) {
 		t.Fatalf("plan message should name the target branch: %s", last.Answer)
 	}
 }
+
+func TestRelatedFilesSuggestsTestsAndReadFiles(t *testing.T) {
+	plan := &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "pkg/a.go", Action: "update"}, {Path: "web/src/lib/x.ts", Action: "update"}, {Path: "pkg/new.go", Action: "create"}}}
+	all := []string{"pkg/a.go", "pkg/a_test.go", "web/src/lib/x.ts", "web/src/lib/x.test.ts", "pkg/new_test.go", "pkg/types.go"}
+	got := relatedFiles(plan, []string{"pkg/types.go", "pkg/a.go", "missing.go"}, all)
+	want := []string{"pkg/a_test.go", "web/src/lib/x.test.ts", "pkg/types.go"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestPlanGapReviewAsksOnceAboutRelatedFiles(t *testing.T) {
+	writer := newFakeWriter()
+	writer.files["src/a_test.go"] = "package src\n"
+	corrections := []string{}
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		task := implementTaskOf(t, input)
+		if task.Correction != "" {
+			corrections = append(corrections, task.Correction)
+			return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}, {Path: "src/a_test.go", Action: "update", Approach: "test"}}}}, Usage{}, nil
+		}
+		return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
+	})
+	session := baseSession()
+	session.RunKind = "implement"
+	session.Implementation = &domain.Implementation{Status: "planning", Request: "r", CacheID: "0123456789abcdef"}
+	var last Checkpoint
+	if err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(corrections) != 1 || !strings.Contains(corrections[0], "src/a_test.go") {
+		t.Fatalf("gap review not requested once: %q", corrections)
+	}
+	if files := last.Implementation.Plan.Files; len(files) != 2 || files[1].Path != "src/a_test.go" {
+		t.Fatalf("reviewed plan not kept: %+v", files)
+	}
+}
+
+func TestEditCanAskToAddAFileAndContinueAfterApproval(t *testing.T) {
+	writer := newFakeWriter()
+	writer.files["lib/use.go"] = "package lib\n\nvar X = 1\n"
+	proposals := 0
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		task := implementTaskOf(t, input)
+		switch task.Files[0].Path {
+		case "src/a.go":
+			proposals++
+			return Decision{Implementation: &ImplementResult{
+				Changes:         []ChangeProposal{{Path: "src/a.go", Action: "update", Edits: []domain.Edit{{Search: "return 1", Replace: "return X()"}}}},
+				AdditionalFiles: []domain.PendingFile{{Path: "lib/use.go", Action: "update", Approach: "Xを関数にする", Reason: "a.goがX()を呼ぶため"}, {Path: ".github/workflows/ci.yml", Action: "update", Approach: "x", Reason: "y"}},
+			}}, Usage{}, nil
+		case "lib/use.go":
+			return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "lib/use.go", Action: "update", Edits: []domain.Edit{{Search: "var X = 1", Replace: "func X() int { return 1 }"}}}}}}, Usage{}, nil
+		}
+		return Decision{}, Usage{}, errors.New("unexpected step")
+	})
+	session := baseSession()
+	session.RunKind = "implement"
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}, Changes: []domain.ChangeSummary{}}
+	runner := &Runner{AI: ai, Writer: writer}
+	var last Checkpoint
+	run := func() {
+		t.Helper()
+		if err := runner.Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		session.Implementation = last.Implementation
+	}
+	run()
+	impl := last.Implementation
+	if impl.Status != "amend_ready" || len(impl.PendingFiles) != 1 || impl.PendingFiles[0].Path != "lib/use.go" || impl.NextStep != 1 || len(impl.Changes) != 1 {
+		t.Fatalf("amendment not requested: %+v", impl)
+	}
+	if !strings.Contains(strings.Join(impl.Unverified, "\n"), ".github/workflows/ci.yml") || !strings.Contains(last.Answer, "a.goがX()を呼ぶため") {
+		t.Fatalf("protected path not reported or reason not shown: %v %s", impl.Unverified, last.Answer)
+	}
+	session.Implementation.ResolveAmendment(true)
+	run()
+	impl = last.Implementation
+	if impl.Status != "ready" || len(impl.Changes) != 2 || len(impl.Plan.Files) != 2 || proposals != 1 {
+		t.Fatalf("approved file not edited: %+v", impl)
+	}
+}
+
+func TestDeclinedAdditionIsNotProposedAgain(t *testing.T) {
+	writer := newFakeWriter()
+	writer.files["lib/use.go"] = "package lib\n"
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		// The step first needs another file and changes nothing yet.
+		return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{}, AdditionalFiles: []domain.PendingFile{{Path: "lib/use.go", Action: "update", Approach: "x", Reason: "y"}}}}, Usage{}, nil
+	})
+	session := baseSession()
+	session.RunKind = "implement"
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}, Changes: []domain.ChangeSummary{}}
+	runner := &Runner{AI: ai, Writer: writer}
+	var last Checkpoint
+	if err := runner.Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if last.Implementation.Status != "amend_ready" || last.Implementation.NextStep != 0 {
+		t.Fatalf("step should wait for the decision: %+v", last.Implementation)
+	}
+	session.Implementation = last.Implementation
+	session.Implementation.ResolveAmendment(false)
+	err := runner.Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil })
+	if err == nil || err.Error() != "implementation_no_changes" || last.Implementation.Status == "amend_ready" {
+		t.Fatalf("declined file asked again or run did not finish: %v %+v", err, last.Implementation)
+	}
+	if !strings.Contains(strings.Join(last.Implementation.Unverified, "\n"), "利用者が見送り済み") {
+		t.Fatalf("re-proposal not reported: %v", last.Implementation.Unverified)
+	}
+}
