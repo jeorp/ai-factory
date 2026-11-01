@@ -179,6 +179,9 @@ func TestVerificationSearchOverlaysGeneratedAndDeletedFiles(t *testing.T) {
 	if len(got.Matches) != 1 || got.Matches[0].Path != "web/use.ts" || len(got.GeneratedMatches) != 2 || strings.Contains(ev[0].Content, "stale") || strings.Contains(ev[0].Content, "deleted") {
 		t.Fatalf("stale code search: %+v", got)
 	}
+	if paths := strings.Join(ev[0].codePaths, ","); paths != "web/use.ts,src/a.go,src/new.go" {
+		t.Fatalf("knowledge paths differ from visible search results: %s", paths)
+	}
 }
 
 func TestVerificationReceivesOriginalAssertionsEvenBeyondCompactDiff(t *testing.T) {

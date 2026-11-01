@@ -143,10 +143,16 @@ func (run *implementRun) verify(ctx context.Context) error {
 			result.Unverified = append(result.Unverified, "計画にあるが変更されなかったファイル: "+f.Path)
 		}
 	}
+	// Preserve the full path set for the cross-batch review after parts are consumed.
+	verificationPaths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		verificationPaths = append(verificationPaths, part.Path)
+	}
 	summaries := []string{}
 	reads := 0
 	evidenceRevision := 0
 	readPaths := map[string]bool{}
+	knowledgeReadPaths := map[string]bool{}
 	ev := []evidence{}
 	check := func(stage string, batch []verificationPart) error {
 		correction := ""
@@ -160,6 +166,20 @@ func (run *implementRun) verify(ctx context.Context) error {
 			}
 			task := implementTask{Mode: "verify", Request: impl.Request, Plan: impl.Plan, Done: impl.Changes, Declined: impl.Declined, ReadBudget: implementVerifyReads - reads, FinalAnswer: reads >= implementVerifyReads || invalid >= 2, Step: len(summaries) + 1, Attempt: attempt, RetryCount: retries, Correction: correction}
 			payload := map[string]any{"implementTask": task, "stage": stage, "parts": batch, "evidence": ev, "priorVerification": result, "editUnverified": impl.Unverified}
+			knowledgePaths := []string{}
+			if stage == "cross" {
+				knowledgePaths = append(knowledgePaths, verificationPaths...)
+			} else {
+				for _, part := range batch {
+					knowledgePaths = append(knowledgePaths, part.Path)
+				}
+			}
+			for p := range knowledgeReadPaths {
+				knowledgePaths = append(knowledgePaths, p)
+			}
+			if knowledge := knowledgeForVerification(knowledgePaths); knowledge != nil {
+				payload["verificationKnowledge"] = knowledge
+			}
 			if stage == "cross" {
 				payload["summaries"] = summaries
 			}
@@ -196,6 +216,13 @@ func (run *implementRun) verify(ctx context.Context) error {
 							evidenceRevision++
 							readPaths[d.Read.Path] = true
 						}
+					}
+				}
+				// Guidance applies to every fetched code fragment, while observed
+				// and evidenceRevision still require a complete successful read.
+				for _, e := range ev {
+					for _, p := range e.codePaths {
+						knowledgeReadPaths[p] = true
 					}
 				}
 				correction = "追加取得したコードで未確認事項を調べ、根拠と結果をverificationに返してください。"
@@ -338,12 +365,16 @@ func (run *implementRun) readVerificationFile(ctx context.Context, read github.R
 		return false, ctx.Err()
 	}
 	complete := err == nil && exists && len(content) <= 16000
+	codePaths := []string{}
+	if err == nil && exists {
+		codePaths = append(codePaths, read.Path)
+	}
 	if err != nil || !exists {
 		content = "取得できませんでした。パス・定義・利用箇所を確認してください。"
 	} else if !complete {
 		content = domain.Clip(content, 16000) + "\n[入力サイズ制限により後半を省略。全文未確認]"
 	}
-	*ev = append(*ev, evidence{Read: read, Content: domain.MaskSecrets(content)})
+	*ev = append(*ev, evidence{Read: read, Content: domain.MaskSecrets(content), codePaths: codePaths})
 	if len(*ev) > 4 {
 		*ev = (*ev)[len(*ev)-4:]
 	}

@@ -43,6 +43,9 @@ type Runner struct {
 type evidence struct {
 	Read    github.Read `json:"read"`
 	Content string      `json:"content"`
+	// Server-owned paths whose code is present in Content, including snippets.
+	// Used only to select guidance, never to establish complete file coverage.
+	codePaths []string
 }
 type Input struct {
 	Session         domain.Session

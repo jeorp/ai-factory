@@ -81,6 +81,13 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 	if stage, _ := payload["stage"].(string); task.Mode == "verify" && (stage == "parts" || stage == "cross") {
 		log = log.With("verification_stage", stage)
 	}
+	if knowledge, ok := payload["verificationKnowledge"].(*verificationKnowledge); ok {
+		languages := make([]string, 0, len(knowledge.Languages))
+		for _, language := range knowledge.Languages {
+			languages = append(languages, language.Language)
+		}
+		log = log.With("verification_knowledge_version", knowledge.Version, "verification_languages", languages)
+	}
 	log.Info("implement_model_call_started", "input_bytes", len(body))
 	d, usage, err := run.r.AI.Next(ctx, run.in.Key, run.in.Session.Model, string(body))
 	log.Info("implement_model_call", "duration_ms", time.Since(started).Milliseconds(), "outcome", outcome(err), "error_code", implementationErrorCode(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
