@@ -364,9 +364,6 @@ func (run *implementRun) edit(ctx context.Context) error {
 	approved := impl.ApprovedPaths()
 	for impl.NextStep < len(impl.Steps) {
 		step := impl.Steps[impl.NextStep].Files
-		if err := run.save(ctx, fmt.Sprintf("変更を作成しています（%d/%d）", impl.NextStep+1, len(impl.Steps))); err != nil {
-			return err
-		}
 		files := []implementFile{}
 		originals := map[string]string{}
 		for _, p := range step {

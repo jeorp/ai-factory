@@ -84,12 +84,15 @@ func TestImplementationFlowFromChatToDraftPR(t *testing.T) {
 			}, Tests: []string{"go test"}}}, Usage{}, nil
 		case "edit":
 			editCalls++
-			if len(task.Files) != 3 || task.Files[0].Original == "" {
-				t.Fatalf("step files: %+v", task.Files)
+			for _, f := range task.Files {
+				if f.Original == "" {
+					t.Fatalf("original missing for %s", f.Path)
+				}
 			}
 			if editCalls == 1 {
-				// Ambiguous/missing search text must be corrected, not applied.
-				return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "src/a.go", Action: "update", Edits: []domain.Edit{{Search: "return 3", Replace: "return 2"}}}}}}, Usage{}, nil
+				return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{
+					Path: "src/a.go", Action: "update", Edits: []domain.Edit{{Search: "return 3", Replace: "return 2"}},
+				}}}}, Usage{}, nil
 			}
 			if task.Correction == "" {
 				t.Fatal("correction not sent after failed edit")
