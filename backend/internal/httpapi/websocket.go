@@ -272,16 +272,6 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					send("session", session)
 					continue
 				}
-				total := len(cmd.Text)
-				for _, m := range session.Messages {
-					if m.Role == "instruction" {
-						total += len(m.Text)
-					}
-				}
-				if total > 4096 {
-					problem("instruction_limit")
-					continue
-				}
 				if instructions != nil && len(instructions) >= cap(instructions) {
 					problem("instruction_queue_full")
 					continue
@@ -483,7 +473,7 @@ func implementCommandProblem(session *domain.Session, cmd *command) string {
 			return "implementation_publish_incomplete"
 		}
 	case "implement_approve":
-		if impl == nil || impl.Status != "plan_ready" || impl.Plan == nil {
+		if impl == nil || impl.Status != "plan_ready" || impl.Plan == nil || impl.Clarification != "" {
 			return "implementation_plan_required"
 		}
 	case "implement_amend":
@@ -524,7 +514,11 @@ func applyImplementCommand(session *domain.Session, cmd command) {
 		impl := session.Implementation
 		session.RunKind = "implement"
 		impl.Status, impl.NextStep = "editing", 0
-		impl.Changes, impl.Unverified = []domain.ChangeSummary{}, []string{}
+		if !impl.Revising {
+			impl.Changes = []domain.ChangeSummary{}
+			impl.Unverified = []string{}
+		}
+		impl.Verification = nil
 	case "implement_amend":
 		session.RunKind = "implement"
 		session.Implementation.ResolveAmendment(cmd.Text == "approve")

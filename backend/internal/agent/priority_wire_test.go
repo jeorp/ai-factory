@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -26,7 +27,7 @@ func TestPriorityStructuredContractThroughBothProviders(t *testing.T) {
 						prompt = body["systemInstruction"].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"].(string)
 					}
 					props := schema["properties"].(map[string]any)
-					if prompt != prioritySystemPrompt || props["priorities"] == nil {
+					if !strings.HasPrefix(prompt, prioritySystemPrompt) || props["priorities"] == nil {
 						t.Fatal("priority still uses generic chat contract")
 					}
 					for _, field := range []string{"read", "review", "startReview"} {

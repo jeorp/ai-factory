@@ -20,13 +20,15 @@ export interface Review {
  findings: Finding[]; unverified: string[]; investigations?: Record<string, string>; pendingInvestigation?: number; priorities?: Record<string, { level: 'high' | 'medium' | 'low' | 'unknown'; reason: string }>; priorityCursor?: number; crossCursor: number; crossSummary: string;
 }
 
-export interface PlannedFile { path: string; action: 'create' | 'update' | 'delete'; approach: string }
+export interface PlannedFile { path: string; action: 'create' | 'update' | 'delete'; approach: string; dependsOn?: string[] }
 export interface Implementation {
  request: string; baseBranch: string; baseCommit: string;
- status: 'planning' | 'plan_ready' | 'editing' | 'amend_ready' | 'ready' | 'publishing' | 'published';
+ status: 'planning' | 'plan_ready' | 'editing' | 'verifying' | 'amend_ready' | 'ready' | 'publishing' | 'published';
  plan?: { summary: string; files: PlannedFile[]; outOfScope: string[] | null; risks: string[] | null; tests: string[] | null };
  steps?: { files: string[] }[]; nextStep: number;
  changes: { path: string; action: PlannedFile['action']; bytes: number }[]; unverified: string[]; summary: string; version: number;
  branch?: string; title?: string; body?: string; commit?: string; refUpdated?: boolean; pullNumber?: number; pullUrl?: string; expectedHead?: string;
  pendingFiles?: (PlannedFile & { reason: string })[]; declined?: string[];
+ revising?: boolean; clarification?: string; repairRound?: number; changeRevision?: number;
+ verification?: { issues: string[]; unverified: string[] };
 }

@@ -32,6 +32,11 @@ func (c *Client) RawFile(ctx context.Context, token, repository, commit, p strin
 	if _, err := c.Authorize(ctx, token, repository); err != nil {
 		return "", false, err
 	}
+	return c.rawFile(ctx, token, repository, commit, p)
+}
+
+// rawFile is used only after authorization and path/commit validation.
+func (c *Client) rawFile(ctx context.Context, token, repository, commit, p string) (string, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+repository+"/contents/"+escapePath(p)+"?ref="+url.QueryEscape(commit), nil)
 	if err != nil {
 		return "", false, err

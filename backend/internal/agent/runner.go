@@ -332,13 +332,7 @@ func BuildContext(s domain.Session, summary string, instructions []domain.Messag
 
 func buildContext(s domain.Session, summary string, instructions []domain.Message, ev []evidence, limits []string, intent IntentPlan, budget *chatBudget) string {
 	// Keep original user instructions independently of the model's lossy summary.
-	var pinned strings.Builder
-	for _, m := range instructions {
-		pinned.WriteString(m.Text + "\n")
-	}
-	if pinned.Len() > 4096 {
-		return strings.Repeat("x", domain.MaxInputBytes+1)
-	}
+	pinned := domain.LatestInstructions(instructions, 4096)
 	history := []domain.Message{}
 	historyBudget := 4500
 	for i := len(s.Messages) - 1; i >= 0 && len(history) < 6; i-- {
@@ -356,7 +350,10 @@ func buildContext(s domain.Session, summary string, instructions []domain.Messag
 		}
 	}
 	limitText := strings.Join(limits, "\n")
-	payload := map[string]any{"intent": intent, "target": s.Target, "activePullRequest": activePullRequest(s), "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned.String(), "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 2048)}
+	payload := map[string]any{"intent": intent, "target": s.Target, "activePullRequest": activePullRequest(s), "repositoryOverview": s.RepositoryOverview, "summary": domain.Clip(summary, 2048), "instructions": pinned, "recentHistory": history, "evidence": ev, "unverified": domain.Clip(limitText, 2048)}
+	if draft := implementationChatContext(s.Implementation); draft != nil {
+		payload["implementationDraft"] = draft
+	}
 	if budget != nil {
 		payload["chatBudget"] = budget
 	}
@@ -382,6 +379,10 @@ func buildContext(s domain.Session, summary string, instructions []domain.Messag
 	}
 	if len(body) > domain.MaxInputBytes && findings != nil {
 		delete(payload, "reviewFindings")
+		body, _ = json.Marshal(payload)
+	}
+	if len(body) > domain.MaxInputBytes {
+		delete(payload, "implementationDraft")
 		body, _ = json.Marshal(payload)
 	}
 	return string(body)

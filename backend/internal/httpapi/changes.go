@@ -34,7 +34,11 @@ func (s *Server) sessionChange(w http.ResponseWriter, r *http.Request, c credent
 		fail(w, 404, "change_not_found")
 		return
 	}
-	change, ok := s.GitHub.GetChange(r.Context(), impl.CacheID, impl.Version, p)
+	cacheID, version := impl.CacheID, impl.Version
+	if impl.DraftSource != nil {
+		cacheID, version = impl.DraftSource.CacheID, impl.DraftSource.Version
+	}
+	change, ok := s.GitHub.GetChange(r.Context(), cacheID, version, p)
 	if !ok {
 		fail(w, 410, "implementation_changes_expired")
 		return

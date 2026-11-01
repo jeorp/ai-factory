@@ -21,7 +21,7 @@ func decisionInstructions(schema map[string]any, input string) string {
 	if json.Unmarshal([]byte(input), &context) != nil {
 		return systemPrompt
 	}
-	if context.Implement != nil && (context.Implement.Mode == "plan" || context.Implement.Mode == "edit") {
+	if context.Implement != nil && (context.Implement.Mode == "plan" || context.Implement.Mode == "edit" || context.Implement.Mode == "verify") {
 		return implementInstructions(schema, *context.Implement)
 	}
 	if len(context.PriorityTask) > 0 {

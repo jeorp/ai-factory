@@ -2,8 +2,6 @@ package domain
 
 import (
 	"errors"
-	"path"
-	"sort"
 	"strings"
 )
 
@@ -11,31 +9,58 @@ import (
 // run (specification section 13). Changed file contents are never stored here;
 // they live in an expiring cache addressed by CacheID.
 type Implementation struct {
-	Request      string               `json:"request"`
-	BaseBranch   string               `json:"baseBranch"`
-	BaseCommit   string               `json:"baseCommit"`
-	Status       string               `json:"status"` // planning, plan_ready, editing, ready, publishing, published
-	Plan         *ImplementationPlan  `json:"plan,omitempty"`
-	Steps        []ImplementationStep `json:"steps,omitempty"`
-	NextStep     int                  `json:"nextStep"`
-	Changes      []ChangeSummary      `json:"changes"`
-	Unverified   []string             `json:"unverified"`
-	Summary      string               `json:"summary"`
-	ContextFiles []string             `json:"contextFiles,omitempty"` // files read while planning, given to every step
-	PendingFiles []PendingFile        `json:"pendingFiles,omitempty"` // files the AI asked to add mid-way, awaiting approval
-	Declined     []string             `json:"declined,omitempty"`     // additions the user turned down; not proposed again
-	FixTarget    bool                 `json:"fixTarget,omitempty"`    // the user named PullNumber; never fall back to a new PR
-	CacheID      string               `json:"-"`
-	Version      int                  `json:"version"`
-	Branch       string               `json:"branch,omitempty"`
-	Title        string               `json:"title,omitempty"`
-	Body         string               `json:"body,omitempty"`
-	Commit       string               `json:"commit,omitempty"`
-	RefBranch    string               `json:"refBranch,omitempty"`
-	RefUpdated   bool                 `json:"refUpdated,omitempty"`
-	PullNumber   int                  `json:"pullNumber,omitempty"`
-	PullURL      string               `json:"pullUrl,omitempty"`
-	ExpectedHead string               `json:"expectedHead,omitempty"`
+	Request        string                      `json:"request"`
+	BaseBranch     string                      `json:"baseBranch"`
+	BaseCommit     string                      `json:"baseCommit"`
+	Status         string                      `json:"status"` // planning, plan_ready, editing, amend_ready, verifying, ready, publishing, published
+	Plan           *ImplementationPlan         `json:"plan,omitempty"`
+	Steps          []ImplementationStep        `json:"steps,omitempty"`
+	NextStep       int                         `json:"nextStep"`
+	Changes        []ChangeSummary             `json:"changes"`
+	Unverified     []string                    `json:"unverified"`
+	Summary        string                      `json:"summary"`
+	Verification   *ImplementationVerification `json:"verification,omitempty"`
+	Clarification  string                      `json:"clarification,omitempty"`
+	Revising       bool                        `json:"revising,omitempty"`
+	DraftSource    *ImplementationDraftSource  `json:"-"`
+	RepairRound    int                         `json:"repairRound,omitempty"`
+	RepairFeedback string                      `json:"repairFeedback,omitempty"`
+	ChangeRevision int                         `json:"changeRevision,omitempty"`
+	ContextFiles   []string                    `json:"contextFiles,omitempty"` // files read while planning, given to every step
+	PendingFiles   []PendingFile               `json:"pendingFiles,omitempty"` // files the AI asked to add mid-way, awaiting approval
+	Declined       []string                    `json:"declined,omitempty"`     // additions the user turned down; not proposed again
+	FixTarget      bool                        `json:"fixTarget,omitempty"`    // the user named PullNumber; never fall back to a new PR
+	CacheID        string                      `json:"-"`
+	Version        int                         `json:"version"`
+	Branch         string                      `json:"branch,omitempty"`
+	Title          string                      `json:"title,omitempty"`
+	Body           string                      `json:"body,omitempty"`
+	Commit         string                      `json:"commit,omitempty"`
+	RefBranch      string                      `json:"refBranch,omitempty"`
+	RefUpdated     bool                        `json:"refUpdated,omitempty"`
+	PullNumber     int                         `json:"pullNumber,omitempty"`
+	PullURL        string                      `json:"pullUrl,omitempty"`
+	ExpectedHead   string                      `json:"expectedHead,omitempty"`
+}
+
+// ImplementationVerification is an AI consistency check, not a build/test result.
+type ImplementationVerification struct {
+	Issues          []string             `json:"issues"`
+	Unverified      []string             `json:"unverified"`
+	Repairs         []VerificationRepair `json:"repairs,omitempty"`
+	AdditionalFiles []PendingFile        `json:"additionalFiles,omitempty"`
+}
+
+type VerificationRepair struct {
+	Path     string `json:"path"`
+	Approach string `json:"approach"`
+}
+
+// DraftSource is server-only provenance for copying saved changes into a new
+// revision. Firestore persists it; JSON never exposes cache identifiers.
+type ImplementationDraftSource struct {
+	CacheID string
+	Version int
 }
 
 type ImplementationPlan struct {
@@ -47,18 +72,20 @@ type ImplementationPlan struct {
 }
 
 type PlannedFile struct {
-	Path     string `json:"path"`
-	Action   string `json:"action"`
-	Approach string `json:"approach"`
+	Path      string   `json:"path"`
+	Action    string   `json:"action"`
+	Approach  string   `json:"approach"`
+	DependsOn []string `json:"dependsOn,omitempty"`
 }
 
 // PendingFile is a file the AI found it must also change while editing. It is
 // added to the plan only after the user approves.
 type PendingFile struct {
-	Path     string `json:"path"`
-	Action   string `json:"action"`
-	Approach string `json:"approach"`
-	Reason   string `json:"reason"`
+	Path      string   `json:"path"`
+	Action    string   `json:"action"`
+	Approach  string   `json:"approach"`
+	Reason    string   `json:"reason"`
+	DependsOn []string `json:"dependsOn,omitempty"`
 }
 
 // ResolveAmendment adds the pending files to the plan when approved, or records
@@ -67,13 +94,25 @@ func (i *Implementation) ResolveAmendment(approve bool) {
 	if approve && i.Plan != nil {
 		added := []PlannedFile{}
 		for _, f := range i.PendingFiles {
-			added = append(added, PlannedFile{Path: f.Path, Action: f.Action, Approach: f.Approach})
+			added = append(added, PlannedFile{Path: f.Path, Action: f.Action, Approach: f.Approach, DependsOn: f.DependsOn})
 		}
 		i.Plan.Files = append(i.Plan.Files, added...)
-		// Edit approved dependencies before resuming any unfinished step.
+		// Reorder unfinished work with the new dependency graph. Completed
+		// files remain untouched and satisfy dependencies in remaining work.
+		remaining := map[string]bool{}
+		for _, step := range i.Steps[i.NextStep:] {
+			for _, p := range step.Files {
+				remaining[p] = true
+			}
+		}
+		unfinished := append([]PlannedFile{}, added...)
+		for _, f := range i.Plan.Files[:len(i.Plan.Files)-len(added)] {
+			if remaining[f.Path] {
+				unfinished = append(unfinished, f)
+			}
+		}
 		steps := append([]ImplementationStep{}, i.Steps[:i.NextStep]...)
-		steps = append(steps, PlanSteps(added)...)
-		i.Steps = append(steps, i.Steps[i.NextStep:]...)
+		i.Steps = append(steps, planSteps(unfinished, len(added))...)
 	} else {
 		for _, f := range i.PendingFiles {
 			i.Unverified = append(i.Unverified, "追加を見送ったファイル: "+f.Path+"（"+f.Reason+"）")
@@ -121,6 +160,9 @@ func ValidatePlan(p *ImplementationPlan) error {
 			return errors.New("invalid_plan")
 		}
 	}
+	if err := ValidatePlanDependencies(p.Files); err != nil {
+		return err
+	}
 	for _, list := range [][]string{p.OutOfScope, p.Risks, p.Tests} {
 		if len(list) > 10 {
 			return errors.New("invalid_plan")
@@ -132,35 +174,6 @@ func ValidatePlan(p *ImplementationPlan) error {
 		}
 	}
 	return nil
-}
-
-// PlanSteps groups planned files by directory, at most five per step.
-func PlanSteps(files []PlannedFile) []ImplementationStep {
-	byDir := map[string][]string{}
-	dirs := []string{}
-	for _, f := range files {
-		d := path.Dir(f.Path)
-		if _, ok := byDir[d]; !ok {
-			dirs = append(dirs, d)
-		}
-		byDir[d] = append(byDir[d], f.Path)
-	}
-	sort.Strings(dirs)
-	steps := []ImplementationStep{}
-	var cur []string
-	for _, d := range dirs {
-		for _, p := range byDir[d] {
-			if len(cur) == MaxImplementationStepFiles {
-				steps = append(steps, ImplementationStep{Files: cur})
-				cur = nil
-			}
-			cur = append(cur, p)
-		}
-	}
-	if len(cur) > 0 {
-		steps = append(steps, ImplementationStep{Files: cur})
-	}
-	return steps
 }
 
 // ApprovedPaths lists the files the user approved in the plan.
@@ -190,7 +203,8 @@ func (i *Implementation) PlannedAction(p string) string {
 
 // NextImplementation starts a new planning cycle. After a PR was published the
 // cycle continues on the same AI branch from its last commit; otherwise a
-// pending plan or change set is replaced and the request is accumulated.
+// pending plan is replaced; generated changes are inherited into an isolated
+// cache and the newest request is preserved within the accumulated request.
 func NextImplementation(prev *Implementation, request, cacheID string) *Implementation {
 	request = Clip(strings.TrimSpace(request), 4096)
 	next := &Implementation{Request: request, Status: "planning", CacheID: cacheID, Changes: []ChangeSummary{}, Unverified: []string{}}
@@ -206,7 +220,24 @@ func NextImplementation(prev *Implementation, request, cacheID string) *Implemen
 		return next
 	}
 	if prev.Request != "" && prev.Status != "published" {
-		next.Request = Clip(prev.Request+"\n\n追加の依頼: "+request, 4096)
+		next.Request = AppendRequest(prev.Request, request, 4096)
+	}
+	if prev.Status != "published" && prev.Status != "publishing" && prev.Plan != nil && len(prev.Changes) > 0 && ValidCommit(prev.BaseCommit) {
+		next.Revising = true
+		next.BaseBranch, next.BaseCommit = prev.BaseBranch, prev.BaseCommit
+		next.Branch, next.Title = prev.Branch, prev.Title
+		next.PullNumber, next.PullURL, next.ExpectedHead = prev.PullNumber, prev.PullURL, prev.ExpectedHead
+		next.Plan = prev.Plan
+		next.Changes = append([]ChangeSummary{}, prev.Changes...)
+		next.Unverified = append([]string{}, prev.Unverified...)
+		next.ContextFiles = append([]string{}, prev.ContextFiles...)
+		next.Declined = append([]string{}, prev.Declined...)
+		next.Verification = prev.Verification
+		next.DraftSource = &ImplementationDraftSource{CacheID: prev.CacheID, Version: prev.Version}
+		if prev.DraftSource != nil {
+			source := *prev.DraftSource
+			next.DraftSource = &source
+		}
 	}
 	return next
 }

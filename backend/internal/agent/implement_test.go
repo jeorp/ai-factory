@@ -84,6 +84,21 @@ func (w *fakeWriter) Publish(ctx context.Context, token string, r github.Publish
 	return s, save(s)
 }
 
+// Existing edit fixtures acknowledge the extra, read-only verification phase.
+// Verification-specific tests use providerFunc to exercise its actual contract.
+type implementProviderFunc providerFunc
+
+func (f implementProviderFunc) Next(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	var body struct {
+		Task implementTask `json:"implementTask"`
+	}
+	_ = json.Unmarshal([]byte(input), &body)
+	if body.Task.Mode == "verify" {
+		return Decision{Summary: "確認済み", Verification: &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}}}, Usage{}, nil
+	}
+	return providerFunc(f).Next(ctx, key, model, input)
+}
+
 func implementTaskOf(t *testing.T, input string) implementTask {
 	t.Helper()
 	var body struct {
@@ -99,7 +114,7 @@ func TestImplementationFlowFromChatToDraftPR(t *testing.T) {
 	writer := newFakeWriter()
 	editCalls := 0
 	reads := []github.Read{}
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		switch task.Mode {
 		case "":
@@ -202,7 +217,7 @@ func TestImplementationFlowFromChatToDraftPR(t *testing.T) {
 func TestFollowUpIncorporatesCIFailureLogs(t *testing.T) {
 	writer := newFakeWriter()
 	var planEvidenceSeen string
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		if task.Mode == "plan" {
 			planEvidenceSeen = input
@@ -263,7 +278,7 @@ func TestImplementationRejectsUnplannedChanges(t *testing.T) {
 func TestImplementationStopsWhenChangeCannotBeStored(t *testing.T) {
 	writer := newFakeWriter()
 	writer.failPut = true
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "src/old.go", Action: "delete"}}}}, Usage{}, nil
 	})
 	session := baseSession()
@@ -318,15 +333,15 @@ func TestProvidersExposeImplementationContract(t *testing.T) {
 					raw, _ := json.Marshal(props)
 					switch mode {
 					case "chat":
-						if !strings.Contains(string(raw), `"startImplementation":{"anyOf"`) || props["implementation"].(map[string]any)["type"] != "null" || instructions != systemPrompt {
+						if !strings.Contains(string(raw), `"startImplementation":{"anyOf"`) || props["implementation"].(map[string]any)["type"] != "null" || !strings.HasPrefix(instructions, systemPrompt) {
 							t.Fatal("chat cannot start implementation or can emit changes")
 						}
 					case "plan":
-						if instructions != implementPlanPrompt || props["plan"].(map[string]any)["anyOf"] == nil || props["implementation"].(map[string]any)["type"] != "null" || props["startImplementation"].(map[string]any)["type"] != "null" {
+						if !strings.HasPrefix(instructions, implementPlanPrompt) || props["plan"].(map[string]any)["anyOf"] == nil || props["implementation"].(map[string]any)["type"] != "null" || props["startImplementation"].(map[string]any)["type"] != "null" {
 							t.Fatal("plan contract")
 						}
 					case "edit":
-						if instructions != implementEditPrompt || props["implementation"].(map[string]any)["anyOf"] == nil || props["plan"].(map[string]any)["type"] != "null" || props["read"].(map[string]any)["type"] != "null" {
+						if !strings.HasPrefix(instructions, implementEditPrompt) || props["implementation"].(map[string]any)["anyOf"] == nil || props["plan"].(map[string]any)["type"] != "null" || props["read"].(map[string]any)["type"] != "null" {
 							t.Fatal("edit contract")
 						}
 					}
@@ -359,7 +374,7 @@ func (w *fakeWriter) PullRequestOpen(ctx context.Context, token, repo string, nu
 func TestFollowUpOnClosedPRStartsNewBranch(t *testing.T) {
 	writer := newFakeWriter()
 	writer.closed = true
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		if task := implementTaskOf(t, input); task.FollowUp {
 			t.Fatal("closed PR still treated as follow-up")
 		}
@@ -382,7 +397,7 @@ func TestFollowUpOnClosedPRStartsNewBranch(t *testing.T) {
 func TestImplementationStopsWhenTotalSizeExceeded(t *testing.T) {
 	writer := newFakeWriter()
 	big := strings.Repeat("x", 60*1024)
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		changes := []ChangeProposal{}
 		for _, f := range task.Files {
@@ -408,7 +423,7 @@ func TestImplementationStopsWhenTotalSizeExceeded(t *testing.T) {
 func TestPlanWithMissingPathIsCorrectedBeforeApproval(t *testing.T) {
 	writer := newFakeWriter()
 	corrections := []string{}
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		if task.Correction != "" {
 			corrections = append(corrections, task.Correction)
@@ -438,7 +453,7 @@ func TestImplementationPassesFileListContextAndEarlierDiffs(t *testing.T) {
 	writer := newFakeWriter()
 	writer.files["src/types.go"] = "package src\n\ntype T struct{}\n"
 	var stepInputs []string
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		switch task.Mode {
 		case "plan":
@@ -513,7 +528,7 @@ func simplePlan() *domain.ImplementationPlan {
 func TestPlanGoesOnWhenFileListCannotBeRead(t *testing.T) {
 	writer := newFakeWriter()
 	writer.listErr = errors.New("github_response_limit")
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		if !strings.Contains(input, "ファイル一覧を取得できませんでした") {
 			t.Fatal("plan input does not say the list is missing")
 		}
@@ -533,7 +548,7 @@ func TestFileListIsCutAtLineBreaks(t *testing.T) {
 	for _, p := range writer.list {
 		known[p] = true
 	}
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		var body struct {
 			Files string `json:"repositoryFiles"`
 		}
@@ -560,7 +575,7 @@ func TestFileListIsCutAtLineBreaks(t *testing.T) {
 func TestPlanInputLimitRetriesKeepReadBudget(t *testing.T) {
 	writer := newFakeWriter()
 	reads := 0
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		var body struct {
 			Evidence []json.RawMessage `json:"evidence"`
 		}
@@ -585,7 +600,7 @@ func TestEditInputLimitRetriesKeepCallBudget(t *testing.T) {
 	writer := newFakeWriter()
 	writer.files["src/ctx.go"] = "package src\n\ntype C struct{}\n"
 	modelCalls := 0
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		if strings.Contains(input, `"context":[{`) {
 			return Decision{}, Usage{}, errors.New("ai_input_limit")
 		}
@@ -611,7 +626,7 @@ func TestEditInputLimitRetriesKeepCallBudget(t *testing.T) {
 
 func TestFixRequestForExistingPRPushesToItsBranch(t *testing.T) {
 	writer := newFakeWriter()
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		switch task.Mode {
 		case "plan":
@@ -663,7 +678,7 @@ func TestFixRequestForExistingPRPushesToItsBranch(t *testing.T) {
 func TestFollowUpOnMovedPRBuildsOnNewHead(t *testing.T) {
 	writer := newFakeWriter()
 	writer.moved = implBase
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
 	})
 	session := baseSession()
@@ -697,7 +712,7 @@ func TestPlanGapReviewAsksOnceAboutRelatedFiles(t *testing.T) {
 	writer := newFakeWriter()
 	writer.files["src/a_test.go"] = "package src\n"
 	corrections := []string{}
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		if task.Correction != "" {
 			corrections = append(corrections, task.Correction)
@@ -724,7 +739,7 @@ func TestEditCanAskToAddAFileAndContinueAfterApproval(t *testing.T) {
 	writer := newFakeWriter()
 	writer.files["lib/use.go"] = "package lib\n\nvar X = 1\n"
 	proposals := 0
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		switch task.Files[0].Path {
 		case "src/a.go":
@@ -769,7 +784,7 @@ func TestEditCanAskToAddAFileAndContinueAfterApproval(t *testing.T) {
 func TestDeclinedAdditionIsNotProposedAgain(t *testing.T) {
 	writer := newFakeWriter()
 	writer.files["lib/use.go"] = "package lib\n"
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		// The step first needs another file and changes nothing yet.
 		return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{}, AdditionalFiles: []domain.PendingFile{{Path: "lib/use.go", Action: "update", Approach: "x", Reason: "y"}}}}, Usage{}, nil
 	})
@@ -800,7 +815,7 @@ func TestAmendmentEditsDependenciesBeforeRemainingFiles(t *testing.T) {
 	writer.files["src/b.go"] = "package src\nvar B = 1\n"
 	writer.files["lib/use.go"] = "package lib\nvar X = 1\n"
 	var order []string
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		var paths []string
 		for _, f := range task.Files {
@@ -849,7 +864,7 @@ func TestAmendmentEditsDependenciesBeforeRemainingFiles(t *testing.T) {
 func TestInvalidAdditionWithoutChangesRetriesStep(t *testing.T) {
 	writer := newFakeWriter()
 	calls := 0
-	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		calls++
 		if calls == 1 {

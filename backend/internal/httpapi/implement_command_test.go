@@ -26,3 +26,25 @@ func TestImplementAmendCommand(t *testing.T) {
 		t.Fatalf("amend not applied: %+v", impl)
 	}
 }
+
+func TestCannotPublishWhileVerificationIsUnfinished(t *testing.T) {
+	session := &domain.Session{Implementation: &domain.Implementation{Status: "verifying", Changes: []domain.ChangeSummary{{Path: "src/a.go", Action: "update"}}}}
+	if got := implementCommandProblem(session, &command{Type: "implement_publish"}); got != "implementation_not_ready" {
+		t.Fatalf("unfinished verification can publish: %s", got)
+	}
+}
+
+func TestRevisionApprovalRetainsDraftAndRequiresClarification(t *testing.T) {
+	session := &domain.Session{Implementation: &domain.Implementation{Status: "plan_ready", Revising: true, Clarification: "どちらを直しますか", Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "a.go", Action: "update"}}}, Changes: []domain.ChangeSummary{{Path: "a.go", Action: "update"}}, Unverified: []string{"CIは未実行"}}}
+	if got := implementCommandProblem(session, &command{Type: "implement_approve"}); got != "implementation_plan_required" {
+		t.Fatalf("clarification can be approved: %s", got)
+	}
+	session.Implementation.Clarification = ""
+	if got := implementCommandProblem(session, &command{Type: "implement_approve"}); got != "" {
+		t.Fatalf("revision approval rejected: %s", got)
+	}
+	applyImplementCommand(session, command{Type: "implement_approve"})
+	if len(session.Implementation.Changes) != 1 || len(session.Implementation.Unverified) != 1 || session.Implementation.Status != "editing" {
+		t.Fatalf("draft cleared: %+v", session.Implementation)
+	}
+}

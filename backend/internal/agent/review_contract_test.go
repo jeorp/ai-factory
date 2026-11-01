@@ -41,11 +41,11 @@ func TestProvidersRestrictReviewToolsAtWireBoundary(t *testing.T) {
 					props := schema["properties"].(map[string]any)
 					readJSON, _ := json.Marshal(props["read"])
 					if !isReview {
-						if instructions != systemPrompt || !strings.Contains(string(readJSON), `"files"`) {
+						if !strings.HasPrefix(instructions, systemPrompt) || !strings.Contains(string(readJSON), `"files"`) {
 							t.Fatal("ordinary chat/overview tools changed")
 						}
 					} else {
-						if instructions != reviewSystemPrompt || strings.Contains(string(readJSON), `"files"`) || props["startReview"].(map[string]any)["type"] != "null" {
+						if !strings.HasPrefix(instructions, reviewSystemPrompt) || strings.Contains(string(readJSON), `"files"`) || props["startReview"].(map[string]any)["type"] != "null" {
 							t.Fatal("review still exposes chat or review-start actions")
 						}
 						choices := props["read"].(map[string]any)["anyOf"].([]any)

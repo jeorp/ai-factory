@@ -81,11 +81,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 		}
 	}
 	pinnedInstructions := func() string {
-		pinned := ""
-		for _, m := range instructions {
-			pinned += m.Text + "\n"
-		}
-		return pinned
+		return domain.LatestInstructions(instructions, 4096)
 	}
 	markApplied := func() {
 		applied = nil
@@ -300,10 +296,7 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 			if err := save("AIが" + task.Mode + "の区切りを確認しています"); err != nil {
 				return Decision{}, err
 			}
-			pinned := ""
-			for _, m := range instructions {
-				pinned += m.Text + "\n"
-			}
+			pinned := pinnedInstructions()
 			focus := ""
 			for i := len(in.Session.Messages) - 1; i >= 0; i-- {
 				if in.Session.Messages[i].Role == "user" {

@@ -8,7 +8,7 @@ const props = defineProps<{ sessionId: string; repository: string; implementatio
 const emit = defineEmits<{ approve: []; amend: [boolean]; publish: [{ branch: string; title: string; body: string }] }>();
 const impl = computed(() => props.implementation);
 const labels = { create: '追加', update: '変更', delete: '削除' } as const;
-const statusLabels: Record<Implementation['status'], string> = { planning: '計画を作成中', plan_ready: '計画の承認待ち', editing: '変更を作成中', amend_ready: '追加ファイルの承認待ち', ready: 'PR作成の確認待ち', publishing: 'PRを作成中', published: 'PR作成済み' };
+const statusLabels: Record<Implementation['status'], string> = { planning: '計画を作成中', plan_ready: '計画の承認待ち', editing: '変更を作成中', verifying: '変更全体の整合性を確認中', amend_ready: '追加ファイルの承認待ち', ready: 'PR作成の確認待ち', publishing: 'PRを作成中', published: 'PR作成済み' };
 const branch = ref(''); const title = ref(''); const body = ref(''); const confirmed = ref(false);
 watch(() => [impl.value.status, impl.value.version, impl.value.branch, impl.value.title] as const, () => {
  branch.value = impl.value.branch || ''; title.value = impl.value.title || ''; body.value = (impl.value.body || '').slice(0, 12000); confirmed.value = false;
@@ -21,19 +21,20 @@ const progress = computed(() => impl.value.steps?.length ? `${Math.min(impl.valu
 type Change = { original: string; content: string; lines: DiffLine[] };
 const selected = ref(''); const diffs = ref<Record<string, Change>>({}); const pending = ref(''); const error = ref('');
 const controller = new AbortController(); let active = true;
-watch(() => impl.value.version, () => { diffs.value = {}; selected.value = ''; });
+watch(() => [impl.value.version, impl.value.changeRevision] as const, () => { diffs.value = {}; selected.value = ''; pending.value = ''; });
 async function open(path: string) {
  if (selected.value === path) { selected.value = ''; return; }
  selected.value = path; error.value = '';
  if (diffs.value[path]) return;
+ const version = impl.value.version; const revision = impl.value.changeRevision;
  pending.value = path;
  try {
   const change = await api<{ original: string; content: string }>(`/sessions/${encodeURIComponent(props.sessionId)}/change?path=${encodeURIComponent(path)}`, { signal: controller.signal });
-  if (!active) return;
+  if (!active || impl.value.version !== version || impl.value.changeRevision !== revision) return;
   diffs.value[path] = { ...change, lines: lineDiff(change.original, change.content) };
  } catch (e) {
-  if (active && selected.value === path) error.value = e instanceof Error && e.message === 'implementation_changes_expired' ? '変更内容の保存期限（1時間）が切れました。チャットでもう一度実装を依頼してください。' : '差分を取得できませんでした。権限や接続を確認してください。';
- } finally { if (active && pending.value === path) pending.value = ''; }
+  if (active && impl.value.version === version && impl.value.changeRevision === revision && selected.value === path) error.value = e instanceof Error && e.message === 'implementation_changes_expired' ? '変更内容の保存期限（1時間）が切れました。チャットでもう一度実装を依頼してください。' : '差分を取得できませんでした。権限や接続を確認してください。';
+ } finally { if (active && impl.value.version === version && impl.value.changeRevision === revision && pending.value === path) pending.value = ''; }
 }
 function safeLink(url?: string) { try { const u = new URL(url || ''); return u.protocol === 'https:' && u.hostname === 'github.com' ? u.href : '#'; } catch { return '#'; } }
 onUnmounted(() => { active = false; controller.abort(); });
@@ -41,19 +42,22 @@ onUnmounted(() => { active = false; controller.abort(); });
 
 <template>
  <section class="implementation" aria-label="実装とPR作成">
-  <header><strong>実装とPR作成</strong><span class="impl-status">{{ impl.status === 'plan_ready' && !impl.plan ? '依頼内容の確認待ち' : statusLabels[impl.status] || impl.status }}<template v-if="impl.status === 'editing' && progress"> · {{ progress }}</template></span></header>
+  <header><strong>実装とPR作成</strong><span class="impl-status">{{ impl.status === 'plan_ready' && (!impl.plan || impl.clarification) ? '依頼内容の確認待ち' : statusLabels[impl.status] || impl.status }}<template v-if="impl.status === 'editing' && progress"> · {{ progress }}</template></span></header>
   <p class="impl-request">{{ impl.request }}</p>
   <p v-if="impl.baseCommit" class="impl-base">ベース <code>{{ impl.baseBranch }}</code> <code>{{ impl.baseCommit.slice(0, 12) }}</code><template v-if="followUp"> · 作成済みのブランチ <code>{{ impl.branch }}</code> に追加コミット</template></p>
 
-  <p v-if="impl.status === 'plan_ready' && !impl.plan" class="impl-question" role="status">計画を作る前に確認したいことがあります。チャットの最後のメッセージの質問に、メッセージの種類「実装を依頼」で答えると計画を作り直します。</p>
+  <p v-if="impl.status === 'plan_ready' && (!impl.plan || impl.clarification)" class="impl-question" role="status">計画を作る前に確認したいことがあります。チャットの最後のメッセージの質問に、メッセージの種類「実装を依頼」で答えると計画を作り直します。</p>
+  <p v-if="impl.revising">作成済みの変更を引き継いで追加修正しています。</p>
+  <p v-if="impl.repairRound">整合性確認に基づく修正: {{ impl.repairRound }} / 2 回</p>
   <template v-if="impl.plan">
    <h3>実装計画</h3>
    <p class="impl-summary">{{ impl.plan.summary }}</p>
-   <ul class="impl-files"><li v-for="file in impl.plan.files" :key="file.path"><code>{{ file.path }}</code><span class="impl-action" :class="file.action">{{ labels[file.action] }}</span><p>{{ file.approach }}</p></li></ul>
+   <ul class="impl-files"><li v-for="file in impl.plan.files" :key="file.path"><code>{{ file.path }}</code><span class="impl-action" :class="file.action">{{ labels[file.action] }}</span><p>{{ file.approach }}</p><p v-if="file.dependsOn?.length">依存する変更: {{ file.dependsOn.join('、') }}</p></li></ul>
+   <details v-if="impl.steps?.length"><summary>実装順（{{ impl.steps.length }} 区切り）</summary><ol><li v-for="(step, i) in impl.steps" :key="i">{{ step.files.join('、') }}</li></ol><p>相互に依存するファイルは同じ区切りで変更します。</p></details>
    <details v-if="impl.plan.outOfScope?.length || impl.plan.risks?.length || impl.plan.tests?.length"><summary>対象外・リスク・確認すべきテスト</summary>
     <p v-for="v in impl.plan.outOfScope || []" :key="'o' + v">対象外: {{ v }}</p><p v-for="v in impl.plan.risks || []" :key="'r' + v">リスク: {{ v }}</p><p v-for="v in impl.plan.tests || []" :key="'t' + v">テスト: {{ v }}</p>
    </details>
-   <div v-if="impl.status === 'plan_ready'" class="impl-actions">
+   <div v-if="impl.status === 'plan_ready' && !impl.clarification" class="impl-actions">
     <button class="primary-button" :disabled="running || !canRun" @click="emit('approve')">計画を承認して変更を作成</button>
     <span>計画を直したい場合は、チャットで追加の依頼を送ってください。計画を作り直します。</span>
    </div>
@@ -62,7 +66,7 @@ onUnmounted(() => { active = false; controller.abort(); });
   <section v-if="impl.status === 'amend_ready' && impl.pendingFiles?.length" class="impl-amend" aria-label="計画にないファイルの追加">
    <h3>計画にないファイルの追加</h3>
    <p>作業の途中で、次のファイルも変更が必要だと分かりました。承認すると計画に加えて作業を続けます。見送ると、これらは変更せずに残りの作業を続けます。</p>
-   <ul class="impl-files"><li v-for="file in impl.pendingFiles" :key="file.path"><code>{{ file.path }}</code><span class="impl-action" :class="file.action">{{ labels[file.action] }}</span><p>{{ file.approach }}</p><p class="impl-reason">理由: {{ file.reason }}</p></li></ul>
+   <ul class="impl-files"><li v-for="file in impl.pendingFiles" :key="file.path"><code>{{ file.path }}</code><span class="impl-action" :class="file.action">{{ labels[file.action] }}</span><p>{{ file.approach }}</p><p v-if="file.dependsOn?.length">依存する変更: {{ file.dependsOn.join('、') }}</p><p class="impl-reason">理由: {{ file.reason }}</p></li></ul>
    <div class="impl-actions">
     <button class="primary-button" :disabled="running || !canRun" @click="emit('amend', true)">追加して続ける</button>
     <button class="plain-button" :disabled="running || !canRun" @click="emit('amend', false)">追加せずに続ける</button>
@@ -81,6 +85,14 @@ onUnmounted(() => { active = false; controller.abort(); });
    </div>
    <details v-if="impl.unverified.length" open><summary>未確認事項 {{ impl.unverified.length }} 件</summary><ul><li v-for="(u, i) in impl.unverified" :key="i">{{ u }}</li></ul></details>
   </template>
+
+  <section v-if="impl.verification" aria-label="AIによる整合性確認">
+   <h3>AIによる整合性確認</h3>
+   <p v-if="!impl.verification.issues.length">確認した範囲で不整合の指摘はありません。</p>
+   <ul v-else><li v-for="(issue, i) in impl.verification.issues" :key="i">{{ issue }}</li></ul>
+   <details v-if="impl.verification.unverified.length" open><summary>確認できなかった点</summary><ul><li v-for="(item, i) in impl.verification.unverified" :key="i">{{ item }}</li></ul></details>
+   <p>コードを読み直した結果です。ビルド・テストは実行していません。</p>
+  </section>
 
   <form v-if="impl.status === 'ready' || impl.status === 'publishing'" class="impl-publish" @submit.prevent="canPublish && emit('publish', { branch, title: title.trim(), body })">
    <h3>{{ followUp ? '作成済みのPRに追加コミット' : 'Draft PRを作成' }}</h3>

@@ -126,6 +126,13 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 		}
 	}
 	wait(func(s domain.Session) bool { return s.ID == session.ID }, "")
+	// Each instruction is bounded individually; old instructions must not block
+	// a newer one after their combined size exceeds the model's pinned budget.
+	for _, text := range []string{strings.Repeat("旧", 1000), strings.Repeat("新", 1000)} {
+		id := randomID()
+		ws.WriteJSON(command{Type: "instruction", ID: id, Text: text})
+		wait(func(s domain.Session) bool { return s.HasMessage(id) }, "")
+	}
 	// The final answer is saved before the run's completion is processed, so
 	// a command sent right after it can still see the run in progress.
 	sendWhenIdle := func(cmd command, predicate func(domain.Session) bool) domain.Session {
@@ -164,6 +171,9 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 		return s.State == "done" && s.Implementation != nil && s.Implementation.Status == "ready"
 	})
 	impl := ready.Implementation
+	if impl.Verification == nil || len(impl.Verification.Unverified) == 0 {
+		t.Fatalf("verification result missing from websocket: %+v", impl)
+	}
 	if len(impl.Changes) != 1 || impl.Changes[0].Path != "README.md" || !strings.HasPrefix(impl.Branch, "ai-factory/") {
 		t.Fatalf("changes: %+v", impl)
 	}
@@ -181,6 +191,30 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 		t.Fatalf("unknown change served: %d", resp.StatusCode)
 	}
 
+	// Replanning before publication carries the saved draft through Firestore
+	// into a fresh cache/version, then edits that content instead of the base.
+	oldVersion, oldContent := impl.Version, change.Content
+	revised := sendWhenIdle(command{Type: "implement", ID: randomID(), Text: "追加の説明も入れて"}, func(s domain.Session) bool {
+		return s.State == "done" && s.Implementation != nil && s.Implementation.Version > oldVersion && s.Implementation.Status == "plan_ready"
+	})
+	if !revised.Implementation.Revising || len(revised.Implementation.Changes) != 1 {
+		t.Fatalf("draft lost at replan: %+v", revised.Implementation)
+	}
+	storedRevision, err := storage.Get(ctx, uid, session.ID)
+	if err != nil || storedRevision.Implementation.DraftSource != nil || !storedRevision.Implementation.Revising {
+		t.Fatalf("revision not durable: %+v %v", storedRevision, err)
+	}
+	revised = sendWhenIdle(command{Type: "implement_approve"}, func(s domain.Session) bool {
+		return s.State == "done" && s.Implementation != nil && s.Implementation.Version > oldVersion && s.Implementation.Status == "ready"
+	})
+	impl = revised.Implementation
+	resp = request("GET", "/api/v1/sessions/"+session.ID+"/change?path=README.md", nil)
+	json.NewDecoder(resp.Body).Decode(&change)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || strings.Count(change.Content, "固定デモで追加") != strings.Count(oldContent, "固定デモで追加")+1 || impl.ChangeRevision != 1 {
+		t.Fatalf("revision dropped prior content: %d %+v", resp.StatusCode, change)
+	}
+
 	time.Sleep(200 * time.Millisecond)
 	for _, bad := range []command{{Type: "implement_publish", Branch: "main", Title: "x"}, {Type: "implement_publish", Branch: impl.Branch, Title: "ghp_abcdefghijklmnopqrstuvwxyz"}} {
 		ws.WriteJSON(bad)
@@ -195,7 +229,7 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 		t.Fatalf("publish: %+v", published.Implementation)
 	}
 	stored, err := storage.Get(ctx, uid, session.ID)
-	if err != nil || stored.Implementation == nil || stored.Implementation.Status != "published" || stored.Implementation.CacheID == "" {
+	if err != nil || stored.Implementation == nil || stored.Implementation.Status != "published" || stored.Implementation.CacheID == "" || stored.Implementation.Verification == nil {
 		t.Fatalf("not persisted: %+v %v", stored, err)
 	}
 }

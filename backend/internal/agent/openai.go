@@ -21,17 +21,20 @@ type IntentPlan struct {
 }
 
 type Decision struct {
+	IntentIssue string               `json:"-"`
 	Intent      IntentPlan           `json:"intent"`
 	Answer      string               `json:"answer"`
 	Summary     string               `json:"summary"`
 	Read        *github.Read         `json:"read"`
+	Search      *github.CodeSearch   `json:"search"`
 	Review      *domain.ReviewResult `json:"review"`
 	StartReview *ReviewRequest       `json:"startReview"`
 	Priorities  []PriorityAssessment `json:"priorities,omitempty"`
 	// Implementation workflow (specification section 13).
-	StartImplementation *ImplementRequest          `json:"startImplementation"`
-	Plan                *domain.ImplementationPlan `json:"plan"`
-	Implementation      *ImplementResult           `json:"implementation"`
+	StartImplementation *ImplementRequest                  `json:"startImplementation"`
+	Plan                *domain.ImplementationPlan         `json:"plan"`
+	Implementation      *ImplementResult                   `json:"implementation"`
+	Verification        *domain.ImplementationVerification `json:"verification"`
 }
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`
@@ -128,7 +131,7 @@ func (p *OpenAI) Next(ctx context.Context, key, model, input string) (Decision, 
 	if !validPriorityDecision(input, d) {
 		return d, out.Usage, errors.New("invalid_priority_result")
 	}
-	if !validImplementationDecision(d) {
+	if !validImplementationResponse(input, d) {
 		return d, out.Usage, errors.New("invalid_implementation_result")
 	}
 	return d, out.Usage, nil

@@ -32,7 +32,7 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	schema := map[string]any{"type": "object", "properties": map[string]any{"intent": intentSchema(), "answer": map[string]any{"type": "string"}, "summary": map[string]any{"type": "string"}, "read": read}, "required": []string{"intent", "answer", "summary", "read"}, "additionalProperties": false}
 	addReviewSchema(schema)
 	addImplementationSchema(schema)
-	instructions := decisionInstructions(schema, input)
+	instructions := decisionInstructions(schema, input) + "\nintentのgoal・investigation・responseはそれぞれ空にせず、各100文字以内で簡潔に記載してください。"
 	maxOutput := 4096
 	if reviewWorkflow(input) {
 		maxOutput = 8192
@@ -103,7 +103,14 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 		return d, usage, errors.New("gemini_answer_too_long")
 	}
 	if !validIntent(d.Intent) {
-		return d, usage, errors.New("gemini_invalid_intent")
+		d.IntentIssue = "empty_fields"
+		if len(d.Intent.Goal) > 1024 || len(d.Intent.Investigation) > 1024 || len(d.Intent.Response) > 1024 {
+			d.IntentIssue = "field_length_limit"
+		}
+		// Intent is optional internal planning metadata, not the decision itself.
+		// Discard an unusable hypothesis; the chat runner retains its last valid
+		// one, and specialized workflows do not depend on it.
+		d.Intent = IntentPlan{}
 	}
 	if !validReviewResult(d.Review) {
 		return d, usage, errors.New("gemini_invalid_review")
@@ -119,7 +126,7 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	if !validPriorityDecision(input, d) {
 		return d, usage, errors.New("invalid_priority_result")
 	}
-	if !validImplementationDecision(d) {
+	if !validImplementationResponse(input, d) {
 		return d, usage, errors.New("invalid_implementation_result")
 	}
 	return d, usage, nil
