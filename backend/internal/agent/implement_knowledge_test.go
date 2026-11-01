@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -154,5 +155,79 @@ func TestDocumentationVerificationOmitsLanguageKnowledge(t *testing.T) {
 	}
 	if calls != 1 || last.Implementation.Status != "ready" {
 		t.Fatalf("documentation flow changed: calls=%d status=%s verification=%+v", calls, last.Implementation.Status, last.Implementation.Verification)
+	}
+}
+
+func TestVerificationKnowledgeFromAdditionalEvidenceDoesNotImplyFullCoverage(t *testing.T) {
+	for _, name := range []string{"complete read", "clipped read", "missing read", "search match", "empty search", "failed search"} {
+		t.Run(name, func(t *testing.T) {
+			base := newFakeWriter()
+			const path = "lib/check.py"
+			if name != "missing read" {
+				base.files[path] = "def check(value):\n    return value is None\n"
+				if name == "clipped read" {
+					base.files[path] += strings.Repeat("# padding\n", 2000)
+				}
+			}
+			writer := searchWriter{fakeWriter: base, search: func(context.Context, string, string, string, github.CodeSearch) (github.CodeSearchResult, error) {
+				if name == "failed search" {
+					return github.CodeSearchResult{Matches: []github.SearchMatch{{Path: path, Text: "discarded partial result"}}}, errors.New("github_unavailable")
+				}
+				result := github.CodeSearchResult{}
+				if name == "search match" {
+					result.Matches = []github.SearchMatch{{Path: path, Line: 1, Text: "def check(value):"}}
+				}
+				return result, nil
+			}}
+			session := verificationSession(base, []domain.FileChange{{Path: "docs/usage.md", Action: "create", Content: "Usage"}})
+			calls := 0
+			ai := providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
+				calls++
+				var body struct {
+					Knowledge *verificationKnowledge `json:"verificationKnowledge"`
+					Evidence  []evidence             `json:"evidence"`
+				}
+				if err := json.Unmarshal([]byte(input), &body); err != nil {
+					t.Fatal(err)
+				}
+				if calls == 1 {
+					if body.Knowledge != nil {
+						t.Fatal("unread repository inventory selected knowledge")
+					}
+					if strings.Contains(name, "search") {
+						return Decision{Search: &github.CodeSearch{Query: "check", Prefix: "lib"}}, Usage{}, nil
+					}
+					return Decision{Read: &github.Read{Kind: "file", Path: path, Detail: "summary"}}, Usage{}, nil
+				}
+				wantKnowledge := name == "complete read" || name == "clipped read" || name == "search match"
+				if wantKnowledge {
+					if body.Knowledge == nil || len(body.Knowledge.Languages) != 1 || body.Knowledge.Languages[0].Language != "python" || !reflect.DeepEqual(body.Knowledge.Languages[0].Paths, []string{path}) {
+						t.Fatalf("visible Python evidence lacks knowledge: %+v", body.Knowledge)
+					}
+				} else if body.Knowledge != nil {
+					t.Fatal("unavailable code selected knowledge")
+				}
+				if name == "clipped read" && (len(body.Evidence) != 1 || !strings.Contains(body.Evidence[0].Content, "全文未確認")) {
+					t.Fatal("clipped evidence lost its incomplete marker")
+				}
+				v := passedVerification(implementTaskOf(t, input).Plan)
+				v.Criteria[0].Paths = append(v.Criteria[0].Paths, path)
+				return Decision{Summary: "追加コードを確認", Verification: v}, Usage{}, nil
+			})
+			var last Checkpoint
+			if err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 {
+				t.Fatalf("unexpected model calls: %d", calls)
+			}
+			if name == "complete read" {
+				if last.Implementation.Status != "ready" {
+					t.Fatalf("full read did not establish coverage: %+v", last.Implementation.Verification)
+				}
+			} else if last.Implementation.Status != "verification_blocked" || last.Implementation.CanPublish() || !strings.Contains(strings.Join(last.Implementation.Verification.Unverified, ""), path) {
+				t.Fatal("partial or missing evidence was accepted as full coverage")
+			}
+		})
 	}
 }

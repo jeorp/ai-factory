@@ -35,6 +35,7 @@ func (run *implementRun) search(ctx context.Context, query github.CodeSearch, ev
 	run.cp.Metrics.FetchedBytes += result.ScannedBytes
 	run.logger.Info("implement_search", "phase", run.impl.Status, "duration_ms", time.Since(started).Milliseconds(), "scanned_files", result.ScannedFiles, "scanned_bytes", result.ScannedBytes, "matches", len(result.Matches), "skipped_files", result.SkippedFiles, "has_more", result.NextCursor != "", "list_truncated", result.ListTruncated, "outcome", outcome(err), "error_code", implementationErrorCode(err))
 	content := ""
+	codePaths := []string{}
 	if err != nil {
 		content = "検索できませんでした: " + implementationErrorCode(err)
 	} else {
@@ -74,10 +75,14 @@ func (run *implementRun) search(ctx context.Context, query github.CodeSearch, ev
 		raw, _ := json.Marshal(result)
 		content = string(raw)
 		for _, match := range result.Matches {
+			codePaths = append(codePaths, match.Path)
 			run.impl.ContextFiles = addContextFile(run.impl.ContextFiles, match.Path)
 		}
+		for _, match := range result.GeneratedMatches {
+			codePaths = append(codePaths, match.Path)
+		}
 	}
-	*ev = append(*ev, evidence{Read: github.Read{Kind: "search", Path: query.Prefix}, Content: content})
+	*ev = append(*ev, evidence{Read: github.Read{Kind: "search", Path: query.Prefix}, Content: content, codePaths: codePaths})
 	if len(*ev) > planEvidenceKept {
 		*ev = (*ev)[len(*ev)-planEvidenceKept:]
 	}
