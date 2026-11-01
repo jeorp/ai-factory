@@ -59,7 +59,10 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 	}
 	out := []domain.FileChange{}
 	seen := map[string]bool{}
-	materialChange := len(impl.Changes) > 0
+	// Retained files alone do not complete a revision or CI repair. A step made
+	// only of retained files is accepted when this cycle has already written a
+	// change, or when a later step can still make one.
+	materialChange := impl.ChangeRevision > 0 || impl.NextStep < len(impl.Steps)-1
 	for _, p := range proposals {
 		if !inStep[p.Path] {
 			return nil, errors.New("change_path_not_in_step")
@@ -124,7 +127,9 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 			}
 		}
 	}
-	if len(out) > 0 && !materialChange {
+	// In a revision, files left uncovered are reported as unfinished by the
+	// step and by verification, so only an all-retained step is rejected here.
+	if len(out) > 0 && !materialChange && !(impl.Revising && len(out) < len(step)) {
 		return nil, &proposalEditError{path: out[0].Path, err: errors.New("update_without_change")}
 	}
 	return out, nil

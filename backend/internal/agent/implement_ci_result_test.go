@@ -159,3 +159,19 @@ func TestCIFixPreservesMaximumLengthOriginalRequest(t *testing.T) {
 		t.Fatalf("CI repair clipped requirements: %+v", next)
 	}
 }
+
+func TestCIWithoutRegisteredChecksStopsAsUnverified(t *testing.T) {
+	w := newFakeWriter()
+	impl := &domain.Implementation{Status: "checking_ci", Commit: implBase, PullNumber: 7}
+	r := &Runner{Writer: w, CIWait: time.Nanosecond, GitHub: readerFunc(func(context.Context, string, domain.Target, github.Read) (string, domain.Source, int, error) {
+		raw := `{"total_count":0,"check_runs":[]}`
+		return raw, domain.Source{}, len(raw), nil
+	})}
+	var last Checkpoint
+	if err := runImplementationFixture(r, impl, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatalf("CI without checks kept waiting: %v", err)
+	}
+	if last.Implementation.Status != "published" || last.Implementation.CI.State != "unverified" {
+		t.Fatalf("zero checks not reported as unverified: %+v", last.Implementation.CI)
+	}
+}
