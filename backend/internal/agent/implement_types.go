@@ -75,6 +75,7 @@ type implementFile struct {
 	Original         string `json:"original,omitempty"`
 	NumberedOriginal string `json:"numberedOriginal,omitempty"`
 	SourceHash       string `json:"sourceHash,omitempty"`
+	PreserveExisting bool   `json:"preserveExisting,omitempty"`
 }
 
 type implementTask struct {

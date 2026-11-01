@@ -97,6 +97,7 @@ func (run *implementRun) loadStepFiles(ctx context.Context, step []string) ([]im
 					return nil, nil, err
 				}
 				content = current.Content
+				f.PreserveExisting = impl.Revising
 				break
 			}
 		}

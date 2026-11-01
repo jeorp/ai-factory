@@ -26,8 +26,27 @@ func (run *implementRun) savedChange(ctx context.Context, path string) (domain.F
 	return f, nil
 }
 
+// retainedDraftChange uses only the cached contents loaded for this step. A
+// repository file, or a file without a saved change, is not a completed edit.
+func retainedDraftChange(impl *domain.Implementation, originals map[string]string, path string) (domain.FileChange, bool) {
+	if !impl.Revising {
+		return domain.FileChange{}, false
+	}
+	content, ok := originals[path]
+	if !ok {
+		return domain.FileChange{}, false
+	}
+	for _, c := range impl.Changes {
+		if c.Path == path && c.Action == impl.PlannedAction(path) {
+			return domain.FileChange{Path: path, Action: c.Action, Content: content}, true
+		}
+	}
+	return domain.FileChange{}, false
+}
+
 // applyProposals turns model proposals into full file contents. Only files of
-// the current step with their approved action are accepted.
+// the current step with their approved action are accepted. Unedited saved
+// changes in a draft revision retain their original base-relative action.
 func applyProposals(step []string, impl *domain.Implementation, originals map[string]string, proposals []ChangeProposal) ([]domain.FileChange, error) {
 	inStep := map[string]bool{}
 	for _, p := range step {
@@ -79,11 +98,20 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 				return nil, errors.New("update_requires_edits")
 			}
 			if content == originals[p.Path] {
-				return nil, errors.New("update_without_change")
+				if _, retained := retainedDraftChange(impl, originals, p.Path); !retained {
+					return nil, &proposalEditError{path: p.Path, err: errors.New("update_without_change")}
+				}
 			}
 			out = append(out, domain.FileChange{Path: p.Path, Action: "update", Content: content})
 		default:
 			return nil, errors.New("invalid_change_action")
+		}
+	}
+	for _, path := range step {
+		if !seen[path] {
+			if f, retained := retainedDraftChange(impl, originals, path); retained {
+				out = append(out, f)
+			}
 		}
 	}
 	return out, nil
@@ -95,10 +123,17 @@ func (run *implementRun) persistChanges(ctx context.Context, changes []domain.Fi
 	impl := run.impl
 	// Check the running total now rather than failing only at publish time.
 	total := impl.ChangeBytes()
+	unchanged := map[string]bool{}
 	for _, f := range changes {
 		for _, c := range impl.Changes {
 			if c.Path == f.Path {
 				total -= c.Bytes
+				current, err := run.savedChange(ctx, f.Path)
+				if err != nil {
+					return nil, err
+				}
+				unchanged[f.Path] = current == f
+				break
 			}
 		}
 		total += len(f.Content)
@@ -107,10 +142,16 @@ func (run *implementRun) persistChanges(ctx context.Context, changes []domain.Fi
 		return nil, errors.New("change_set_size_limit")
 	}
 	covered := map[string]bool{}
+	written := false
 	for _, f := range changes {
+		if unchanged[f.Path] {
+			covered[f.Path] = true
+			continue
+		}
 		if err := run.r.Writer.PutChange(ctx, impl.CacheID, impl.Version, f); err != nil {
 			return nil, err
 		}
+		written = true
 		covered[f.Path] = true
 		summary := domain.ChangeSummary{Path: f.Path, Action: f.Action, Bytes: len(f.Content)}
 		replaced := false
@@ -123,7 +164,7 @@ func (run *implementRun) persistChanges(ctx context.Context, changes []domain.Fi
 			impl.Changes = append(impl.Changes, summary)
 		}
 	}
-	if len(changes) > 0 {
+	if written {
 		impl.ChangeRevision++
 	}
 	return covered, nil

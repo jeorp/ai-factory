@@ -90,6 +90,8 @@ PR取得に成功した番号は `activePullRequest` に保存する。通常メ
 
 チャットで「〜を実装してPRを作って」と依頼するか、メッセージの種類で「実装を依頼」を選ぶ。AIは基準コミットのコードを読んで実装計画を返し、利用者が「計画を承認して変更を作成」を押すまで変更を作らない。変更は最大5ファイルずつ検索・置換ブロックで作成し、サーバーが元ファイルへの一意な一致を確認して適用する。差分を確認し、ブランチ名・PRタイトル・本文を確認して「Draft PRを作成」を押すとGitHubへ書き込む。PR作成はAIキーを使わない。
 
+公開前の追加依頼では、保存済みの変更を新しいドラフトへ引き継ぎ、固定ベースに対するcreate/update/deleteを維持する。今回編集するファイルには現在の保存内容を渡し、`preserveExisting=true` のファイルは変更不要なら応答から省略できる。同じ内容が返された場合も保持として扱い、保存済みキャッシュを書き直さず編集を進める。未実装ファイルの省略や保存期限切れを完了扱いにはしない。生成後は、保持した内容を含む変更全体を再検証してから公開可能とする。編集応答のpathは現在の工程のファイルだけに制限する。
+
 WebSocketコマンド: `implement`（依頼文、AIキー必須）、`implement_approve`（計画の承認、AIキー必須）、`implement_publish`（`branch` / `title` / `body`、AIキー不要）。`resume` は保存した区切りから計画・変更作成・PR作成を再開する。変更後のファイル本文は `GET /api/v1/sessions/{id}/change?path=...` で元ファイルと一緒に返す。
 
 Emulator統合テスト `TestEmulatorImplementationLifecycle` は固定デモのAIとGitHubで、計画・承認・差分・不正なブランチ名や秘密情報の拒否・PR作成・Firestoreへの保存を実WebSocket経由で確認する。Emulatorはfirebase-toolsで起動できる:
