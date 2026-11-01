@@ -22,7 +22,7 @@ func TestClipAndHistoryLimit(t *testing.T) {
 	if !utf8.ValidString(Clip("日本語", 5)) {
 		t.Fatal("invalid UTF-8")
 	}
-	s := Session{}
+	s := Session{Locale: "ja"}
 	if err := s.Add("user", strings.Repeat("a", MaxHistoryBytes), "first"); err != nil {
 		t.Fatal(err)
 	}

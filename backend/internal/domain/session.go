@@ -104,6 +104,7 @@ type Session struct {
 	Title              string              `json:"title"`
 	Target             Target              `json:"target"`
 	Model              string              `json:"model"`
+	Locale             string              `json:"locale"`
 	RunKind            string              `json:"runKind"`
 	ReviewScope        string              `json:"reviewScope,omitempty"`
 	ActivePullRequest  int                 `json:"activePullRequest"`
