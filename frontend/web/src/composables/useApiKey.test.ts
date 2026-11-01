@@ -11,9 +11,9 @@ vi.mock('../lib/keyVault', () => ({
 }));
 const { useApiKey } = await import('./useApiKey');
 
-function setup(sessionId = () => 's1' as string | undefined) {
+function setup(sessionId = () => 's1' as string | undefined, provider = 'openai') {
  const errors: string[] = [];
- const keys = useApiKey({ provider: () => 'openai', sessionId, onError: message => { if (message) errors.push(message); } });
+ const keys = useApiKey({ provider: () => provider, sessionId, onError: message => { if (message) errors.push(message); } });
  return { keys, errors };
 }
 
@@ -51,5 +51,18 @@ describe('API key card state', () => {
   const pending = keys.apply(); id = 's2'; await pending;
   expect(vault.key).toBe('');
   expect(keys.pending).toBe(false);
+ });
+ it('accepts a Vertex AI access token longer than an API key', async () => {
+  const token = `ya29.${'x'.repeat(2043)}`;
+  const vertex = setup(undefined, 'vertex');
+  Object.assign(vertex.keys, { draft: token, consent: true });
+  await vertex.keys.apply();
+  expect(vertex.keys.valid).toBe(true);
+  vault.key = '';
+  const anthropic = setup(undefined, 'anthropic');
+  Object.assign(anthropic.keys, { draft: token, consent: true });
+  await anthropic.keys.apply();
+  expect(anthropic.keys.valid).toBe(false);
+  expect(anthropic.errors).toHaveLength(1);
  });
 });

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Config } from '../types';
-import type { ApiKeyState } from '../composables/useApiKey';
+import { maxKeyLength, type ApiKeyState } from '../composables/useApiKey';
 import Icon from './Icon.vue';
 
 defineProps<{ provider: Config['aiProvider']; keys: ApiKeyState }>();
@@ -24,7 +24,7 @@ defineProps<{ provider: Config['aiProvider']; keys: ApiKeyState }>();
   </div>
   <form @submit.prevent="keys.apply">
    <template v-if="keys.choice === 'new'">
-    <div class="key-form"><input v-model="keys.draft" type="password" autocomplete="off" spellcheck="false" :placeholder="provider === 'vertex' ? 'アクセストークン（ya29.…）を入力' : 'APIキーを入力'" aria-label="AI APIキー" maxlength="512" /></div>
+    <div class="key-form"><input v-model="keys.draft" type="password" autocomplete="off" spellcheck="false" :placeholder="provider === 'vertex' ? 'アクセストークン（ya29.…）を入力' : 'APIキーを入力'" aria-label="AI APIキー" :maxlength="maxKeyLength(provider)" /></div>
     <label class="consent"><input v-model="keys.remember" type="checkbox" />APIキーをこのブラウザに保存する{{ keys.hasSaved ? '（保存済みのキーを上書き）' : '' }}</label>
     <p>保存したキーは次のセッションでも選択できます。共有端末では保存を避けてください。</p>
    </template>

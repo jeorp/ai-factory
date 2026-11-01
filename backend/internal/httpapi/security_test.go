@@ -66,13 +66,26 @@ func TestOriginAndSecretInputBoundary(t *testing.T) {
 
 func TestAIKeyValidationDoesNotAssumeProviderFormat(t *testing.T) {
 	for _, key := range []string{"AIza-example-key", "different-format-key"} {
-		if !validAIKey(key) {
+		if !validAIKey(key, "gemini") {
 			t.Fatal("valid key format rejected")
 		}
 	}
 	for _, key := range []string{"", "with space", "with\nnewline", strings.Repeat("x", 513)} {
-		if validAIKey(key) {
+		if validAIKey(key, "anthropic") {
 			t.Fatal("invalid key accepted")
 		}
+	}
+}
+
+func TestVertexAccessTokenMayBeLongerThanAPIKeys(t *testing.T) {
+	token := "ya29." + strings.Repeat("x", 2043)
+	if !validAIKey(token, "vertex") {
+		t.Fatal("2048-byte Vertex AI access token rejected")
+	}
+	if validAIKey(token+"x", "vertex") {
+		t.Fatal("Vertex AI access token over 2048 bytes accepted")
+	}
+	if validAIKey(token, "anthropic") {
+		t.Fatal("API key over 512 bytes accepted")
 	}
 }
