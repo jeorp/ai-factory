@@ -3,12 +3,17 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"ai-factory/backend/internal/domain"
 	"ai-factory/backend/internal/github"
 )
+
+// ErrCIWaiting yields the read-only wait without completing the implementation.
+// A connected client can resume it without an AI key or another publication.
+var ErrCIWaiting = errors.New("implementation_ci_wait")
 
 func ciFailedConclusion(conclusion string) bool {
 	switch conclusion {
@@ -22,6 +27,7 @@ func (run *implementRun) checkPublishedCI(ctx context.Context) error {
 	impl := run.impl
 	deadline := time.Now().Add(run.r.CIWait)
 	for {
+		noChecks := false
 		result := &domain.ImplementationCI{Commit: impl.Commit, State: "pending", Checks: []domain.ImplementationCheck{}, Unverified: []string{}}
 		impl.CI = result
 		if err := run.save(ctx, "公開したコミットのGitHub CIを確認しています"); err != nil {
@@ -72,6 +78,7 @@ func (run *implementRun) checkPublishedCI(ctx context.Context) error {
 						unknown = true
 					}
 				}
+				noChecks = snapshot.Total == 0 && len(snapshot.Checks) == 0
 				switch {
 				case snapshot.Truncated || snapshot.Total > len(snapshot.Checks):
 					result.State = "unverified"
@@ -89,13 +96,25 @@ func (run *implementRun) checkPublishedCI(ctx context.Context) error {
 				}
 			}
 		}
-		if result.State != "pending" || !time.Now().Before(deadline) {
-			impl.Status = "published"
-			message := map[string]string{"passed": "取得したGitHub CIのチェックがすべて成功しました。", "failed": "GitHub CIが失敗しました。「CIの失敗を修正」で失敗ログを取得して修正を計画できます。", "unverified": "GitHub CIの成功を確認できていません。", "pending": "GitHub CIは未完了、またはチェックがまだありません。「CIを再確認」で確認できます。"}[result.State]
-			run.cp.Answer = fmt.Sprintf("Draft PR: %s\nコミット: %s\n%s", impl.PullURL, impl.Commit, message)
-			return run.save(ctx, message)
+		if result.State == "pending" && noChecks && run.r.CIWait > 0 && !time.Now().Before(deadline) {
+			// A repository or branch without CI never registers checks. Stop
+			// after one full wait instead of polling forever; zero checks are
+			// never treated as success.
+			result.State = "unverified"
+			result.Unverified = []string{"待機時間内にCIのチェックが登録されませんでした。GitHubでCIの設定を確認してください。"}
 		}
-		if err := run.save(ctx, "GitHub CIの完了を待っています"); err != nil {
+		if result.State != "pending" || !time.Now().Before(deadline) {
+			if result.State == "pending" && run.r.CIWait > 0 {
+				if err := run.save(ctx, "CIの完了を待っています"); err != nil {
+					return err
+				}
+				return ErrCIWaiting
+			}
+			impl.Status = "published"
+			run.cp.Answer = fmt.Sprintf("[CIを確認](https://github.com/%s/commit/%s/checks)", run.in.Session.Target.Repository, impl.Commit)
+			return run.save(ctx, "CIの確認が完了しました")
+		}
+		if err := run.save(ctx, "CIの完了を待っています"); err != nil {
 			return err
 		}
 		timer := time.NewTimer(min(10*time.Second, time.Until(deadline)))

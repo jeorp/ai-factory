@@ -8,8 +8,22 @@ import { busy, type Session } from '../types';
 export const useWorkspace = defineStore('workspace', () => {
  const sessions = ref<Session[]>([]); const current = ref<Session | null>(null); const connected = ref(false); const progress = ref(''); const error = ref(''); const reconnecting = ref(false); const traceId = ref('');
  let socket: WebSocket | undefined; let generation = 0; let retry: ReturnType<typeof setTimeout> | undefined; let attempts = 0;
+ let ciRetry: ReturnType<typeof setTimeout> | undefined;
+ function canContinueCI() {
+  const s = current.value; const impl = s?.implementation;
+  return connected.value && s?.runKind === 'implement' && ['ci_wait', 'auth_wait'].includes(s.state) && impl?.status === 'checking_ci' && impl.ci?.state === 'pending' && impl.ci.commit === impl.commit;
+ }
+ function continueCI() {
+  clearTimeout(ciRetry);
+  if (!canContinueCI()) return;
+  const epoch = generation;
+  ciRetry = setTimeout(() => {
+   if (epoch !== generation || !canContinueCI()) return;
+   send('resume');
+  }, 10000);
+ }
  async function refresh() { sessions.value = await api<Session[]>('/sessions'); }
- function disconnect(clear = false) { generation++; clearTimeout(retry); socket?.close(); socket = undefined; connected.value = false; reconnecting.value = false; if (clear) { clearKey(); current.value = null; } }
+ function disconnect(clear = false) { generation++; clearTimeout(retry); clearTimeout(ciRetry); socket?.close(); socket = undefined; connected.value = false; reconnecting.value = false; if (clear) { clearKey(); current.value = null; } }
  function normalize(session: Session) {
   session.messages ||= []; session.sources ||= []; session.limitations ||= [];
   if (session.implementation) { session.implementation.changes ||= []; session.implementation.unverified ||= []; }
@@ -31,14 +45,14 @@ export const useWorkspace = defineStore('workspace', () => {
    ws.onmessage = event => {
     if (epoch !== generation) return;
     const value = JSON.parse(event.data);
-    if (value.type === 'session') { update(value.data); connected.value = true; reconnecting.value = false; attempts = 0; }
+    if (value.type === 'session') { update(value.data); connected.value = true; reconnecting.value = false; attempts = 0; continueCI(); }
     if (value.type === 'progress' && busy(current.value)) progress.value = value.data;
     if (value.type === 'trace') traceId.value = value.data.traceId;
     if (value.type === 'ended') disconnect(true);
     if (value.type === 'error') { error.value = value.data.error; if (value.data.error === 'login_required') { disconnect(true); } }
    };
    ws.onclose = () => {
-    if (epoch !== generation) return; connected.value = false; reconnecting.value = true;
+    if (epoch !== generation) return; clearTimeout(ciRetry); connected.value = false; reconnecting.value = true;
     progress.value = '接続が切れました。処理を停止し、保存済みの会話へ再接続しています。';
     const delay = Math.min(30000, 1000 * 2 ** attempts++); retry = setTimeout(() => void connect(epoch), delay);
    };
@@ -47,8 +61,10 @@ export const useWorkspace = defineStore('workspace', () => {
  }
  function send(type: string, text = '', id = crypto.randomUUID(), unverifiedIndex?: number, extra: Record<string, string | number> = {}) {
   if (!connected.value || socket?.readyState !== WebSocket.OPEN) throw new Error('connection_required');
+  clearTimeout(ciRetry);
   // Publishing writes saved changes and never needs the AI key.
-  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...extra, ...(['message', 'resume', 'review', 'investigate', 'implement', 'implement_approve', 'implement_amend', 'implement_fix_ci', 'implement_verify'].includes(type) ? credentials() : {}) }));
+  const withoutAIResume = type === 'resume' && current.value?.runKind === 'implement' && ['publishing', 'checking_ci'].includes(current.value.implementation?.status || '');
+  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...extra, ...(!withoutAIResume && ['message', 'resume', 'review', 'investigate', 'implement', 'implement_approve', 'implement_amend', 'implement_fix_ci', 'implement_verify'].includes(type) ? credentials() : {}) }));
   error.value = '';
  }
  async function remove(id: string) {

@@ -209,7 +209,7 @@ func TestImplementationFlowFromChatToDraftPR(t *testing.T) {
 		t.Fatal(err)
 	}
 	impl = session.Implementation
-	if impl.Status != "published" || impl.PullNumber != 9 || len(writer.published) != 1 || !strings.Contains(last.Answer, "pull/9") {
+	if impl.Status != "published" || impl.PullNumber != 9 || len(writer.published) != 1 || !strings.Contains(last.Answer, "/commit/"+impl.Commit+"/checks") {
 		t.Fatalf("not published: %+v", impl)
 	}
 	req := writer.published[0]
