@@ -355,6 +355,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
 // maxAIKeyBytes caps API keys. Vertex AI takes a Google OAuth access token,
 // which Google allows to grow up to 2048 bytes (for example with service
 // account impersonation), so its cap is larger.
