@@ -76,3 +76,25 @@ func TestVertexClaudeConfig(t *testing.T) {
 		t.Fatal("expected non-Claude model to be rejected")
 	}
 }
+
+func TestGeminiAndVertexTogether(t *testing.T) {
+	setLocalGeminiEnv(t)
+	t.Setenv("AI_PROVIDER", "gemini,vertex")
+	t.Setenv("GEMINI_MODELS", "gemini-3.8-flash")
+	t.Setenv("CLAUDE_MODELS", "claude-haiku-5-5")
+	t.Setenv("VERTEX_PROJECT_ID", "my-project-123")
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"gemini-3.8-flash", "claude-haiku-5-5"}; !reflect.DeepEqual(c.Models, want) || c.AIProvider != "gemini" {
+		t.Fatalf("unexpected models: %v %s", c.Models, c.AIProvider)
+	}
+	if c.ModelProviders["gemini-3.8-flash"] != "gemini" || c.ModelProviders["claude-haiku-5-5"] != "vertex" {
+		t.Fatalf("unexpected model providers: %v", c.ModelProviders)
+	}
+	t.Setenv("AI_PROVIDER", "gemini,demo")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected demo to be rejected in a provider list")
+	}
+}

@@ -67,7 +67,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) { reply(w, 200, map[string]bool{"ok": true}) })
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
-		reply(w, 200, map[string]any{"demo": s.Config.Demo, "aiProvider": s.Config.AIProvider, "models": s.Config.Models, "installUrl": "https://github.com/apps/" + s.Config.AppSlug + "/installations/new", "reviewPolicy": map[string]any{"maxFiles": agent.ReviewMaxFiles, "diffTokens": agent.ReviewDiffTokens, "inputTokens": agent.ReviewInputTokens, "inputBytes": agent.ReviewInputBytes, "maxCalls": agent.ReviewMaxCalls, "maxMinutes": int(agent.ReviewRunDuration.Minutes()), "runInputTokens": agent.ReviewRunInputTokens, "runOutputTokens": agent.ReviewRunOutputTokens}})
+		reply(w, 200, map[string]any{"demo": s.Config.Demo, "aiProvider": s.Config.AIProvider, "models": s.Config.Models, "modelProviders": s.Config.ModelProviders, "installUrl": "https://github.com/apps/" + s.Config.AppSlug + "/installations/new", "reviewPolicy": map[string]any{"maxFiles": agent.ReviewMaxFiles, "diffTokens": agent.ReviewDiffTokens, "inputTokens": agent.ReviewInputTokens, "inputBytes": agent.ReviewInputBytes, "maxCalls": agent.ReviewMaxCalls, "maxMinutes": int(agent.ReviewRunDuration.Minutes()), "runInputTokens": agent.ReviewRunInputTokens, "runOutputTokens": agent.ReviewRunOutputTokens}})
 	})
 	mux.HandleFunc("GET /auth/github", s.login)
 	mux.HandleFunc("GET /auth/callback", s.callback)

@@ -40,8 +40,11 @@ const repositories = ref<Repository[]>([]); const repositoryChoice = ref(''); co
 const target = computed(() => repositoryChoice.value === '__manual__' ? manualTarget.value.trim() : repositoryChoice.value);
 
 // AI key and composer.
-const keys = useApiKey({ provider: () => config.value.aiProvider, sessionId: () => current.value?.id, onError: message => { appError.value = message; } });
-const canUseAI = computed(() => config.value.aiProvider === 'demo' || keys.valid);
+// With several providers configured, the key belongs to the provider of the open session's model.
+const aiProvider = computed(() => config.value.modelProviders?.[current.value?.model || model.value] || config.value.aiProvider);
+const keys = useApiKey({ provider: () => aiProvider.value, sessionId: () => current.value?.id, onError: message => { appError.value = message; } });
+watch(aiProvider, (now, before) => { if (before && now !== before) { keys.discard(); keys.resetForm(); } });
+const canUseAI = computed(() => aiProvider.value === 'demo' || keys.valid);
 const canRun = computed(() => work.connected && canUseAI.value);
 const text = ref(''); const mode = ref<ComposerMode>('message'); const fixPull = ref('');
 const canSend = computed(() => !!text.value.trim() && work.connected && (mode.value === 'instruction' || (!running.value && canUseAI.value)));
@@ -146,7 +149,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
    <div v-else class="conversation-layout" :class="{ 'details-hidden': !showDetails && !openedFile, 'code-open': !!openedFile }">
     <section class="conversation">
      <div class="conversation-header"><div><span class="section-caption">GITHUB SESSION</span><h2><Icon name="folder" :size="19" />{{ current.target.repository }}</h2></div><div><span class="session-state" :class="{ pulse: running }">{{ states[current.state] }}</span><button class="plain-button" @click="end">終了</button></div></div>
-     <ApiKeyCard v-if="config.aiProvider !== 'demo' && !keys.valid" :provider="config.aiProvider" :keys="keys" />
+     <ApiKeyCard v-if="aiProvider !== 'demo' && !keys.valid" :provider="aiProvider" :keys="keys" />
      <div ref="transcript" class="transcript" role="log" aria-label="会話履歴" aria-live="polite">
       <div v-if="!current.messages.length && !current.review" class="chat-empty"><span class="assistant-mark"><Icon name="grid" :size="24" /></span><h2>何から読み解きましょう？</h2><p>PRを取得したあと、「このPRをレビューして」と続けて依頼できます。</p><div class="suggestions"><button v-for="hint in hints" :key="hint" @click="text = hint">{{ hint }}<Icon name="chevron" :size="14" /></button></div></div>
       <template v-for="entry in timeline" :key="`${current.id}:${entry.key}`">
@@ -162,7 +165,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
     <aside v-if="openedFile" ref="codePanel" class="code-panel" aria-label="コードパネル" tabindex="-1">
      <CodeViewer :key="fileKey(openedFile)" :file="openedFile" panel @close="closeFile" />
     </aside>
-    <SessionContextPanel v-else-if="showDetails" v-model:delete-id="deleteID" :session="current" :provider="config.aiProvider" :review-policy="reviewPolicy" @remove="removeSession" />
+    <SessionContextPanel v-else-if="showDetails" v-model:delete-id="deleteID" :session="current" :provider="aiProvider" :review-policy="reviewPolicy" @remove="removeSession" />
    </div>
   </main>
  </div>
