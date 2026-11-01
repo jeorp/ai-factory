@@ -143,6 +143,11 @@ func (run *implementRun) verify(ctx context.Context) error {
 			result.Unverified = append(result.Unverified, "計画にあるが変更されなかったファイル: "+f.Path)
 		}
 	}
+	// Preserve the full path set for the cross-batch review after parts are consumed.
+	verificationPaths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		verificationPaths = append(verificationPaths, part.Path)
+	}
 	summaries := []string{}
 	reads := 0
 	evidenceRevision := 0
@@ -160,6 +165,20 @@ func (run *implementRun) verify(ctx context.Context) error {
 			}
 			task := implementTask{Mode: "verify", Request: impl.Request, Plan: impl.Plan, Done: impl.Changes, Declined: impl.Declined, ReadBudget: implementVerifyReads - reads, FinalAnswer: reads >= implementVerifyReads || invalid >= 2, Step: len(summaries) + 1, Attempt: attempt, RetryCount: retries, Correction: correction}
 			payload := map[string]any{"implementTask": task, "stage": stage, "parts": batch, "evidence": ev, "priorVerification": result, "editUnverified": impl.Unverified}
+			knowledgePaths := []string{}
+			if stage == "cross" {
+				knowledgePaths = append(knowledgePaths, verificationPaths...)
+			} else {
+				for _, part := range batch {
+					knowledgePaths = append(knowledgePaths, part.Path)
+				}
+			}
+			for p := range readPaths {
+				knowledgePaths = append(knowledgePaths, p)
+			}
+			if knowledge := knowledgeForVerification(knowledgePaths); knowledge != nil {
+				payload["verificationKnowledge"] = knowledge
+			}
 			if stage == "cross" {
 				payload["summaries"] = summaries
 			}
