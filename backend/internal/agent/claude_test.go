@@ -56,8 +56,8 @@ func TestClaudeVertexWireContract(t *testing.T) {
 		}
 		return claudeStream(`{"intent":{"goal":"構成理解","investigation":"README確認","response":"役割を説明"},"answer":"ok","summary":"summary","read":null}`, "end_turn")
 	})
-	p := ClaudeVertex{HTTP: client, Endpoint: "https://example.test/", Project: "my-project"}
-	d, usage, err := p.Next(context.Background(), "ya29.test-token", "claude-haiku-5-5", "input")
+	p := Claude{HTTP: client, Endpoint: "https://example.test/", Vertex: true, Project: "my-project"}
+	d, usage, err := p.Next(context.Background(), "ya29.test-token", "vertex/claude-haiku-5-5", "input")
 	if err != nil || d.Answer != "ok" || usage.InputTokens != 10 || usage.OutputTokens != 6 {
 		t.Fatalf("unexpected result: %+v %+v %v", d, usage, err)
 	}
@@ -72,8 +72,8 @@ func TestClaudeVertexRejectsIncompleteRefusedAndInvalidOutput(t *testing.T) {
 		{`{"answer":"","summary":"","read":{"kind":"write","path":"","number":0,"detail":"summary"}}`, "end_turn", ""},
 	} {
 		client := claudeClient(t, 200, func(r *http.Request) string { return claudeStream(tc.text, tc.stop) })
-		p := ClaudeVertex{HTTP: client, Endpoint: "https://example.test/", Project: "my-project"}
-		_, _, err := p.Next(context.Background(), "ya29.test-token", "claude-haiku-5-5", "input")
+		p := Claude{HTTP: client, Endpoint: "https://example.test/", Vertex: true, Project: "my-project"}
+		_, _, err := p.Next(context.Background(), "ya29.test-token", "vertex/claude-haiku-5-5", "input")
 		if err == nil || (tc.want != "" && err.Error() != tc.want) {
 			t.Fatalf("stop %s: got %v, want %s", tc.stop, err, tc.want)
 		}
@@ -85,9 +85,37 @@ func TestClaudeVertexMapsHTTPErrorsWithoutDetails(t *testing.T) {
 		client := claudeClient(t, status, func(r *http.Request) string {
 			return fmt.Sprintf(`{"error":{"code":%d,"message":"secret project detail"}}`, status)
 		})
-		p := ClaudeVertex{HTTP: client, Endpoint: "https://example.test/", Project: "my-project"}
-		_, _, err := p.Next(context.Background(), "ya29.test-token", "claude-haiku-5-5", "input")
+		p := Claude{HTTP: client, Endpoint: "https://example.test/", Vertex: true, Project: "my-project"}
+		_, _, err := p.Next(context.Background(), "ya29.test-token", "vertex/claude-haiku-5-5", "input")
 		if err == nil || err.Error() != want {
+			t.Fatalf("status %d: got %v, want %s", status, err, want)
+		}
+	}
+}
+
+func TestClaudeAPIWireContract(t *testing.T) {
+	client := claudeClient(t, 200, func(r *http.Request) string {
+		if r.Header.Get("X-Api-Key") != "sk-ant-test" || r.Header.Get("Authorization") != "" {
+			t.Error("incorrect authentication")
+		}
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		var body map[string]any
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body["model"] != "claude-haiku-5-5" || body["stream"] != true {
+			t.Fatalf("unexpected request: %v", body)
+		}
+		return claudeStream(`{"intent":{"goal":"g","investigation":"i","response":"r"},"answer":"ok","summary":"s","read":null}`, "end_turn")
+	})
+	p := Claude{HTTP: client, Endpoint: "https://example.test/"}
+	d, _, err := p.Next(context.Background(), "sk-ant-test", "claude-haiku-5-5", "input")
+	if err != nil || d.Answer != "ok" {
+		t.Fatalf("unexpected result: %+v %v", d, err)
+	}
+	for status, want := range map[int]string{401: "anthropic_key_invalid", 403: "anthropic_permission_denied", 429: "anthropic_rate_limited", 404: "claude_http_404"} {
+		client := claudeClient(t, status, func(r *http.Request) string { return `{"type":"error","error":{"type":"x","message":"secret"}}` })
+		p := Claude{HTTP: client, Endpoint: "https://example.test/"}
+		if _, _, err := p.Next(context.Background(), "sk-ant-test", "claude-haiku-5-5", "input"); err == nil || err.Error() != want {
 			t.Fatalf("status %d: got %v, want %s", status, err, want)
 		}
 	}

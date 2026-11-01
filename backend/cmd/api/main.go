@@ -51,7 +51,9 @@ func main() {
 			providers[name] = &agent.Gemini{HTTP: client}
 		case "vertex":
 			// The SDK's own client has no overall timeout; the run deadline bounds streamed answers.
-			providers[name] = &agent.ClaudeVertex{Project: c.VertexProject, Region: c.VertexRegion}
+			providers[name] = &agent.Claude{Vertex: true, Project: c.VertexProject, Region: c.VertexRegion}
+		case "anthropic":
+			providers[name] = &agent.Claude{}
 		}
 	}
 	ai := agent.ModelRouter{Providers: providers, ModelProviders: c.ModelProviders}

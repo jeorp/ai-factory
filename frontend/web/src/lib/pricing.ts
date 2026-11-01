@@ -6,6 +6,11 @@ const rates: Record<string, Record<string, { input: number; output: number; url:
   'gpt-5-mini': { input: 0.25, output: 2, url: 'https://developers.openai.com/api/docs/models/gpt-5-mini' },
   'gpt-5-mini-2025-08-07': { input: 0.25, output: 2, url: 'https://developers.openai.com/api/docs/models/gpt-5-mini' },
  },
+ // Claude API first-party rates for prompts up to 100K tokens (Haiku 5.5 doubles beyond that).
+ anthropic: {
+  'claude-haiku-5-5': { input: 0.1, output: 0.5, url: 'https://platform.claude.com/docs/en/about-claude/pricing' },
+  'claude-sonnet-5-5': { input: 2, output: 10, url: 'https://platform.claude.com/docs/en/about-claude/pricing' },
+ },
  // Gemini rates use the <=200k-token prompt tier. Some Flash and Gemini 4 rates are
  // scheduled to rise (3.6/3.8 Flash on 2027-01-01, Gemini 4 Argon on 2026-12-01); update then.
  gemini: {

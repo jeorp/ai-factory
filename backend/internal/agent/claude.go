@@ -16,21 +16,27 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// ClaudeVertex calls Claude through Vertex AI in the operator's GCP project.
-// The user supplies a short-lived Google OAuth access token for each run
+// Claude calls the Claude API with the user's Anthropic API key, or, with
+// Vertex set, Claude on Vertex AI in the operator's GCP project. On Vertex AI
+// the user supplies a short-lived Google OAuth access token for each run
 // (gcloud auth print-access-token), so the server holds no Google credentials.
-type ClaudeVertex struct {
+type Claude struct {
 	HTTP     *http.Client
 	Endpoint string
+	Vertex   bool
 	Project  string
 	Region   string
 }
+
+// VertexModelPrefix marks Vertex AI models in the model allowlist so the same
+// Claude model can be offered through both the Claude API and Vertex AI.
+const VertexModelPrefix = "vertex/"
 
 // claudeThinkingHeadroom is added to max_tokens because thinking tokens count
 // toward that limit on current Claude models, where thinking is on by default.
 const claudeThinkingHeadroom = 8192
 
-func (p *ClaudeVertex) Next(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+func (p *Claude) Next(ctx context.Context, key, model, input string) (Decision, Usage, error) {
 	if len(input) > aiInputLimit(input) {
 		return Decision{}, Usage{}, errors.New("ai_input_limit")
 	}
@@ -53,7 +59,7 @@ func (p *ClaudeVertex) Next(ctx context.Context, key, model, input string) (Deci
 		maxOutput = ImplementOutputToks
 	}
 	params := anthropic.MessageNewParams{
-		Model:        anthropic.Model(model),
+		Model:        anthropic.Model(strings.TrimPrefix(model, VertexModelPrefix)),
 		MaxTokens:    int64(maxOutput + claudeThinkingHeadroom),
 		System:       []anthropic.TextBlockParam{{Text: instructions}},
 		Messages:     []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(input))},
@@ -62,16 +68,21 @@ func (p *ClaudeVertex) Next(ctx context.Context, key, model, input string) (Deci
 	if body, err := json.Marshal(params); err != nil || len(body) > aiRequestLimit(input) {
 		return Decision{}, Usage{}, errors.New("ai_request_limit")
 	}
-	region := p.Region
-	if region == "" {
-		region = "global"
-	}
-	creds := &google.Credentials{ProjectID: p.Project, TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: key, TokenType: "Bearer"})}
 	opts := []option.RequestOption{}
 	if p.HTTP != nil {
 		opts = append(opts, option.WithHTTPClient(p.HTTP))
 	}
-	opts = append(opts, vertex.WithCredentials(ctx, region, p.Project, creds))
+	if p.Vertex {
+		region := p.Region
+		if region == "" {
+			region = "global"
+		}
+		creds := &google.Credentials{ProjectID: p.Project, TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: key, TokenType: "Bearer"})}
+		opts = append(opts, vertex.WithCredentials(ctx, region, p.Project, creds))
+	} else {
+		// Only the user's key is used; environment credentials never apply.
+		opts = append(opts, option.WithoutEnvironmentDefaults(), option.WithAPIKey(key))
+	}
 	if p.Endpoint != "" {
 		opts = append(opts, option.WithBaseURL(p.Endpoint))
 	}
@@ -86,7 +97,7 @@ func (p *ClaudeVertex) Next(ctx context.Context, key, model, input string) (Deci
 	}
 	usage := Usage{InputTokens: int(message.Usage.InputTokens + message.Usage.CacheReadInputTokens + message.Usage.CacheCreationInputTokens), OutputTokens: int(message.Usage.OutputTokens)}
 	if err := stream.Err(); err != nil {
-		return Decision{}, usage, claudeError(err)
+		return Decision{}, usage, claudeError(err, p.Vertex)
 	}
 	switch message.StopReason {
 	case anthropic.StopReasonEndTurn:
@@ -140,12 +151,24 @@ func (p *ClaudeVertex) Next(ctx context.Context, key, model, input string) (Deci
 }
 
 // Only return fixed error codes. Never expose Google's or Anthropic's error message.
-func claudeError(err error) error {
+func claudeError(err error, onVertex bool) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	var apierr *anthropic.Error
 	if errors.As(err, &apierr) {
+		if !onVertex {
+			slog.Info("claude_api_error", "http_status", apierr.StatusCode)
+			switch apierr.StatusCode {
+			case http.StatusUnauthorized:
+				return errors.New("anthropic_key_invalid")
+			case http.StatusForbidden:
+				return errors.New("anthropic_permission_denied")
+			case http.StatusTooManyRequests:
+				return errors.New("anthropic_rate_limited")
+			}
+			return fmt.Errorf("claude_http_%d", apierr.StatusCode)
+		}
 		// Google's status and reason are fixed enums (no request data), so they
 		// are safe to log and explain auth failures that share one HTTP status.
 		var body struct {

@@ -24,6 +24,13 @@
 - 401はトークン失効（`claude_token_invalid`）、404はモデル未Enableまたはリージョン・モデル名の誤り（`claude_model_unavailable`）として表示する。
 - Vertex AIのClaude料金はGoogleの料金表に従う。料金表示には未登録のため、費用は推定しない。
 
+## Anthropic APIで直接Claude
+
+`.env` に `AI_PROVIDER=anthropic`（併用する場合は `AI_PROVIDER=gemini,vertex,anthropic`）を設定し、Composeを再ビルドして起動する。Anthropic Consoleで発行したAPIキー（`sk-ant-…`）を画面から入力する。モデルは `ANTHROPIC_MODELS`（既定 `claude-haiku-5-5,claude-sonnet-5-5`）。
+
+- Vertex AIと併用すると同じClaudeモデルが両方に並ぶため、Vertex AIのモデルは `vertex/` を付けたID（例 `vertex/claude-haiku-5-5`）で区別する。画面では「（Vertex AI）」「（Anthropic API）」と表示する。
+- 料金表示はClaude APIの単価（100kトークン以下）で推定する。
+
 # 開発・実接続
 
 ## 実データを読む

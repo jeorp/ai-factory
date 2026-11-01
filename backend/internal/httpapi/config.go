@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"ai-factory/backend/internal/agent"
 )
 
 type Config struct {
@@ -26,8 +28,10 @@ type Config struct {
 // unset. The first entry is selected by default in the UI.
 var DefaultGeminiModels = []string{"gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-pro-preview"}
 
-// DefaultClaudeModels lists the Claude models on Vertex AI offered when
-// CLAUDE_MODELS is unset. The first entry is selected by default in the UI.
+// DefaultClaudeModels lists the Claude models offered when CLAUDE_MODELS
+// (Vertex AI) or ANTHROPIC_MODELS (Claude API) is unset. The first entry is
+// selected by default in the UI. Vertex AI models are offered with
+// agent.VertexModelPrefix so both providers can serve the same model.
 var DefaultClaudeModels = []string{"claude-haiku-5-5", "claude-sonnet-5-5"}
 
 // splitModels parses a comma-separated allowlist, ignoring spaces around entries.
@@ -73,6 +77,11 @@ func LoadConfig() (Config, error) {
 			if value := os.Getenv("GEMINI_MODELS"); value != "" {
 				models = splitModels(value)
 			}
+		case "anthropic":
+			models = DefaultClaudeModels
+			if value := os.Getenv("ANTHROPIC_MODELS"); value != "" {
+				models = splitModels(value)
+			}
 		case "vertex":
 			models = DefaultClaudeModels
 			if value := os.Getenv("CLAUDE_MODELS"); value != "" {
@@ -95,8 +104,11 @@ func LoadConfig() (Config, error) {
 			if provider == "gemini" && !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`).MatchString(model) {
 				return c, errors.New("invalid Gemini model allowlist")
 			}
-			if provider == "vertex" && !regexp.MustCompile(`^claude-[a-z0-9.-]+(@[0-9]{8})?$`).MatchString(model) {
+			if (provider == "vertex" || provider == "anthropic") && !regexp.MustCompile(`^claude-[a-z0-9.-]+(@[0-9]{8})?$`).MatchString(model) {
 				return c, errors.New("invalid Claude model allowlist")
+			}
+			if provider == "vertex" {
+				model = agent.VertexModelPrefix + model
 			}
 			if strings.TrimSpace(model) != model || model == "" {
 				return c, errors.New("invalid model allowlist")
