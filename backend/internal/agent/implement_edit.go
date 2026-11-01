@@ -119,14 +119,23 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 		return nil, err
 	}
 	ev := []evidence{}
+	if impl.ExpectedHead != "" && impl.PullNumber > 0 {
+		var ciErr error
+		run.ciEvidence, ciErr = run.collectCIFailureLogs(ctx, impl.PullNumber)
+		if err := run.requireCIEvidence(ctx, ciErr); err != nil {
+			return nil, err
+		}
+	}
 	reads := 0
 	correction := ""
 	retries := 0
+	invalidResponses := 0
+	editFormat := ""
 	var pending []domain.PendingFile
 	var rejected []string
 	for call := 0; call < ImplementStepCalls; call++ {
 		final := reads >= ImplementStepReads || call == ImplementStepCalls-1
-		task := implementTask{Mode: "edit", Request: impl.Request, BaseBranch: impl.BaseBranch, Plan: impl.Plan, Step: impl.NextStep + 1, TotalSteps: len(impl.Steps), Files: files, Done: impl.Changes, Declined: impl.Declined, ReadBudget: ImplementStepReads - reads, FinalAnswer: final, Correction: correction, Attempt: call + 1, RetryCount: retries, RepairFeedback: impl.RepairFeedback}
+		task := implementTask{Mode: "edit", Request: impl.Request, BaseBranch: impl.BaseBranch, Plan: impl.Plan, Step: impl.NextStep + 1, TotalSteps: len(impl.Steps), Files: editTaskFiles(files, editFormat), Done: impl.Changes, Declined: impl.Declined, ReadBudget: ImplementStepReads - reads, FinalAnswer: final, Correction: correction, Attempt: call + 1, RetryCount: retries, RepairFeedback: impl.RepairFeedback, EditFormat: editFormat}
 		d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev, "context": related, "previousChanges": previous})
 		// Shed the optional context before splitting the step.
 		// The request never reached the model, so shedding does not use up a
@@ -159,9 +168,20 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 			return nil, nil
 		}
 		if err != nil {
+			message, retry, saveErr := run.retryInvalidResponse(ctx, "edit", call+1, &invalidResponses, &retries, err)
+			if saveErr != nil {
+				return nil, saveErr
+			}
+			if retry {
+				correction = message
+				continue
+			}
+		}
+		if err != nil {
 			return nil, err
 		}
 		correction = ""
+		invalidResponses = 0
 		if d.Read != nil && !final {
 			reads++
 			if err := run.read(ctx, *d.Read, &ev, stepEvidenceKept); err != nil {
@@ -175,12 +195,26 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 			continue
 		}
 		changes, err := applyProposals(step, impl, originals, d.Implementation.Changes)
+		if len(d.Implementation.Changes) == 0 && len(d.Implementation.AdditionalFiles) == 0 && len(d.Implementation.Unverified) > 0 {
+			for _, reason := range d.Implementation.Unverified {
+				impl.Unverified = appendUnique(impl.Unverified, domain.Clip(reason, 512))
+			}
+			if err := run.save(ctx, "変更を作成できなかった理由を保存しました"); err != nil {
+				return nil, err
+			}
+			return nil, errors.New("implementation_edit_blocked")
+		}
 		if err == nil && (len(changes) > 0 || len(d.Implementation.AdditionalFiles) == 0) {
 			err = domain.ValidateChangeSet(changes, approved)
 		}
 		if err != nil {
 			run.retry("edit", call+1, &retries, err)
-			correction = "前回の変更は適用できませんでした: " + err.Error() + "。searchは元ファイル内で一意に一致する原文をそのまま指定し、計画どおりのpathとactionだけを返してください。計画外のファイルも変更が必要ならchangesに入れず、additionalFilesで提案してください。"
+			correction = run.editFailureCorrection(step, err, &editFormat)
+			if editFormat == lineRangeFormat && call < ImplementStepCalls-1 {
+				if err := run.save(ctx, "原文の行範囲を指定する方式で編集を再試行しています"); err != nil {
+					return nil, err
+				}
+			}
 			continue
 		}
 		pending, rejected, err = run.checkAdditions(ctx, d.Implementation.AdditionalFiles)

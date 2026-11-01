@@ -94,9 +94,13 @@ func (f implementProviderFunc) Next(ctx context.Context, key, model, input strin
 	}
 	_ = json.Unmarshal([]byte(input), &body)
 	if body.Task.Mode == "verify" {
-		return Decision{Summary: "確認済み", Verification: &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}}}, Usage{}, nil
+		return Decision{Summary: "確認済み", Verification: passedVerification(body.Task.Plan)}, Usage{}, nil
 	}
-	return providerFunc(f).Next(ctx, key, model, input)
+	d, u, err := providerFunc(f).Next(ctx, key, model, input)
+	if d.Plan != nil && len(d.Plan.AcceptanceCriteria) == 0 && len(d.Plan.Files) > 0 {
+		d.Plan.AcceptanceCriteria = testCriteria(d.Plan.Files[0].Path)
+	}
+	return d, u, err
 }
 
 func implementTaskOf(t *testing.T, input string) implementTask {
@@ -123,12 +127,12 @@ func TestImplementationFlowFromChatToDraftPR(t *testing.T) {
 			if !strings.Contains(input, `"evidence":[{`) {
 				return Decision{Read: &github.Read{Kind: "file", Path: "src/a.go", Detail: "summary"}}, Usage{}, nil
 			}
-			return Decision{Summary: "a.goを確認", Plan: &domain.ImplementationPlan{Summary: "Aの戻り値を変更\n詳細", Files: []domain.PlannedFile{
+			return Decision{Summary: "a.goを確認", Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "Aの戻り値を変更\n詳細", Files: []domain.PlannedFile{
 				{Path: "src/a.go", Action: "update", Approach: "1を2に"}, {Path: "src/b.go", Action: "create", Approach: "Bを追加"}, {Path: "src/old.go", Action: "delete", Approach: "不要"},
 			}, Tests: []string{"go test"}}}, Usage{}, nil
 		case "edit":
 			editCalls++
-			if len(task.Files) != 3 || task.Files[0].Original == "" {
+			if len(task.Files) != 3 || (task.Files[0].Original == "" && task.Files[0].NumberedOriginal == "") {
 				t.Fatalf("step files: %+v", task.Files)
 			}
 			if editCalls == 1 {
@@ -139,7 +143,7 @@ func TestImplementationFlowFromChatToDraftPR(t *testing.T) {
 				t.Fatal("correction not sent after failed edit")
 			}
 			return Decision{Summary: "変更済み", Implementation: &ImplementResult{Changes: []ChangeProposal{
-				{Path: "src/a.go", Action: "update", Edits: []domain.Edit{{Search: "return 1", Replace: "return 2"}}},
+				{Path: "src/a.go", Action: "update", SourceHash: task.Files[0].SourceHash, LineEdits: []domain.LineEdit{{StartLine: 3, EndLine: 3, ExpectedStart: "func A() int { return 1 }", ExpectedEnd: "func A() int { return 1 }", Content: "func A() int { return 2 }"}}},
 				{Path: "src/b.go", Action: "create", Content: "package src\n\nfunc B() {}\n"},
 				{Path: "src/old.go", Action: "delete"},
 			}, Unverified: []string{"CIでテストを確認"}}}, Usage{}, nil
@@ -148,6 +152,9 @@ func TestImplementationFlowFromChatToDraftPR(t *testing.T) {
 		return Decision{}, Usage{}, nil
 	})
 	reader := readerFunc(func(ctx context.Context, token string, target domain.Target, read github.Read) (string, domain.Source, int, error) {
+		if read.Kind == "check_runs" && target.Commit == strings.Repeat("d", 40) {
+			return `{"check_runs":[]}`, domain.Source{}, 0, nil
+		}
 		if target.Commit != implBase {
 			t.Fatalf("read not pinned to base: %+v", target)
 		}
@@ -159,6 +166,9 @@ func TestImplementationFlowFromChatToDraftPR(t *testing.T) {
 	session.ID = "Session_ABC123"
 	var last Checkpoint
 	save := func(cp Checkpoint) error {
+		if cp.Implementation != nil && cp.Implementation.Status == "checking_ci" && cp.Answer != "" {
+			t.Fatal("CI polling emitted a premature/repeated final answer")
+		}
 		last = cp
 		if cp.Implementation != nil {
 			session.Implementation = cp.Implementation
@@ -227,7 +237,7 @@ func TestFollowUpIncorporatesCIFailureLogs(t *testing.T) {
 	})
 	reader := readerFunc(func(ctx context.Context, token string, target domain.Target, read github.Read) (string, domain.Source, int, error) {
 		if read.Kind == "check_runs" {
-			return `{"check_runs":[{"id":42,"name":"test-job","conclusion":"failure"}]}`, domain.Source{Label: "checks", URL: "https://github.com/a/b/pull/9/checks"}, 50, nil
+			return `{"check_runs":[{"id":42,"job_id":42,"name":"test-job","conclusion":"failure"}]}`, domain.Source{Label: "checks", URL: "https://github.com/a/b/pull/9/checks"}, 50, nil
 		}
 		if read.Kind == "job_log" && read.Number == 42 {
 			return "FAIL: TestSomethingFailed", domain.Source{Label: "job", URL: "https://github.com/a/b/actions/jobs/42"}, 30, nil
@@ -257,7 +267,7 @@ func TestFollowUpIncorporatesCIFailureLogs(t *testing.T) {
 }
 
 func TestImplementationRejectsUnplannedChanges(t *testing.T) {
-	impl := &domain.Implementation{Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "a.go", Action: "update"}, {Path: "b.go", Action: "create"}}}}
+	impl := &domain.Implementation{Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Files: []domain.PlannedFile{{Path: "a.go", Action: "update"}, {Path: "b.go", Action: "create"}}}}
 	originals := map[string]string{"a.go": "x := 1\n"}
 	cases := [][]ChangeProposal{
 		{{Path: "c.go", Action: "create", Content: "x"}},
@@ -283,7 +293,7 @@ func TestImplementationStopsWhenChangeCannotBeStored(t *testing.T) {
 	})
 	session := baseSession()
 	session.RunKind = "implement"
-	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/old.go"}}}, Plan: &domain.ImplementationPlan{Summary: "x", Files: []domain.PlannedFile{{Path: "src/old.go", Action: "delete", Approach: "x"}}}}
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/old.go"}}}, Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "x", Files: []domain.PlannedFile{{Path: "src/old.go", Action: "delete", Approach: "x"}}}}
 	var last Checkpoint
 	err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil })
 	if err == nil || (last.Implementation != nil && last.Implementation.NextStep != 0) {
@@ -378,7 +388,7 @@ func TestFollowUpOnClosedPRStartsNewBranch(t *testing.T) {
 		if task := implementTaskOf(t, input); task.FollowUp {
 			t.Fatal("closed PR still treated as follow-up")
 		}
-		return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
+		return Decision{Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
 	})
 	session := baseSession()
 	session.RunKind = "implement"
@@ -413,7 +423,7 @@ func TestImplementationStopsWhenTotalSizeExceeded(t *testing.T) {
 	}
 	session := baseSession()
 	session.RunKind = "implement"
-	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: steps, Plan: &domain.ImplementationPlan{Summary: "s", Files: files}}
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: steps, Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: files}}
 	err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(Checkpoint) error { return nil })
 	if err == nil || err.Error() != "change_set_size_limit" || len(writer.cache) != 3 {
 		t.Fatalf("total size not enforced during editing: %v stored=%d", err, len(writer.cache))
@@ -427,11 +437,11 @@ func TestPlanWithMissingPathIsCorrectedBeforeApproval(t *testing.T) {
 		task := implementTaskOf(t, input)
 		if task.Correction != "" {
 			corrections = append(corrections, task.Correction)
-			return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
+			return Decision{Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
 		}
 		// A guessed path that does not exist at the base commit, and a create
 		// for a file that already exists.
-		return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "frontend/src/App.vue", Action: "update", Approach: "x"}, {Path: "src/old.go", Action: "create", Approach: "x"}}}}, Usage{}, nil
+		return Decision{Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "frontend/src/App.vue", Action: "update", Approach: "x"}, {Path: "src/old.go", Action: "create", Approach: "x"}}}}, Usage{}, nil
 	})
 	session := baseSession()
 	session.RunKind = "implement"
@@ -463,7 +473,7 @@ func TestImplementationPassesFileListContextAndEarlierDiffs(t *testing.T) {
 			if !strings.Contains(input, `"evidence":[{`) {
 				return Decision{Read: &github.Read{Kind: "file", Path: "src/types.go", Detail: "summary"}}, Usage{}, nil
 			}
-			return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}, {Path: "lib/b.go", Action: "create", Approach: "y"}}}}, Usage{}, nil
+			return Decision{Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}, {Path: "lib/b.go", Action: "create", Approach: "y"}}}}, Usage{}, nil
 		case "edit":
 			stepInputs = append(stepInputs, input)
 			if task.Files[0].Path == "src/a.go" {
@@ -522,7 +532,7 @@ func planOnly(t *testing.T, writer *fakeWriter, ai Provider) *domain.Implementat
 }
 
 func simplePlan() *domain.ImplementationPlan {
-	return &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}
+	return &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}
 }
 
 func TestPlanGoesOnWhenFileListCannotBeRead(t *testing.T) {
@@ -633,14 +643,20 @@ func TestFixRequestForExistingPRPushesToItsBranch(t *testing.T) {
 			if !task.FollowUp {
 				t.Fatal("fix request not treated as a follow-up")
 			}
-			return Decision{Plan: &domain.ImplementationPlan{Summary: "fix", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
+			return Decision{Plan: &domain.ImplementationPlan{AcceptanceCriteria: []domain.AcceptanceCriterion{{ID: "return", Requirement: "A returns 2", Paths: []string{"src/a.go"}, Checks: []string{"test return value"}, FailureRefs: []string{"42:L1"}}}, Summary: "fix", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
 		case "edit":
 			return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "src/a.go", Action: "update", Edits: []domain.Edit{{Search: "return 1", Replace: "return 2"}}}}}}, Usage{}, nil
 		}
 		return Decision{}, Usage{}, errors.New("unexpected mode")
 	})
 	reader := readerFunc(func(ctx context.Context, token string, target domain.Target, read github.Read) (string, domain.Source, int, error) {
-		return `{"check_runs":[]}`, domain.Source{Label: "checks", URL: "https://github.com/a/b/pull/7/checks"}, 10, nil
+		if read.Kind == "job_log" {
+			return "[failure L1] FAIL A expected 2 got 1", domain.Source{}, 32, nil
+		}
+		if target.Commit == implBase {
+			return `{"check_runs":[{"name":"backend","status":"completed","conclusion":"failure","job_id":42}]}`, domain.Source{}, 64, nil
+		}
+		return `{"check_runs":[{"name":"backend","status":"completed","conclusion":"success","head_sha":"` + target.Commit + `"}]}`, domain.Source{}, 64, nil
 	})
 	runner := &Runner{AI: ai, GitHub: reader, Writer: writer}
 	session := baseSession()
@@ -679,7 +695,7 @@ func TestFollowUpOnMovedPRBuildsOnNewHead(t *testing.T) {
 	writer := newFakeWriter()
 	writer.moved = implBase
 	ai := implementProviderFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
-		return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
+		return Decision{Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
 	})
 	session := baseSession()
 	session.RunKind = "implement"
@@ -716,9 +732,9 @@ func TestPlanGapReviewAsksOnceAboutRelatedFiles(t *testing.T) {
 		task := implementTaskOf(t, input)
 		if task.Correction != "" {
 			corrections = append(corrections, task.Correction)
-			return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}, {Path: "src/a_test.go", Action: "update", Approach: "test"}}}}, Usage{}, nil
+			return Decision{Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}, {Path: "src/a_test.go", Action: "update", Approach: "test"}}}}, Usage{}, nil
 		}
-		return Decision{Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
+		return Decision{Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}, Usage{}, nil
 	})
 	session := baseSession()
 	session.RunKind = "implement"
@@ -755,7 +771,7 @@ func TestEditCanAskToAddAFileAndContinueAfterApproval(t *testing.T) {
 	})
 	session := baseSession()
 	session.RunKind = "implement"
-	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}, Changes: []domain.ChangeSummary{}}
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}, Changes: []domain.ChangeSummary{}}
 	runner := &Runner{AI: ai, Writer: writer}
 	var last Checkpoint
 	run := func() {
@@ -790,7 +806,7 @@ func TestDeclinedAdditionIsNotProposedAgain(t *testing.T) {
 	})
 	session := baseSession()
 	session.RunKind = "implement"
-	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}, Changes: []domain.ChangeSummary{}}
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}, Changes: []domain.ChangeSummary{}}
 	runner := &Runner{AI: ai, Writer: writer}
 	var last Checkpoint
 	if err := runner.Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
@@ -837,7 +853,7 @@ func TestAmendmentEditsDependenciesBeforeRemainingFiles(t *testing.T) {
 	})
 	session := baseSession()
 	session.RunKind = "implement"
-	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go", "src/b.go"}}}, Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}, {Path: "src/b.go", Action: "update", Approach: "x"}}}}
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go", "src/b.go"}}}, Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}, {Path: "src/b.go", Action: "update", Approach: "x"}}}}
 	runner := &Runner{AI: ai, Writer: writer}
 	var last Checkpoint
 	run := func() {
@@ -877,7 +893,7 @@ func TestInvalidAdditionWithoutChangesRetriesStep(t *testing.T) {
 	})
 	session := baseSession()
 	session.RunKind = "implement"
-	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}
 	var last Checkpoint
 	if err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
 		t.Fatal(err)
@@ -885,4 +901,19 @@ func TestInvalidAdditionWithoutChangesRetriesStep(t *testing.T) {
 	if calls != 2 || last.Implementation.Status != "ready" || len(last.Implementation.Changes) != 1 {
 		t.Fatalf("step was not retried: calls=%d impl=%+v", calls, last.Implementation)
 	}
+}
+
+// Ordinary workflow fixtures have one observable condition. Tests dedicated to
+// coverage use raw providers to exercise missing/unmet/unverified results.
+func testCriteria(path string) []domain.AcceptanceCriterion {
+	return []domain.AcceptanceCriterion{{ID: "behavior", Requirement: "requested behavior", Paths: []string{path}, Checks: []string{"check the requested behavior"}}}
+}
+func passedVerification(plan *domain.ImplementationPlan) *domain.ImplementationVerification {
+	v := &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}}
+	if plan != nil {
+		for _, c := range plan.AcceptanceCriteria {
+			v.Criteria = append(v.Criteria, domain.CriterionResult{ID: c.ID, Status: "met", Evidence: "fixture code implements requested behavior", Paths: c.Paths})
+		}
+	}
+	return v
 }

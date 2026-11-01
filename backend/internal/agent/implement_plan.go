@@ -82,14 +82,18 @@ func (run *implementRun) plan(ctx context.Context) error {
 	}
 	ev := []evidence{}
 	if impl.ExpectedHead != "" && impl.PullNumber > 0 {
-		ciEv := run.collectCIFailureLogs(ctx, impl.PullNumber)
+		ciEv, ciErr := run.collectCIFailureLogs(ctx, impl.PullNumber)
+		if err := run.requireCIEvidence(ctx, ciErr); err != nil {
+			return err
+		}
 		if len(ciEv) > 0 {
-			ev = append(ev, ciEv...)
+			run.ciEvidence = ciEv
 		}
 	}
 	reads := 0
 	correction := ""
 	retries := 0
+	invalidResponses := 0
 	gapReviewed := false
 	for call := 0; call < ImplementPlanCalls; call++ {
 		final := reads >= ImplementPlanReads || call == ImplementPlanCalls-1
@@ -108,9 +112,20 @@ func (run *implementRun) plan(ctx context.Context) error {
 			continue
 		}
 		if err != nil {
+			message, retry, saveErr := run.retryInvalidResponse(ctx, "plan", call+1, &invalidResponses, &retries, err)
+			if saveErr != nil {
+				return saveErr
+			}
+			if retry {
+				correction = message
+				continue
+			}
+		}
+		if err != nil {
 			return err
 		}
 		correction = ""
+		invalidResponses = 0
 		if d.Search != nil && !final {
 			reads++
 			if err := run.search(ctx, *d.Search, &ev); err != nil {
@@ -148,11 +163,32 @@ func (run *implementRun) plan(ctx context.Context) error {
 		}
 		plan, work, err := run.mergeDraftPlan(d.Plan)
 		if err == nil {
+			known := map[string]int{}
+			for index, c := range plan.AcceptanceCriteria {
+				known[c.ID] = index
+			}
+			for _, c := range impl.RequiredCriteria {
+				if index, ok := known[c.ID]; ok {
+					// A CI-only repair cannot redefine the original behavior to
+					// make its tests easier to pass.
+					plan.AcceptanceCriteria[index].Requirement = c.Requirement
+				} else {
+					plan.AcceptanceCriteria = append(plan.AcceptanceCriteria, c)
+				}
+			}
+		}
+		if err == nil {
 			err = domain.ValidatePlan(plan)
+		}
+		if err == nil && len(plan.AcceptanceCriteria) == 0 {
+			err = errors.New("invalid_acceptance_criteria")
+		}
+		if err == nil {
+			err = run.validateCIPlanCoverage(plan)
 		}
 		if err != nil {
 			run.retry("plan", call+1, &retries, err)
-			correction = "計画が無効です: " + err.Error() + "。変更対象は20ファイル以内、.github/workflows・バイナリ・ロックファイルは対象外です。dependsOnは計画内の別ファイルだけを重複なく指定し、循環する変更は5ファイル以内にしてください。作成済みファイルのactionはdraftPlanのものを維持してください。"
+			correction = "計画が無効です: " + err.Error() + "。acceptanceCriteriaに依頼全体を分解したid・requirement・paths・checksを必ず含めてください。変更対象は20ファイル以内、.github/workflows・バイナリ・ロックファイルは対象外です。dependsOnは計画内の別ファイルだけを重複なく指定し、循環する変更は5ファイル以内にしてください。作成済みファイルのactionはdraftPlanのものを維持してください。"
 			continue
 		}
 		problems, err := run.checkPlanPaths(ctx, plan)
@@ -214,48 +250,95 @@ func (run *implementRun) checkPlanPaths(ctx context.Context, plan *domain.Implem
 	return problems, nil
 }
 
-func (run *implementRun) collectCIFailureLogs(ctx context.Context, pullNumber int) []evidence {
+func (run *implementRun) collectCIFailureLogs(ctx context.Context, pullNumber int) ([]evidence, error) {
 	if run.r.GitHub == nil {
-		return nil
+		return nil, ciReadError(nil)
 	}
 	checkRead := github.Read{Kind: "check_runs", Number: pullNumber}
-	raw, source, _, err := run.r.GitHub.Read(ctx, run.in.GitHubToken, run.target(), checkRead)
+	run.cp.Metrics.ToolCalls++
+	raw, source, fetched, err := run.r.GitHub.Read(ctx, run.in.GitHubToken, run.target(), checkRead)
+	run.cp.Metrics.FetchedBytes += fetched
 	if err != nil {
 		run.logger.Info("implement_ci_check_runs_failed", "error_code", implementationErrorCode(err))
-		return nil
+		return []evidence{{Read: checkRead, Content: "CIのチェック結果を取得できませんでした。原因は未確認です。根拠のない修正をしないでください。"}}, ciReadError(err)
 	}
 	var checksResult struct {
+		Truncated bool `json:"truncated"`
 		CheckRuns []struct {
 			ID         int64  `json:"id"`
+			JobID      int    `json:"job_id"`
 			Name       string `json:"name"`
 			Status     string `json:"status"`
 			Conclusion string `json:"conclusion"`
+			Output     struct {
+				Summary string `json:"summary"`
+				Text    string `json:"text"`
+			} `json:"output"`
 		} `json:"check_runs"`
 	}
 	var out []evidence
-	out = append(out, evidence{Read: checkRead, Content: domain.MaskSecrets(domain.Clip(raw, 8000))})
+	out = append(out, evidence{Read: checkRead, Content: domain.MaskSecrets(raw)})
 	if !containsSource(run.cp.Sources, source.URL) {
 		run.cp.Sources = append(run.cp.Sources, source)
 	}
 	if json.Unmarshal([]byte(raw), &checksResult) != nil {
-		return out
+		return out, ciReadError(nil)
+	}
+	if checksResult.Truncated {
+		return out, errors.New("implementation_ci_incomplete")
 	}
 	failedJobs := 0
+	hasFailureEvidence := false
+	var logErr error
+	pendingChecks := false
 	for _, cr := range checksResult.CheckRuns {
-		if cr.Conclusion == "failure" || cr.Conclusion == "timed_out" {
+		if cr.Status != "" && cr.Status != "completed" {
+			pendingChecks = true
+		}
+		if ciFailedConclusion(cr.Conclusion) {
 			failedJobs++
-			if failedJobs > 3 {
-				break
+			hasFailureEvidence = hasFailureEvidence || strings.TrimSpace(cr.Output.Summary+cr.Output.Text) != ""
+			if cr.JobID < 1 {
+				continue
 			}
-			jobRead := github.Read{Kind: "job_log", Number: int(cr.ID)}
-			logContent, jobSource, _, jobErr := run.r.GitHub.Read(ctx, run.in.GitHubToken, run.target(), jobRead)
+			jobRead := github.Read{Kind: "job_log", Number: cr.JobID}
+			run.cp.Metrics.ToolCalls++
+			logContent, jobSource, fetched, jobErr := run.r.GitHub.Read(ctx, run.in.GitHubToken, run.target(), jobRead)
+			run.cp.Metrics.FetchedBytes += fetched
 			if jobErr == nil {
-				out = append(out, evidence{Read: jobRead, Content: fmt.Sprintf("Job %s (#%d) 失敗ログ末尾:\n%s", cr.Name, cr.ID, logContent)})
+				hasFailureEvidence = hasFailureEvidence || strings.TrimSpace(logContent) != ""
+				out = append(out, evidence{Read: jobRead, Content: fmt.Sprintf("Job %s (#%d) 失敗項目と周辺行:\n%s", cr.Name, cr.JobID, domain.MaskSecrets(logContent))})
+				if strings.Contains(logContent, "[INCOMPLETE:") {
+					logErr = errors.New("implementation_ci_incomplete")
+				}
 				if !containsSource(run.cp.Sources, jobSource.URL) {
 					run.cp.Sources = append(run.cp.Sources, jobSource)
 				}
+			} else {
+				logErr = jobErr
+				run.logger.Info("implement_ci_job_log_failed", "error_code", implementationErrorCode(jobErr))
+				out = append(out, evidence{Read: jobRead, Content: "CIの失敗ジョブのログを取得できませんでした。原因は未確認です。"})
 			}
 		}
 	}
-	return out
+	if pendingChecks {
+		return out, errors.New("implementation_ci_pending")
+	}
+	if failedJobs == 0 && (run.impl.CIRepair || implementationNeedsCI(run.impl.Request)) {
+		return out, errors.New("implementation_ci_not_failed")
+	}
+	bytes := 0
+	for _, item := range out {
+		bytes += len(item.Content)
+	}
+	if bytes > 48000 {
+		return nil, errors.New("implementation_ci_incomplete")
+	}
+	if logErr != nil {
+		return out, ciReadError(logErr)
+	}
+	if failedJobs > 0 && !hasFailureEvidence {
+		return out, ciReadError(logErr)
+	}
+	return out, nil
 }

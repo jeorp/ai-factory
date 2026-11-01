@@ -2,20 +2,23 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { api } from '../lib/auth';
 import { lineDiff, type DiffLine } from '../lib/lineDiff';
+import { implementationInterrupted, implementationStatus } from '../lib/implementationStatus';
 import type { Implementation } from '../types';
 
-const props = defineProps<{ sessionId: string; repository: string; implementation: Implementation; running: boolean; canRun: boolean; connected: boolean }>();
-const emit = defineEmits<{ approve: []; amend: [boolean]; publish: [{ branch: string; title: string; body: string }] }>();
+const props = defineProps<{ sessionId: string; repository: string; implementation: Implementation; sessionState: string; running: boolean; canRun: boolean; connected: boolean }>();
+const emit = defineEmits<{ approve: []; resume: []; checkCi: []; fixCi: []; verify: []; amend: [boolean]; publish: [{ branch: string; title: string; body: string }] }>();
 const impl = computed(() => props.implementation);
 const labels = { create: '追加', update: '変更', delete: '削除' } as const;
-const statusLabels: Record<Implementation['status'], string> = { planning: '計画を作成中', plan_ready: '計画の承認待ち', editing: '変更を作成中', verifying: '変更全体の整合性を確認中', amend_ready: '追加ファイルの承認待ち', ready: 'PR作成の確認待ち', publishing: 'PRを作成中', published: 'PR作成済み' };
+const interrupted = computed(() => implementationInterrupted(impl.value, props.sessionState));
+const statusLabel = computed(() => implementationStatus(impl.value, props.sessionState));
 const branch = ref(''); const title = ref(''); const body = ref(''); const confirmed = ref(false);
 watch(() => [impl.value.status, impl.value.version, impl.value.branch, impl.value.title] as const, () => {
  branch.value = impl.value.branch || ''; title.value = impl.value.title || ''; body.value = (impl.value.body || '').slice(0, 12000); confirmed.value = false;
 }, { immediate: true });
 const followUp = computed(() => !!impl.value.expectedHead);
 const branchValid = computed(() => /^ai-factory\/[a-z0-9][a-z0-9._-]{0,62}(\/[a-z0-9][a-z0-9._-]{0,62})?$/.test(branch.value) && !branch.value.includes('..') && !branch.value.endsWith('.lock'));
-const canPublish = computed(() => props.connected && !props.running && confirmed.value && branchValid.value && !!title.value.trim() && title.value.length <= 256 && new TextEncoder().encode(body.value).length <= 12000 && (impl.value.status === 'ready' || impl.value.status === 'publishing'));
+const verificationComplete = computed(() => !!impl.value.plan?.acceptanceCriteria?.length && !!impl.value.verification && !impl.value.verification.issues.length && !impl.value.verification.unverified.length && impl.value.plan.acceptanceCriteria.every(c => impl.value.verification?.criteria?.some(r => r.id===c.id && r.status==='met' && !!r.evidence.trim() && !!r.paths.length)));
+const canPublish = computed(() => (impl.value.status==='publishing' || verificationComplete.value) && props.connected && !props.running && confirmed.value && branchValid.value && !!title.value.trim() && title.value.length <= 256 && new TextEncoder().encode(body.value).length <= 12000 && (impl.value.status === 'ready' || impl.value.status === 'publishing'));
 const progress = computed(() => impl.value.steps?.length ? `${Math.min(impl.value.nextStep, impl.value.steps.length)} / ${impl.value.steps.length} 区切り` : '');
 
 type Change = { original: string; content: string; lines: DiffLine[] };
@@ -42,7 +45,13 @@ onUnmounted(() => { active = false; controller.abort(); });
 
 <template>
  <section class="implementation" aria-label="実装とPR作成">
-  <header><strong>実装とPR作成</strong><span class="impl-status">{{ impl.status === 'plan_ready' && (!impl.plan || impl.clarification) ? '依頼内容の確認待ち' : statusLabels[impl.status] || impl.status }}<template v-if="impl.status === 'editing' && progress"> · {{ progress }}</template></span></header>
+  <header><strong>実装とPR作成</strong><span class="impl-status">{{ statusLabel }}<template v-if="impl.status === 'editing' && progress"> · {{ progress }}</template></span></header>
+  <div v-if="interrupted" class="impl-amend" role="status">
+   <p>処理は中断しています。保存済みの計画や変更を引き継いで再開できます。</p>
+   <p v-if="!connected">再接続が完了してから再開してください。</p>
+   <p v-else-if="!canRun && impl.status!=='checking_ci'">画面上部でAPIキーを接続してから再開してください。</p>
+   <button class="primary-button" :disabled="running || !connected || (!canRun && impl.status!=='checking_ci')" @click="emit('resume')">保存済みの状態から再開</button>
+  </div>
   <p class="impl-request">{{ impl.request }}</p>
   <p v-if="impl.baseCommit" class="impl-base">ベース <code>{{ impl.baseBranch }}</code> <code>{{ impl.baseCommit.slice(0, 12) }}</code><template v-if="followUp"> · 作成済みのブランチ <code>{{ impl.branch }}</code> に追加コミット</template></p>
 
@@ -51,6 +60,7 @@ onUnmounted(() => { active = false; controller.abort(); });
   <p v-if="impl.repairRound">整合性確認に基づく修正: {{ impl.repairRound }} / 2 回</p>
   <template v-if="impl.plan">
    <h3>実装計画</h3>
+   <details v-if="impl.plan.acceptanceCriteria?.length" open><summary>受け入れ条件</summary><ol><li v-for="c in impl.plan.acceptanceCriteria" :key="c.id"><strong>{{ c.id }}: {{ c.requirement }}</strong><p>確認するコード: {{ c.paths.join('、') }}</p><p v-for="check in c.checks" :key="check">{{ check }}</p><p v-if="c.failureRefs?.length">対応するCI失敗: {{ c.failureRefs.join('、') }}</p></li></ol></details>
    <p class="impl-summary">{{ impl.plan.summary }}</p>
    <ul class="impl-files"><li v-for="file in impl.plan.files" :key="file.path"><code>{{ file.path }}</code><span class="impl-action" :class="file.action">{{ labels[file.action] }}</span><p>{{ file.approach }}</p><p v-if="file.dependsOn?.length">依存する変更: {{ file.dependsOn.join('、') }}</p></li></ul>
    <details v-if="impl.steps?.length"><summary>実装順（{{ impl.steps.length }} 区切り）</summary><ol><li v-for="(step, i) in impl.steps" :key="i">{{ step.files.join('、') }}</li></ol><p>相互に依存するファイルは同じ区切りで変更します。</p></details>
@@ -83,15 +93,19 @@ onUnmounted(() => { active = false; controller.abort(); });
      <div v-else-if="diffs[change.path]" class="patch-scroll" tabindex="0" role="region" :aria-label="`${change.path} の差分`"><pre><span v-for="(line, i) in diffs[change.path].lines" :key="i" :class="line.kind"><i>{{ line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' ' }}</i>{{ line.text }}</span></pre></div>
     </template>
    </div>
-   <details v-if="impl.unverified.length" open><summary>未確認事項 {{ impl.unverified.length }} 件</summary><ul><li v-for="(u, i) in impl.unverified" :key="i">{{ u }}</li></ul></details>
+
   </template>
+
+  <details v-if="impl.unverified.length" open><summary>未確認事項 {{ impl.unverified.length }} 件</summary><ul><li v-for="(u, i) in impl.unverified" :key="i">{{ u }}</li></ul></details>
 
   <section v-if="impl.verification" aria-label="AIによる整合性確認">
    <h3>AIによる整合性確認</h3>
-   <p v-if="!impl.verification.issues.length">確認した範囲で不整合の指摘はありません。</p>
+   <p v-if="!impl.verification.issues.length && !impl.verification.unverified.length && impl.status!=='verification_blocked'">確認した範囲で不整合の指摘はありません。</p>
    <ul v-else><li v-for="(issue, i) in impl.verification.issues" :key="i">{{ issue }}</li></ul>
    <details v-if="impl.verification.unverified.length" open><summary>確認できなかった点</summary><ul><li v-for="(item, i) in impl.verification.unverified" :key="i">{{ item }}</li></ul></details>
-   <p>コードを読み直した結果です。ビルド・テストは実行していません。</p>
+   <ul v-if="impl.verification.criteria?.length"><li v-for="c in impl.verification.criteria" :key="c.id">{{ c.id }}: {{ { met: 'コードで確認', unmet: '未達', unverified: '未確認' }[c.status] }} — {{ c.evidence }}</li></ul>
+   <p>コードを読み直した結果です。実行結果はGitHub CIの欄で確認できます。</p>
+   <div v-if="impl.status==='verification_blocked'" class="impl-amend" role="status"><p>要求の達成を確認できていないため公開を止めています。チャットで追加修正を依頼するか、関連コードを再調査してください。</p><button class="plain-button" :disabled="running || !canRun" @click="emit('verify')">未確認事項を再調査</button></div>
   </section>
 
   <form v-if="impl.status === 'ready' || impl.status === 'publishing'" class="impl-publish" @submit.prevent="canPublish && emit('publish', { branch, title: title.trim(), body })">
@@ -101,11 +115,16 @@ onUnmounted(() => { active = false; controller.abort(); });
    <label>{{ followUp ? 'コミットメッセージ' : 'PRタイトル' }}<input v-model="title" maxlength="256" /></label>
    <label v-if="!followUp">PR本文<textarea v-model="body" rows="8" maxlength="12000" /></label>
    <label class="consent"><input v-model="confirmed" type="checkbox" />差分を確認しました。{{ repository }} に新しいブランチを作成し、{{ followUp ? '追加コミットします' : 'Draft PRを作成します' }}。</label>
-   <p>アプリ内ではコードやテストを実行していません。作成後に対象リポジトリのCI結果を確認してください。完了したGitHubへの書き込みは自動では取り消されません。</p>
+   <p>アプリ内ではコードやテストを実行していません。作成後は対象コミットのGitHub CIを最大5分待ち、結果を表示します。未完了ならCIを再確認できます。完了したGitHubへの書き込みは自動では取り消されません。</p>
    <button class="primary-button" :disabled="!canPublish">{{ impl.status === 'publishing' ? 'PRの作成を再試行' : followUp ? '追加コミットを作成' : 'Draft PRを作成' }}</button>
   </form>
 
-  <p v-if="impl.status === 'published' && impl.pullUrl" class="impl-done">作成済み: <a :href="safeLink(impl.pullUrl)" target="_blank" rel="noopener noreferrer">PR #{{ impl.pullNumber }}</a> · ブランチ <code>{{ impl.branch }}</code>。追加の修正はチャットで依頼すると、このブランチに追加コミットできます。</p>
+  <section v-if="impl.ci" aria-label="GitHub CIの実行結果">
+   <h3>GitHub CI</h3><p>対象コミット: <code>{{ impl.ci.commit.slice(0,12) }}</code> · {{ { pending: '未完了・チェック待ち', passed: '取得したチェックはすべて成功', failed: '失敗・修正が必要', unverified: '成功を確認できていません' }[impl.ci.state] }}</p>
+   <ul><li v-for="(check,i) in impl.ci.checks" :key="i">{{ check.name }}: {{ check.conclusion || check.status }}</li></ul><p v-for="item in impl.ci.unverified" :key="item">{{ item }}</p>
+   <div v-if="impl.status==='published'" class="impl-actions"><button class="plain-button" :disabled="running || !connected" @click="emit('checkCi')">CIを再確認</button><button v-if="impl.ci.state==='failed'" class="primary-button" :disabled="running || !canRun" @click="emit('fixCi')">CIの失敗を修正</button></div>
+  </section>
+  <p v-if="(impl.status === 'published' || impl.status === 'checking_ci') && impl.pullUrl" class="impl-done">作成済み: <a :href="safeLink(impl.pullUrl)" target="_blank" rel="noopener noreferrer">PR #{{ impl.pullNumber }}</a> · ブランチ <code>{{ impl.branch }}</code>。追加の修正はチャットで依頼すると、このブランチに追加コミットできます。</p>
  </section>
 </template>
 

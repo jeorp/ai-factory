@@ -3,7 +3,7 @@ import { ref } from 'vue';
 import { auth, api } from '../lib/auth';
 import { clearKey, credentials } from '../lib/keyVault';
 import { clearFiles } from '../lib/fileCache';
-import type { Session } from '../types';
+import { busy, type Session } from '../types';
 
 export const useWorkspace = defineStore('workspace', () => {
  const sessions = ref<Session[]>([]); const current = ref<Session | null>(null); const connected = ref(false); const progress = ref(''); const error = ref(''); const reconnecting = ref(false); const traceId = ref('');
@@ -16,9 +16,9 @@ export const useWorkspace = defineStore('workspace', () => {
   if (session.review) { session.review.steps ||= []; session.review.findings ||= []; session.review.unverified ||= []; for (const step of session.review.steps) step.files ||= []; }
   return session;
  }
- function update(session: Session) { current.value = normalize(session); const i = sessions.value.findIndex(s => s.id === session.id); if (i >= 0) sessions.value[i] = session; else sessions.value.unshift(session); }
+ function update(session: Session) { if (!busy(session)) progress.value = ''; current.value = normalize(session); const i = sessions.value.findIndex(s => s.id === session.id); if (i >= 0) sessions.value[i] = session; else sessions.value.unshift(session); }
  async function open(session: Session) {
-  if (current.value?.id !== session.id) { clearKey(); traceId.value = ''; } disconnect(); attempts = 0; error.value = '';
+  if (current.value?.id !== session.id) { clearKey(); traceId.value = ''; } disconnect(); attempts = 0; error.value = ''; progress.value = '';
   const epoch = generation;
   const full = await api<Session>(`/sessions/${session.id}`); if (epoch !== generation) return;
   current.value = normalize(full); await connect(epoch);
@@ -32,7 +32,7 @@ export const useWorkspace = defineStore('workspace', () => {
     if (epoch !== generation) return;
     const value = JSON.parse(event.data);
     if (value.type === 'session') { update(value.data); connected.value = true; reconnecting.value = false; attempts = 0; }
-    if (value.type === 'progress') progress.value = value.data;
+    if (value.type === 'progress' && busy(current.value)) progress.value = value.data;
     if (value.type === 'trace') traceId.value = value.data.traceId;
     if (value.type === 'ended') disconnect(true);
     if (value.type === 'error') { error.value = value.data.error; if (value.data.error === 'login_required') { disconnect(true); } }
@@ -48,7 +48,7 @@ export const useWorkspace = defineStore('workspace', () => {
  function send(type: string, text = '', id = crypto.randomUUID(), unverifiedIndex?: number, extra: Record<string, string | number> = {}) {
   if (!connected.value || socket?.readyState !== WebSocket.OPEN) throw new Error('connection_required');
   // Publishing writes saved changes and never needs the AI key.
-  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...extra, ...(['message', 'resume', 'review', 'investigate', 'implement', 'implement_approve', 'implement_amend'].includes(type) ? credentials() : {}) }));
+  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...extra, ...(['message', 'resume', 'review', 'investigate', 'implement', 'implement_approve', 'implement_amend', 'implement_fix_ci', 'implement_verify'].includes(type) ? credentials() : {}) }));
   error.value = '';
  }
  async function remove(id: string) {

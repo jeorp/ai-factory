@@ -45,6 +45,16 @@ func (run *implementRun) mergeDraftPlan(proposed *domain.ImplementationPlan) (*d
 	}
 	merged := *proposed
 	merged.Files = append([]domain.PlannedFile{}, proposed.Files...)
+	merged.AcceptanceCriteria = append([]domain.AcceptanceCriterion{}, proposed.AcceptanceCriteria...)
+	criteria := map[string]bool{}
+	for _, c := range proposed.AcceptanceCriteria {
+		criteria[c.ID] = true
+	}
+	for _, c := range run.impl.Plan.AcceptanceCriteria {
+		if !criteria[c.ID] {
+			merged.AcceptanceCriteria = append(merged.AcceptanceCriteria, c)
+		}
+	}
 	requested := map[string]bool{}
 	old := map[string]domain.PlannedFile{}
 	changed := map[string]bool{}

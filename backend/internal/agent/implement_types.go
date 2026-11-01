@@ -33,10 +33,12 @@ type ImplementRequest struct {
 // search/replace edits against the original; Content replaces the whole file
 // only for creates or when no edits are given.
 type ChangeProposal struct {
-	Path    string        `json:"path"`
-	Action  string        `json:"action"`
-	Content string        `json:"content"`
-	Edits   []domain.Edit `json:"edits"`
+	Path       string            `json:"path"`
+	Action     string            `json:"action"`
+	Content    string            `json:"content"`
+	Edits      []domain.Edit     `json:"edits"`
+	SourceHash string            `json:"sourceHash"`
+	LineEdits  []domain.LineEdit `json:"lineEdits"`
 }
 
 type ImplementResult struct {
@@ -67,10 +69,12 @@ const (
 )
 
 type implementFile struct {
-	Path     string `json:"path"`
-	Action   string `json:"action"`
-	Approach string `json:"approach"`
-	Original string `json:"original,omitempty"`
+	Path             string `json:"path"`
+	Action           string `json:"action"`
+	Approach         string `json:"approach"`
+	Original         string `json:"original,omitempty"`
+	NumberedOriginal string `json:"numberedOriginal,omitempty"`
+	SourceHash       string `json:"sourceHash,omitempty"`
 }
 
 type implementTask struct {
@@ -90,4 +94,5 @@ type implementTask struct {
 	Attempt        int                        `json:"-"`
 	RetryCount     int                        `json:"-"`
 	RepairFeedback string                     `json:"repairFeedback,omitempty"`
+	EditFormat     string                     `json:"editFormat,omitempty"`
 }

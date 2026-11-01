@@ -8,6 +8,14 @@ import (
 	"ai-factory/backend/internal/domain"
 )
 
+type proposalEditError struct {
+	path string
+	err  error
+}
+
+func (e *proposalEditError) Error() string { return fmt.Sprintf("%s: %v", e.path, e.err) }
+func (e *proposalEditError) Unwrap() error { return e.err }
+
 // savedChange is the single expiry boundary for generated content. Callers
 // must not fall back to repository contents when the saved change is gone.
 func (run *implementRun) savedChange(ctx context.Context, path string) (domain.FileChange, error) {
@@ -38,6 +46,9 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 		if p.Action != impl.PlannedAction(p.Path) {
 			return nil, errors.New("change_action_not_planned")
 		}
+		if p.Action != "update" && len(p.LineEdits) > 0 {
+			return nil, errors.New("update_format_conflict")
+		}
 		switch p.Action {
 		case "delete":
 			out = append(out, domain.FileChange{Path: p.Path, Action: "delete"})
@@ -48,10 +59,21 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 			out = append(out, domain.FileChange{Path: p.Path, Action: "create", Content: p.Content})
 		case "update":
 			content := p.Content
-			if len(p.Edits) > 0 {
+			if len(p.LineEdits) > 0 {
+				if len(p.Edits) > 0 || p.Content != "" {
+					return nil, errors.New("update_format_conflict")
+				}
+				if p.SourceHash != domain.SourceHash(originals[p.Path]) {
+					return nil, errors.New("edit_source_mismatch")
+				}
+				var err error
+				if content, err = domain.ApplyLineEdits(originals[p.Path], p.LineEdits); err != nil {
+					return nil, &proposalEditError{path: p.Path, err: err}
+				}
+			} else if len(p.Edits) > 0 {
 				var err error
 				if content, err = domain.ApplyEdits(originals[p.Path], p.Edits); err != nil {
-					return nil, fmt.Errorf("%s: %w", p.Path, err)
+					return nil, &proposalEditError{path: p.Path, err: err}
 				}
 			} else if content == "" {
 				return nil, errors.New("update_requires_edits")

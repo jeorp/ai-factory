@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,34 @@ import (
 	firebase "firebase.google.com/go/v4"
 	"github.com/gorilla/websocket"
 )
+
+type implementationRecoveryAI struct {
+	invalid        atomic.Bool
+	rejected       atomic.Int32
+	verifyComplete atomic.Bool
+}
+
+func (p *implementationRecoveryAI) Next(ctx context.Context, key, model, input string) (agent.Decision, agent.Usage, error) {
+	var body struct {
+		Task *struct {
+			Mode string                     `json:"mode"`
+			Plan *domain.ImplementationPlan `json:"plan"`
+		} `json:"implementTask"`
+	}
+	_ = json.Unmarshal([]byte(input), &body)
+	if body.Task != nil && body.Task.Mode == "verify" && p.verifyComplete.Load() {
+		v := &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}}
+		for _, c := range body.Task.Plan.AcceptanceCriteria {
+			v.Criteria = append(v.Criteria, domain.CriterionResult{ID: c.ID, Status: "met", Evidence: "統合テスト用の検証結果", Paths: c.Paths})
+		}
+		return agent.Decision{Summary: "統合テストの整合性確認", Verification: v}, agent.Usage{}, nil
+	}
+	if body.Task != nil && body.Task.Mode == "plan" && p.invalid.Load() {
+		p.rejected.Add(1)
+		return agent.Decision{}, agent.Usage{}, errors.New("invalid_implementation_result")
+	}
+	return (agent.Demo{}).Next(ctx, key, model, input)
+}
 
 // Exercises plan → approval → changes → diff → publish over the real
 // WebSocket with Firestore, using the fixed demo AI and demo GitHub writes.
@@ -44,7 +74,8 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 	gh := &github.Client{Demo: true, Cache: &github.FirestoreReadCache{DB: db}}
 	storage := &store.Store{DB: db}
 	cfg := Config{Local: true, AIProvider: "demo", Project: project, Origin: "http://app.test", Models: []string{"gpt-5-mini"}, CookieKey: []byte(strings.Repeat("a", 32))}
-	api := New(cfg, auth, storage, gh, &agent.Runner{AI: agent.Demo{}, GitHub: gh, Writer: gh}, http.DefaultClient)
+	ai := &implementationRecoveryAI{}
+	api := New(cfg, auth, storage, gh, &agent.Runner{AI: ai, GitHub: gh, Writer: gh}, http.DefaultClient)
 	srv := httptest.NewServer(api.Handler())
 	defer srv.Close()
 
@@ -155,7 +186,15 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 		t.Fatal("publish accepted without changes")
 	}
 
+	ai.invalid.Store(true)
 	ws.WriteJSON(command{Type: "message", ID: randomID(), Text: "READMEに説明を追加して"})
+	failed, _ := wait(func(s domain.Session) bool { return s.State == "failed" }, "")
+	wait(func(domain.Session) bool { return false }, "invalid_implementation_result")
+	if ai.rejected.Load() != 3 || failed.RunKind != "implement" || failed.Implementation == nil || failed.Implementation.Status != "planning" || len(failed.Implementation.Changes) != 0 || failed.Limitations[len(failed.Limitations)-1] != "invalid_implementation_result" {
+		t.Fatalf("invalid response did not stop safely: %+v", failed)
+	}
+	ai.invalid.Store(false)
+	ws.WriteJSON(command{Type: "resume"})
 	planned, _ := wait(func(s domain.Session) bool {
 		return s.State == "done" && s.Implementation != nil && s.Implementation.Status == "plan_ready"
 	}, "")
@@ -167,12 +206,23 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 		t.Fatal("cache id exposed to the browser")
 	}
 
-	ready := sendWhenIdle(command{Type: "implement_approve"}, func(s domain.Session) bool {
+	blocked := sendWhenIdle(command{Type: "implement_approve"}, func(s domain.Session) bool {
+		return s.State == "user_wait" && s.Implementation != nil && s.Implementation.Status == "verification_blocked"
+	})
+	if blocked.Implementation.Verification == nil || len(blocked.Implementation.Verification.Unverified) == 0 {
+		t.Fatal("demo uncertainty was hidden")
+	}
+	ws.WriteJSON(command{Type: "implement_publish", Branch: "ai-factory/blocked", Title: "blocked"})
+	if _, e := wait(func(domain.Session) bool { return false }, "implementation_not_ready"); e == "" {
+		t.Fatal("unverified code published")
+	}
+	ai.verifyComplete.Store(true)
+	ready := sendWhenIdle(command{Type: "implement_verify"}, func(s domain.Session) bool {
 		return s.State == "done" && s.Implementation != nil && s.Implementation.Status == "ready"
 	})
 	impl := ready.Implementation
-	if impl.Verification == nil || len(impl.Verification.Unverified) == 0 {
-		t.Fatalf("verification result missing from websocket: %+v", impl)
+	if impl.Verification == nil || !impl.CanPublish() {
+		t.Fatalf("completed verification missing from websocket: %+v", impl)
 	}
 	if len(impl.Changes) != 1 || impl.Changes[0].Path != "README.md" || !strings.HasPrefix(impl.Branch, "ai-factory/") {
 		t.Fatalf("changes: %+v", impl)

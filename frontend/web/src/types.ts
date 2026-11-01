@@ -21,14 +21,16 @@ export interface Review {
 }
 
 export interface PlannedFile { path: string; action: 'create' | 'update' | 'delete'; approach: string; dependsOn?: string[] }
+export interface AcceptanceCriterion { id: string; requirement: string; paths: string[]; checks: string[]; failureRefs?: string[] }
 export interface Implementation {
  request: string; baseBranch: string; baseCommit: string;
- status: 'planning' | 'plan_ready' | 'editing' | 'verifying' | 'amend_ready' | 'ready' | 'publishing' | 'published';
- plan?: { summary: string; files: PlannedFile[]; outOfScope: string[] | null; risks: string[] | null; tests: string[] | null };
+ status: 'planning' | 'plan_ready' | 'editing' | 'verifying' | 'verification_blocked' | 'amend_ready' | 'ready' | 'publishing' | 'checking_ci' | 'published';
+ plan?: { summary: string; files: PlannedFile[]; outOfScope: string[] | null; risks: string[] | null; tests: string[] | null; acceptanceCriteria?: AcceptanceCriterion[] };
  steps?: { files: string[] }[]; nextStep: number;
  changes: { path: string; action: PlannedFile['action']; bytes: number }[]; unverified: string[]; summary: string; version: number;
  branch?: string; title?: string; body?: string; commit?: string; refUpdated?: boolean; pullNumber?: number; pullUrl?: string; expectedHead?: string;
  pendingFiles?: (PlannedFile & { reason: string })[]; declined?: string[];
  revising?: boolean; clarification?: string; repairRound?: number; changeRevision?: number;
- verification?: { issues: string[]; unverified: string[] };
+ verification?: { issues: string[]; unverified: string[]; criteria?: { id: string; status: 'met' | 'unmet' | 'unverified'; evidence: string; paths: string[] }[] };
+ ci?: { commit: string; state: 'pending' | 'passed' | 'failed' | 'unverified'; checks: { name: string; status: string; conclusion: string; jobId: number }[]; unverified: string[] };
 }

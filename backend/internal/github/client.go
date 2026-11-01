@@ -261,6 +261,10 @@ func (c *Client) Read(ctx context.Context, token string, t domain.Target, a Read
 		content, n, err := c.jobLog(ctx, token, t.Repository, a.Number)
 		return content, source, n, err
 	}
+	if a.Kind == "check_runs" {
+		content, n, err := c.checkRuns(ctx, token, t)
+		return content, source, n, err
+	}
 	cacheable := a.Kind == "repository" || a.Kind == "file"
 	key := readCacheKey(t, a, c.Demo)
 	if cacheable && c.Cache != nil {
@@ -343,7 +347,7 @@ func (c *Client) Read(ctx context.Context, token string, t domain.Target, a Read
 	return content, source, result.bytes, nil
 }
 
-// maxJobLogDownload bounds how much of a job log is downloaded before taking its tail.
+// maxJobLogDownload bounds the raw log scanned for diagnostics.
 const maxJobLogDownload = 8 << 20
 
 func (c *Client) jobLog(ctx context.Context, token, repository string, id int) (string, int, error) {
@@ -384,11 +388,15 @@ func (c *Client) jobLog(ctx context.Context, token, repository string, id int) (
 	if resp.StatusCode != http.StatusOK {
 		return "", 0, apiError{resp.StatusCode}
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxJobLogDownload))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxJobLogDownload+1))
 	if err != nil {
 		return "", 0, err
 	}
-	return sanitizeJobLog(string(b)), len(b), nil
+	text := sanitizeJobLog(string(b[:min(len(b), maxJobLogDownload)]))
+	if len(b) > maxJobLogDownload {
+		text = "[INCOMPLETE: job log exceeds 8 MiB; later failures were not scanned]\n" + text
+	}
+	return text, len(b), nil
 }
 
 // jobLogHost accepts the hosts GitHub serves signed Actions log URLs from.
@@ -400,21 +408,6 @@ func jobLogHost(host string) bool {
 		}
 	}
 	return false
-}
-
-// sanitizeJobLog keeps the last 200 lines (16 KiB at most) and masks credentials.
-func sanitizeJobLog(raw string) string {
-	const maxLines = 200
-	const maxBytes = 16 * 1024
-	lines := strings.Split(strings.TrimRight(raw, "\n"), "\n")
-	if len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
-	}
-	text := strings.Join(lines, "\n")
-	if len(text) > maxBytes {
-		text = text[len(text)-maxBytes:] // a cut rune is dropped by ToValidUTF8 below
-	}
-	return domain.MaskSecrets(strings.ToValidUTF8(text, ""))
 }
 
 type rpcResult struct {

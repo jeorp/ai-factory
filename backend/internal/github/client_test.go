@@ -148,8 +148,8 @@ func TestJobLogReadsRESTTailAndMasksSecrets(t *testing.T) {
 	if err != nil || path != "/repos/owner/repo/actions/jobs/124628312411/logs" {
 		t.Fatalf("unexpected request: %s %v", path, err)
 	}
-	if !strings.HasSuffix(got, "FAIL TestX token=***MASKED_SECRET***") || strings.Count(got, "\n") != 199 {
-		t.Fatalf("tail not kept or secret not masked: %q", got[len(got)-60:])
+	if !strings.Contains(got, "[failure L501] FAIL TestX token=***MASKED_SECRET***") || !strings.Contains(got,"omitted=0") || strings.Contains(got,"ghp_y") {
+		t.Fatalf("failure evidence missing or secret not masked: %q", got[len(got)-60:])
 	}
 	if (Read{Kind: "job_log", Number: 124628312411}).Validate() != nil {
 		t.Fatal("real job IDs must be accepted")

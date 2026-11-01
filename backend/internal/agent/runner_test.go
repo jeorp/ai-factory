@@ -197,3 +197,28 @@ func TestRunLogsCorrelatedEventsWithoutSensitiveContent(t *testing.T) {
 		}
 	}
 }
+
+func TestRunLogsSafeModelErrorCode(t *testing.T) {
+	for _, tc := range []struct{ err, code string }{
+		{"gemini_incomplete", "gemini_incomplete"},
+		{"invalid_number", "invalid_number"},
+		{"private-provider-response", "model_error"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			r := Runner{AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
+				return Decision{}, Usage{}, errors.New(tc.err)
+			})}
+			if err := r.Run(context.Background(), Input{Session: baseSession(), Logger: logger}, func(Checkpoint) error { return nil }); err == nil {
+				t.Fatal("expected model error")
+			}
+			if !strings.Contains(logs.String(), `"error_code":"`+tc.code+`"`) {
+				t.Fatalf("missing safe error code: %s", logs.String())
+			}
+			if tc.err != tc.code && strings.Contains(logs.String(), tc.err) {
+				t.Fatal("raw provider error was logged")
+			}
+		})
+	}
+}

@@ -91,6 +91,9 @@ func verificationSession(writer *fakeWriter, files []domain.FileChange) domain.S
 		impl.Changes = append(impl.Changes, domain.ChangeSummary{Path: f.Path, Action: f.Action, Bytes: len(f.Content)})
 		impl.Plan.Files = append(impl.Plan.Files, domain.PlannedFile{Path: f.Path, Action: f.Action, Approach: "変更"})
 	}
+	if len(files) > 0 {
+		impl.Plan.AcceptanceCriteria = testCriteria(files[0].Path)
+	}
 	session.Implementation = impl
 	return session
 }
@@ -146,7 +149,7 @@ func TestVerificationChecksEveryByteThenCrossChecksAndShowsIssues(t *testing.T) 
 		}
 	}
 	v := last.Implementation.Verification
-	if batches < 2 || crossCalls != 1 || last.Implementation.Status != "ready" || v == nil || len(v.Issues) != 1 {
+	if batches < 2 || crossCalls != 1 || last.Implementation.Status != "verification_blocked" || v == nil || len(v.Issues) != 1 {
 		t.Fatalf("verification incomplete: batches=%d cross=%d %+v", batches, crossCalls, last.Implementation)
 	}
 	if !strings.Contains(strings.Join(v.Unverified, "\n"), "src/missing_test.go") || !strings.Contains(last.Implementation.Body, v.Issues[0]) {
@@ -179,7 +182,7 @@ func TestVerificationFailureCanResumeWithoutEditingAgain(t *testing.T) {
 		if implementTaskOf(t, input).Mode != "verify" {
 			t.Fatal("completed edit repeated on resume")
 		}
-		return Decision{Summary: "確認", Verification: &domain.ImplementationVerification{}}, Usage{}, nil
+		return Decision{Summary: "確認", Verification: passedVerification(implementTaskOf(t, input).Plan)}, Usage{}, nil
 	})
 	if err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil || last.Implementation.Status != "ready" {
 		t.Fatalf("resume failed: %v", err)
@@ -199,7 +202,7 @@ func TestVerificationReadsDeletedSourceAndRefusesExpiredChanges(t *testing.T) {
 		if len(body.Parts) != 1 || body.Parts[0].Action != "delete" || body.Parts[0].Content != writer.files["src/old.go"] {
 			t.Fatal("deleted source missing from verification")
 		}
-		return Decision{Summary: "削除の利用箇所を確認", Verification: &domain.ImplementationVerification{}}, Usage{}, nil
+		return Decision{Summary: "削除の利用箇所を確認", Verification: passedVerification(implementTaskOf(t, input).Plan)}, Usage{}, nil
 	})
 	if err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(Checkpoint) error { return nil }); err != nil || !called {
 		t.Fatalf("delete check failed: %v", err)
@@ -249,7 +252,7 @@ func TestProvidersExposeReadOnlyVerificationSchema(t *testing.T) {
 						t.Fatalf("verify exposes %s", field)
 					}
 				}
-				if props["verification"].(map[string]any)["type"] != "object" {
+				if props["verification"].(map[string]any)["anyOf"] == nil {
 					t.Fatal("verification not required")
 				}
 				d := Decision{Intent: IntentPlan{Goal: "確認", Investigation: "整合性", Response: "結果"}, Verification: &domain.ImplementationVerification{}}

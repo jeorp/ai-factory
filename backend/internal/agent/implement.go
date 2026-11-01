@@ -78,6 +78,7 @@ type implementRun struct {
 	logger       *slog.Logger
 	instructions []domain.Message
 	calls        int
+	ciEvidence   []evidence // pinned failure evidence, never evicted with optional reads
 }
 
 func (r *Runner) runImplementation(ctx context.Context, in Input, emit func(Checkpoint) error) (runErr error) {
@@ -98,6 +99,17 @@ func (r *Runner) runImplementation(ctx context.Context, in Input, emit func(Chec
 		run.logger.Info("implement_run_finished", "phase", impl.Status, "step", impl.NextStep+1, "model_calls", run.calls, "outcome", outcome(runErr), "error_code", implementationErrorCode(runErr))
 	}()
 	run.cp = Checkpoint{Summary: in.Session.Summary, Sources: append([]domain.Source{}, in.Session.Sources...), Limitations: append([]string{}, in.Session.Limitations...), Metrics: in.Session.Metrics, Implementation: impl}
+	// Earlier failed attempts are recorded in logs; do not keep showing those
+	// transient failures as current limitations after a fresh resume.
+	limits := []string{}
+	for _, limit := range run.cp.Limitations {
+		switch limit {
+		case "invalid_implementation_result", "implementation_edit_failed", "implementation_edit_blocked", "implementation_ci_forbidden", "implementation_ci_unavailable", "implementation_plan_failed", "implementation_verification_failed":
+		default:
+			limits = append(limits, limit)
+		}
+	}
+	run.cp.Limitations = limits
 	if !in.ContinueMetrics {
 		run.cp.Metrics.LastInputTokens, run.cp.Metrics.LastOutputTokens, run.cp.Metrics.HasLastUsage = 0, 0, false
 	}
@@ -114,10 +126,13 @@ func (r *Runner) runImplementation(ctx context.Context, in Input, emit func(Chec
 		return run.plan(ctx)
 	case "editing":
 		return run.edit(ctx)
-	case "verifying":
+	case "verifying", "verification_blocked":
+		impl.Status = "verifying"
 		return run.verify(ctx)
 	case "publishing":
 		return run.publish(ctx)
+	case "checking_ci":
+		return run.checkPublishedCI(ctx)
 	}
 	return errors.New("implementation_nothing_to_run")
 }
@@ -139,6 +154,9 @@ func (run *implementRun) save(ctx context.Context, progress string) error {
 
 func (run *implementRun) ready(ctx context.Context) error {
 	impl := run.impl
+	if !impl.CanPublish() {
+		return errors.New("implementation_verification_incomplete")
+	}
 	impl.Status = "ready"
 	if impl.Branch == "" {
 		impl.Branch = defaultBranchName(run.in.Session.ID, impl.Version)

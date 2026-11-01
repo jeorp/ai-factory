@@ -30,6 +30,15 @@ type Edit struct {
 	Replace string `json:"replace"`
 }
 
+// EditApplyError identifies a rejected edit without retaining source text.
+type EditApplyError struct {
+	Code    string
+	Index   int // one-based position in the submitted edits
+	Matches int
+}
+
+func (e *EditApplyError) Error() string { return e.Code }
+
 // \b keeps words such as "risk-assessment" or "desk-layout" from matching "sk-".
 var secretPattern = regexp.MustCompile(`\b(?:AIza|sk-|github_pat_|gh[opusr]_|xox[abp]-)[a-zA-Z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----`)
 
@@ -48,16 +57,17 @@ func ApplyEdits(content string, edits []Edit) (string, error) {
 	if len(edits) == 0 {
 		return "", errors.New("edit_empty")
 	}
-	for _, e := range edits {
+	for i, e := range edits {
 		if e.Search == "" {
-			return "", errors.New("edit_search_empty")
+			return "", &EditApplyError{Code: "edit_search_empty", Index: i + 1}
 		}
-		switch strings.Count(content, e.Search) {
+		matches := strings.Count(content, e.Search)
+		switch matches {
 		case 0:
-			return "", errors.New("edit_search_not_found")
+			return "", &EditApplyError{Code: "edit_search_not_found", Index: i + 1}
 		case 1:
 		default:
-			return "", errors.New("edit_search_ambiguous")
+			return "", &EditApplyError{Code: "edit_search_ambiguous", Index: i + 1, Matches: matches}
 		}
 		content = strings.Replace(content, e.Search, e.Replace, 1)
 	}

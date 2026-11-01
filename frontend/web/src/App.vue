@@ -72,10 +72,12 @@ const errors: Record<string, string> = {
  gemini_invalid_review: 'Geminiがレビュー結果を適切な形式で返せませんでした。再試行してください。',
  gemini_invalid_review_action: 'Geminiがレビュー開始の指示を適切な形式で返せませんでした。再試行してください。',
  invalid_implementation_result: 'AIが実装の結果を適切な形式で返せませんでした。保存済みの状態から再開してください。',
+ implementation_ci_pending: 'CIに実行中のジョブがあります。全ジョブの完了後に再開してください。', implementation_verification_incomplete: '受け入れ条件や指摘が未解決のため公開できません。追加修正または未確認事項の再調査を依頼してください。', implementation_ci_incomplete: '全CI失敗を確認できるログが入力上限を超えました。対象ジョブやログを絞って再実行してください。', implementation_not_published: '公開済みのPRがありません。', implementation_ci_not_failed: '対象コミットのCI失敗がまだ確認できていません。CIを再確認してください。',
+ implementation_ci_forbidden: 'GitHub AppがCI情報の読み取りを403で拒否されました。ChecksとActionsのRead-only権限を確認し、必要な権限更新を承認してからGitHubでログインし直してください。AIキーの再入力では解消しません。', implementation_ci_unavailable: 'CIの失敗情報を取得できないため変更を中断しました。対象PRの失敗ログや、GitHub Appのアクセス許可を確認してください。',
  implementation_request_required: '実装してほしい内容を入力してください。', implementation_plan_required: '承認できる実装計画がありません。チャットで実装を依頼してください。',
  implementation_not_ready: 'PRを作成できる変更がありません。', implementation_publish_incomplete: 'ブランチへの書き込みが途中です。「PRの作成を再試行」で完了させてください。',
  implementation_changes_expired: '変更内容の保存期限（1時間）が切れました。チャットでもう一度実装を依頼してください。',
- implementation_plan_failed: 'AIが有効な実装計画を作成できませんでした。依頼を具体的にして再試行してください。', implementation_edit_failed: 'AIの変更を元のファイルに適用できませんでした。保存済みの状態から再開するか、依頼を分けてください。',
+ implementation_plan_failed: 'AIが有効な実装計画を作成できませんでした。依頼を具体的にして再試行してください。', implementation_edit_failed: 'AIの変更を元のファイルに適用できませんでした。保存済みの状態から再開するか、依頼を分けてください。', implementation_edit_blocked: 'AIが変更を作成できない理由を保存しました。実装パネルの未確認事項を確認し、不足している情報を追加してください。',
   implementation_no_changes: '計画したファイルに変更が作成されませんでした。依頼を具体的にして再試行してください。', implementation_verification_failed: '変更全体の整合性確認を完了できませんでした。保存済みの状態から再開してください。', implementation_amend_not_pending: '承認待ちの追加ファイルがありません。', invalid_implementation_amend: '追加ファイルへの回答を送れませんでした。',
  pull_request_not_found: '指定したPRが見つかりません。PR番号を確認してください。', pull_request_closed: '指定したPRはマージ・クローズ済みです。新しいPRとして依頼してください。', pull_request_not_ai_branch: 'AIファクトリーが作成したPR（ai-factory/で始まるブランチ）にだけ修正を追加できます。', pull_request_from_fork: 'フォークからのPRには修正を追加できません。',
  change_file_exists: '追加しようとしたファイルが既に存在します。計画を作り直してください。', change_file_missing: '変更・削除しようとしたファイルが見つかりません。計画を作り直してください。',
@@ -115,6 +117,7 @@ function investigate(index: number) { try { work.send('investigate', '', crypto.
 function approveImplementation() { try { work.send('implement_approve'); } catch (e) { appError.value = errorMessage(e); } }
 function amendImplementation(approve: boolean) { try { work.send('implement_amend', approve ? 'approve' : 'decline'); } catch (e) { appError.value = errorMessage(e); } }
 function publishImplementation(value: { branch: string; title: string; body: string }) { try { work.send('implement_publish', '', crypto.randomUUID(), undefined, value); } catch (e) { appError.value = errorMessage(e); } }
+function implementationAction(type: string) { try { work.send(type); } catch (e) { appError.value=errorMessage(e); } }
 function resume() { try { work.send('resume'); } catch (e) { appError.value = errorMessage(e); } }
 function stop() { try { work.send('stop'); } catch (e) { appError.value = errorMessage(e); } }
 function end() { try { if (work.connected) work.send('end'); } finally { work.disconnect(true); keyDraft.value = ''; syncKey(); } }
@@ -239,7 +242,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
        </details>
        <article v-else-if="entry.kind === 'message'" class="message" :class="entry.message.role"><div class="message-avatar"><Icon v-if="entry.message.role === 'assistant'" name="grid" :size="16" /><Icon v-else-if="entry.message.role === 'instruction'" name="branch" :size="16" /><span v-else>{{ login[0]?.toUpperCase() }}</span></div><div class="message-content"><div class="message-label">{{ entry.message.role === 'assistant' ? 'AI Factory' : entry.message.role === 'instruction' ? '追加指示' : 'あなた' }}<span v-if="entry.message.role === 'instruction'" class="instruction-state">{{ entry.message.applied ? '反映済み' : '受付済み・次の区切りで反映' }}</span></div><div class="message-text">{{ entry.message.text }}</div></div></article>
       </template>
- <ImplementationPanel v-if="current.implementation" :key="`${current.id}:impl`" :session-id="current.id" :repository="current.target.repository" :implementation="current.implementation" :running="running" :connected="work.connected" :can-run="work.connected && (config.aiProvider === 'demo' || keyValid)" @approve="approveImplementation" @amend="amendImplementation" @publish="publishImplementation" />
+ <ImplementationPanel v-if="current.implementation" :key="`${current.id}:impl`" :session-id="current.id" :repository="current.target.repository" :implementation="current.implementation" :session-state="current.state" :running="running" :connected="work.connected" :can-run="work.connected && (config.aiProvider === 'demo' || keyValid)" @approve="approveImplementation" @resume="resume" @amend="amendImplementation" @publish="publishImplementation" @check-ci="implementationAction('implement_check_ci')" @fix-ci="implementationAction('implement_fix_ci')" @verify="implementationAction('implement_verify')" />
       <SourceFiles v-if="!current.review" :key="current.id" :session="current" @open="openFile" @clear="closeFile" />
       <div v-if="running" class="progress-message"><span class="loading-dots">•••</span>{{ current.state === 'stopping' ? '停止を要求しています…' : work.progress || '処理を開始しています…' }}</div>
      </div>

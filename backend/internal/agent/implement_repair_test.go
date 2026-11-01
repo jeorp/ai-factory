@@ -12,7 +12,7 @@ import (
 
 func repairFixture() (*revisionWriter, *domain.Implementation) {
 	w := newRevisionWriter()
-	impl := &domain.Implementation{Request: "Aを修正", Status: "verifying", BaseBranch: "main", BaseCommit: implBase, CacheID: "repair-cache", Plan: &domain.ImplementationPlan{Summary: "Aを修正", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "Aを変更"}}}, Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, NextStep: 1, Changes: []domain.ChangeSummary{{Path: "src/a.go", Action: "update", Bytes: len("draft a")}}}
+	impl := &domain.Implementation{Request: "Aを修正", Status: "verifying", BaseBranch: "main", BaseCommit: implBase, CacheID: "repair-cache", Plan: &domain.ImplementationPlan{AcceptanceCriteria: testCriteria("src/a.go"), Summary: "Aを修正", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "Aを変更"}}}, Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, NextStep: 1, Changes: []domain.ChangeSummary{{Path: "src/a.go", Action: "update", Bytes: len("draft a")}}}
 	_ = w.PutChange(context.Background(), impl.CacheID, impl.Version, domain.FileChange{Path: "src/a.go", Action: "update", Content: "draft a"})
 	return w, impl
 }
@@ -33,7 +33,7 @@ func TestVerificationRepairsCurrentContentThenRechecks(t *testing.T) {
 			if !strings.Contains(input, "draft a fixed") || !strings.Contains(input, "draft b fixed") {
 				t.Fatal("verification used stale contents")
 			}
-			return Decision{Summary: "整合", Verification: &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}}}, Usage{}, nil
+			return Decision{Summary: "整合", Verification: passedVerification(task.Plan)}, Usage{}, nil
 		}
 		edits++
 		if task.Mode != "edit" || !strings.Contains(task.RepairFeedback, "Aの引数を修正") || len(task.Files) != 2 {
@@ -73,7 +73,7 @@ func TestVerificationRepairStopsAtTwoRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := last.Implementation
-	if got.Status != "ready" || got.RepairRound != 2 || edits != 2 || checks != 3 || len(got.Verification.Issues) != 1 || !strings.Contains(strings.Join(got.Verification.Unverified, ""), "上限") {
+	if got.Status != "verification_blocked" || got.RepairRound != 2 || edits != 2 || checks != 3 || len(got.Verification.Issues) != 1 || !strings.Contains(strings.Join(got.Verification.Unverified, ""), "上限") {
 		t.Fatalf("repair loop not bounded: %+v edits=%d checks=%d", got, edits, checks)
 	}
 }
@@ -90,7 +90,7 @@ func TestVerificationAdditionalFilesWaitForApproval(t *testing.T) {
 					if checks == 1 || !approve {
 						return Decision{Summary: "確認", Verification: &domain.ImplementationVerification{Issues: []string{"src/b.goが必要"}, Repairs: []domain.VerificationRepair{{Path: "outside.go", Approach: "未承認なので変更禁止"}}, AdditionalFiles: []domain.PendingFile{{Path: "src/b.go", Action: "create", Approach: "Bを作成", Reason: "Aから呼ぶ", DependsOn: []string{"src/a.go"}}}}}, Usage{}, nil
 					}
-					return Decision{Summary: "確認", Verification: &domain.ImplementationVerification{}}, Usage{}, nil
+					return Decision{Summary: "確認", Verification: passedVerification(task.Plan)}, Usage{}, nil
 				}
 				edits++
 				if !approve || len(task.Files) != 1 || task.Files[0].Path != "src/b.go" {
@@ -112,7 +112,7 @@ func TestVerificationAdditionalFilesWaitForApproval(t *testing.T) {
 				t.Fatal(err)
 			}
 			got = last.Implementation
-			if got.Status != "ready" || (approve && (edits != 1 || len(got.Changes) != 2)) || (!approve && (edits != 0 || len(got.Changes) != 1 || len(got.Declined) != 1 || got.RepairRound != 1)) {
+			if (approve && got.Status != "ready" || !approve && got.Status != "verification_blocked") || (approve && (edits != 1 || len(got.Changes) != 2)) || (!approve && (edits != 0 || len(got.Changes) != 1 || len(got.Declined) != 1 || got.RepairRound != 1)) {
 				t.Fatalf("bad amendment: %+v", got)
 			}
 		})
@@ -125,7 +125,7 @@ func TestScheduledRepairResumesAfterCheckpointFailure(t *testing.T) {
 	r := &Runner{Writer: w, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
 		task := implementTaskOf(t, input)
 		if task.Mode == "verify" {
-			v := &domain.ImplementationVerification{}
+			v := passedVerification(task.Plan)
 			if edits == 0 {
 				v.Issues = []string{"修正が必要"}
 				v.Repairs = []domain.VerificationRepair{{Path: "src/a.go", Approach: "引数を修正"}}

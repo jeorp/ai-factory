@@ -44,8 +44,11 @@ func defaultBody(impl *domain.Implementation) string {
 	b.WriteString("\n## 検証\n\nアプリ内ではコード・ビルド・テストを実行していません。このリポジトリのCIの結果を確認してください。\n")
 	if v := impl.Verification; v != nil {
 		b.WriteString("\n### AIによる整合性確認\n\n")
-		if len(v.Issues) == 0 {
+		if len(v.Issues) == 0 && len(v.Unverified) == 0 {
 			b.WriteString("確認した範囲で不整合の指摘はありません。ビルド・テストの成功を保証するものではありません。\n")
+		}
+		for _, c := range v.Criteria {
+			b.WriteString(fmt.Sprintf("- 受け入れ条件 %s（%s）: %s\n", c.ID, c.Status, c.Evidence))
 		}
 		for _, s := range v.Issues {
 			b.WriteString("- 指摘: " + s + "\n")
@@ -108,6 +111,12 @@ func formatPlan(impl *domain.Implementation) string {
 			b.WriteString("- " + v + "\n")
 		}
 	}
+	for _, c := range p.AcceptanceCriteria {
+		b.WriteString("\n【受け入れ条件 " + c.ID + "】" + c.Requirement + "\n")
+		for _, check := range c.Checks {
+			b.WriteString("- " + check + "\n")
+		}
+	}
 	list("対象外", p.OutOfScope)
 	list("リスク", p.Risks)
 	list("確認すべきテスト", p.Tests)
@@ -117,7 +126,11 @@ func formatPlan(impl *domain.Implementation) string {
 
 func formatChanges(impl *domain.Implementation) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("%dファイルの変更を作成しました。差分を確認し、ブランチ名・PRタイトル・本文を確認してからPRを作成してください。\n\n", len(impl.Changes)))
+	if impl.Status == "verification_blocked" {
+		b.WriteString("受け入れ条件や指摘が未解決のため、公開を止めています。チャットで追加修正を依頼してください。\n\n")
+	} else {
+		b.WriteString(fmt.Sprintf("%dファイルの変更を作成しました。差分を確認し、ブランチ名・PRタイトル・本文を確認してからPRを作成してください。\n\n", len(impl.Changes)))
+	}
 	for _, c := range impl.Changes {
 		b.WriteString(fmt.Sprintf("- %s（%s）\n", c.Path, actionLabel(c.Action)))
 	}

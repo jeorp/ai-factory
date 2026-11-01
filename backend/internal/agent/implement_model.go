@@ -42,6 +42,13 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 	payload["instructions"] = run.pinned()
 	payload["target"] = run.target()
 	payload["repositoryOverview"] = run.in.Session.RepositoryOverview
+	if run.impl.CIRepair {
+		payload["ciRepair"] = true
+		payload["requiredCriteria"] = run.impl.RequiredCriteria
+	}
+	if len(run.ciEvidence) > 0 {
+		payload["ciEvidence"] = run.ciEvidence
+	}
 	body, _ := json.Marshal(payload)
 	if !implementInputFits(body) {
 		return Decision{}, errors.New("ai_input_limit")
@@ -63,6 +70,9 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 	log.Info("implement_model_call_started", "input_bytes", len(body))
 	d, usage, err := run.r.AI.Next(ctx, run.in.Key, run.in.Session.Model, string(body))
 	log.Info("implement_model_call", "duration_ms", time.Since(started).Milliseconds(), "outcome", outcome(err), "error_code", implementationErrorCode(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
+	if implementationErrorCode(err) == "invalid_implementation_result" {
+		log.Info("implement_response_rejected", "reason", implementationResultReason(err), "has_read", d.Read != nil, "has_search", d.Search != nil, "has_plan", d.Plan != nil, "has_implementation", d.Implementation != nil, "has_verification", d.Verification != nil, "has_start_implementation", d.StartImplementation != nil, "has_start_review", d.StartReview != nil, "has_review", d.Review != nil, "answer_bytes", len(d.Answer), "summary_bytes", len(d.Summary))
+	}
 	if d.IntentIssue == "empty_fields" || d.IntentIssue == "field_length_limit" {
 		log.Info("implement_intent_discarded", "reason", d.IntentIssue)
 	}

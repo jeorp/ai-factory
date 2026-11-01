@@ -38,6 +38,7 @@ type Runner struct {
 	AI     Provider
 	GitHub Reader
 	Writer Writer
+	CIWait time.Duration // production waits for CI; zero performs one snapshot
 }
 type evidence struct {
 	Read    github.Read `json:"read"`
@@ -145,7 +146,11 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		callStart := time.Now()
 		logger.Info("model_call_started", "step", step+1, "input_bytes", len(input))
 		decision, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, input)
-		logger.Info("model_call_finished", "step", step+1, "duration_ms", time.Since(callStart).Milliseconds(), "outcome", outcome(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
+		errorCode := implementationErrorCode(err)
+		if errorCode == "implementation_error" {
+			errorCode = "model_error"
+		}
+		logger.Info("model_call_finished", "step", step+1, "duration_ms", time.Since(callStart).Milliseconds(), "outcome", outcome(err), "error_code", errorCode, "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 		if err != nil {
 			switch err.Error() {
 			case "gemini_answer_too_long", "gemini_invalid_intent", "gemini_invalid_review", "gemini_invalid_review_action":

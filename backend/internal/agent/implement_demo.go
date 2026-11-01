@@ -19,9 +19,10 @@ func demoImplement(input string) Decision {
 	}
 	if body.Task.Mode == "plan" {
 		return Decision{Intent: intent, Summary: "固定デモの計画", Plan: &domain.ImplementationPlan{
-			Summary: "READMEにデモの説明を追加\n固定デモの変更です。実際のAIは呼び出していません。",
-			Files:   []domain.PlannedFile{{Path: "README.md", Action: "update", Approach: "先頭の見出しの後にデモの説明を1行追加する"}},
-			Tests:   []string{"README の表示を確認する"},
+			AcceptanceCriteria: []domain.AcceptanceCriterion{{ID: "demo", Requirement: "READMEに固定デモの説明を追加", Paths: []string{"README.md"}, Checks: []string{"追加行と既存の本文を確認"}}},
+			Summary:            "READMEにデモの説明を追加\n固定デモの変更です。実際のAIは呼び出していません。",
+			Files:              []domain.PlannedFile{{Path: "README.md", Action: "update", Approach: "先頭の見出しの後にデモの説明を1行追加する"}},
+			Tests:              []string{"README の表示を確認する"},
 		}}
 	}
 	result := &ImplementResult{Unverified: []string{"固定デモのため、依頼内容は反映していません。"}}

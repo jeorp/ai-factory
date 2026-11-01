@@ -86,7 +86,7 @@ func TestPendingDependenciesOnRejectedFilesAreRejected(t *testing.T) {
 	}
 }
 
-func TestProvidersExposeSearchOnlyDuringPlanning(t *testing.T) {
+func TestProvidersExposeSearchDuringPlanningAndVerification(t *testing.T) {
 	for _, name := range []string{"openai", "gemini"} {
 		for _, mode := range []string{"plan", "final", "edit", "verify", "chat", "malformed"} {
 			t.Run(name+"/"+mode, func(t *testing.T) {
@@ -107,7 +107,7 @@ func TestProvidersExposeSearchOnlyDuringPlanning(t *testing.T) {
 						schema = body["generationConfig"].(map[string]any)["responseJsonSchema"].(map[string]any)
 					}
 					search := schema["properties"].(map[string]any)["search"].(map[string]any)
-					if mode == "plan" {
+					if mode == "plan" || mode == "verify" {
 						if search["anyOf"] == nil {
 							t.Fatal("planning search missing")
 						}
@@ -130,7 +130,7 @@ func TestProvidersExposeSearchOnlyDuringPlanning(t *testing.T) {
 					p = &Gemini{HTTP: client, Endpoint: "https://example.test"}
 				}
 				_, _, err := p.Next(context.Background(), "key", "model", input)
-				if mode == "plan" && err != nil || mode != "plan" && err == nil {
+				if (mode == "plan" || mode == "verify") && err != nil || (mode != "plan" && mode != "verify") && err == nil {
 					t.Fatalf("search boundary not enforced: %v", err)
 				}
 			})

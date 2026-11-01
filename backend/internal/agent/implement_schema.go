@@ -65,12 +65,19 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 	props["implementation"] = map[string]any{"type": "null"}
 	if task.Mode == "verify" {
 		props["read"] = map[string]any{"type": "null"}
+		if !task.FinalAnswer && task.ReadBudget > 0 {
+			props["read"] = nullable(implementRead([]string{"file"}))
+			props["search"] = nullable(implementationSearchSchema())
+		}
 		props["answer"] = map[string]any{"type": "string", "enum": []string{""}}
-		props["verification"] = object(map[string]any{
+		props["verification"] = nullable(object(map[string]any{
 			"issues": stringList(), "unverified": stringList(),
+			"criteria": map[string]any{"type": "array", "items": object(map[string]any{
+				"id": map[string]any{"type": "string"}, "status": map[string]any{"type": "string", "enum": []string{"met", "unmet", "unverified"}}, "evidence": map[string]any{"type": "string"}, "paths": stringList(),
+			})},
 			"repairs":         map[string]any{"type": "array", "items": object(map[string]any{"path": map[string]any{"type": "string"}, "approach": map[string]any{"type": "string"}})},
 			"additionalFiles": pendingFilesSchema(),
-		})
+		}))
 		return implementVerifyPrompt
 	}
 	if task.FinalAnswer || task.ReadBudget <= 0 {
@@ -82,7 +89,7 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 	}
 	if task.Mode == "plan" {
 		if !task.FinalAnswer && task.ReadBudget > 0 {
-			props["search"] = nullable(object(map[string]any{"query": map[string]any{"type": "string"}, "prefix": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "string"}}))
+			props["search"] = nullable(implementationSearchSchema())
 		}
 		props["plan"] = nullable(object(map[string]any{
 			"summary": map[string]any{"type": "string"},
@@ -91,20 +98,29 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 				"dependsOn": stringList(),
 			})},
 			"outOfScope": stringList(), "risks": stringList(), "tests": stringList(),
+			"acceptanceCriteria": map[string]any{"type": "array", "items": object(map[string]any{
+				"id": map[string]any{"type": "string"}, "requirement": map[string]any{"type": "string"}, "paths": stringList(), "checks": stringList(), "failureRefs": stringList(),
+			})},
 		}))
 		return implementPlanPrompt
 	}
 	props["answer"] = map[string]any{"type": "string", "enum": []string{""}}
+	lineEdit := object(map[string]any{"startLine": map[string]any{"type": "integer"}, "endLine": map[string]any{"type": "integer"}, "expectedStart": map[string]any{"type": "string"}, "expectedEnd": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}})
 	edit := object(map[string]any{"search": map[string]any{"type": "string"}, "replace": map[string]any{"type": "string"}})
 	props["implementation"] = nullable(object(map[string]any{
 		"changes": map[string]any{"type": "array", "items": object(map[string]any{
 			"path": map[string]any{"type": "string"}, "action": map[string]any{"type": "string", "enum": []string{"create", "update", "delete"}},
 			"content": map[string]any{"type": "string"}, "edits": map[string]any{"type": "array", "items": edit},
+			"sourceHash": map[string]any{"type": "string"}, "lineEdits": map[string]any{"type": "array", "items": lineEdit},
 		})},
 		"unverified":      stringList(),
 		"additionalFiles": pendingFilesSchema(),
 	}))
 	return implementEditPrompt
+}
+
+func implementationSearchSchema() map[string]any {
+	return object(map[string]any{"query": map[string]any{"type": "string"}, "prefix": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "string"}})
 }
 
 func pendingFilesSchema() map[string]any {

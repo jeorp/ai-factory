@@ -45,13 +45,15 @@ type SearchMatch struct {
 }
 
 type CodeSearchResult struct {
-	Matches       []SearchMatch `json:"matches"`
-	ScannedFiles  int           `json:"scannedFiles"`
-	ScannedBytes  int           `json:"scannedBytes"`
-	SkippedFiles  int           `json:"skippedFiles"`
-	ListedFiles   int           `json:"listedFiles"`
-	ListTruncated bool          `json:"listTruncated"`
-	NextCursor    string        `json:"nextCursor"`
+	GeneratedMatches   []SearchMatch `json:"generatedMatches,omitempty"`
+	GeneratedTruncated bool          `json:"generatedTruncated,omitempty"`
+	Matches            []SearchMatch `json:"matches"`
+	ScannedFiles       int           `json:"scannedFiles"`
+	ScannedBytes       int           `json:"scannedBytes"`
+	SkippedFiles       int           `json:"skippedFiles"`
+	ListedFiles        int           `json:"listedFiles"`
+	ListTruncated      bool          `json:"listTruncated"`
+	NextCursor         string        `json:"nextCursor"`
 }
 
 type searchCursor struct {

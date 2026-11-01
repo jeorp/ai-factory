@@ -131,8 +131,8 @@ func (p *OpenAI) Next(ctx context.Context, key, model, input string) (Decision, 
 	if !validPriorityDecision(input, d) {
 		return d, out.Usage, errors.New("invalid_priority_result")
 	}
-	if !validImplementationResponse(input, d) {
-		return d, out.Usage, errors.New("invalid_implementation_result")
+	if issue := implementationResponseIssue(input, d); issue != "" {
+		return d, out.Usage, &implementationResultError{reason: issue}
 	}
 	return d, out.Usage, nil
 }

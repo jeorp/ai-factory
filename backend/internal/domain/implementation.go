@@ -9,44 +9,64 @@ import (
 // run (specification section 13). Changed file contents are never stored here;
 // they live in an expiring cache addressed by CacheID.
 type Implementation struct {
-	Request        string                      `json:"request"`
-	BaseBranch     string                      `json:"baseBranch"`
-	BaseCommit     string                      `json:"baseCommit"`
-	Status         string                      `json:"status"` // planning, plan_ready, editing, amend_ready, verifying, ready, publishing, published
-	Plan           *ImplementationPlan         `json:"plan,omitempty"`
-	Steps          []ImplementationStep        `json:"steps,omitempty"`
-	NextStep       int                         `json:"nextStep"`
-	Changes        []ChangeSummary             `json:"changes"`
-	Unverified     []string                    `json:"unverified"`
-	Summary        string                      `json:"summary"`
-	Verification   *ImplementationVerification `json:"verification,omitempty"`
-	Clarification  string                      `json:"clarification,omitempty"`
-	Revising       bool                        `json:"revising,omitempty"`
-	DraftSource    *ImplementationDraftSource  `json:"-"`
-	RepairRound    int                         `json:"repairRound,omitempty"`
-	RepairFeedback string                      `json:"repairFeedback,omitempty"`
-	ChangeRevision int                         `json:"changeRevision,omitempty"`
-	ContextFiles   []string                    `json:"contextFiles,omitempty"` // files read while planning, given to every step
-	PendingFiles   []PendingFile               `json:"pendingFiles,omitempty"` // files the AI asked to add mid-way, awaiting approval
-	Declined       []string                    `json:"declined,omitempty"`     // additions the user turned down; not proposed again
-	FixTarget      bool                        `json:"fixTarget,omitempty"`    // the user named PullNumber; never fall back to a new PR
-	CacheID        string                      `json:"-"`
-	Version        int                         `json:"version"`
-	Branch         string                      `json:"branch,omitempty"`
-	Title          string                      `json:"title,omitempty"`
-	Body           string                      `json:"body,omitempty"`
-	Commit         string                      `json:"commit,omitempty"`
-	RefBranch      string                      `json:"refBranch,omitempty"`
-	RefUpdated     bool                        `json:"refUpdated,omitempty"`
-	PullNumber     int                         `json:"pullNumber,omitempty"`
-	PullURL        string                      `json:"pullUrl,omitempty"`
-	ExpectedHead   string                      `json:"expectedHead,omitempty"`
+	Request          string                      `json:"request"`
+	BaseBranch       string                      `json:"baseBranch"`
+	BaseCommit       string                      `json:"baseCommit"`
+	Status           string                      `json:"status"` // planning, plan_ready, editing, amend_ready, verifying, verification_blocked, ready, publishing, checking_ci, published
+	Plan             *ImplementationPlan         `json:"plan,omitempty"`
+	Steps            []ImplementationStep        `json:"steps,omitempty"`
+	NextStep         int                         `json:"nextStep"`
+	Changes          []ChangeSummary             `json:"changes"`
+	Unverified       []string                    `json:"unverified"`
+	Summary          string                      `json:"summary"`
+	Verification     *ImplementationVerification `json:"verification,omitempty"`
+	CI               *ImplementationCI           `json:"ci,omitempty"`
+	CIRepair         bool                        `json:"ciRepair,omitempty"`
+	RequiredCriteria []AcceptanceCriterion       `json:"requiredCriteria,omitempty"`
+	Clarification    string                      `json:"clarification,omitempty"`
+	Revising         bool                        `json:"revising,omitempty"`
+	DraftSource      *ImplementationDraftSource  `json:"-"`
+	RepairRound      int                         `json:"repairRound,omitempty"`
+	RepairFeedback   string                      `json:"repairFeedback,omitempty"`
+	ChangeRevision   int                         `json:"changeRevision,omitempty"`
+	ContextFiles     []string                    `json:"contextFiles,omitempty"` // files read while planning, given to every step
+	PendingFiles     []PendingFile               `json:"pendingFiles,omitempty"` // files the AI asked to add mid-way, awaiting approval
+	Declined         []string                    `json:"declined,omitempty"`     // additions the user turned down; not proposed again
+	FixTarget        bool                        `json:"fixTarget,omitempty"`    // the user named PullNumber; never fall back to a new PR
+	CacheID          string                      `json:"-"`
+	Version          int                         `json:"version"`
+	Branch           string                      `json:"branch,omitempty"`
+	Title            string                      `json:"title,omitempty"`
+	Body             string                      `json:"body,omitempty"`
+	Commit           string                      `json:"commit,omitempty"`
+	RefBranch        string                      `json:"refBranch,omitempty"`
+	RefUpdated       bool                        `json:"refUpdated,omitempty"`
+	PullNumber       int                         `json:"pullNumber,omitempty"`
+	PullURL          string                      `json:"pullUrl,omitempty"`
+	ExpectedHead     string                      `json:"expectedHead,omitempty"`
+}
+
+// GitHub CI is execution evidence for one exact published commit. A Draft PR
+// being created is not the same as its checks passing.
+type ImplementationCI struct {
+	Commit     string                `json:"commit"`
+	State      string                `json:"state"` // pending, passed, failed, unverified
+	Checks     []ImplementationCheck `json:"checks"`
+	Unverified []string              `json:"unverified"`
+}
+
+type ImplementationCheck struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	JobID      int    `json:"jobId"`
 }
 
 // ImplementationVerification is an AI consistency check, not a build/test result.
 type ImplementationVerification struct {
 	Issues          []string             `json:"issues"`
 	Unverified      []string             `json:"unverified"`
+	Criteria        []CriterionResult    `json:"criteria,omitempty"`
 	Repairs         []VerificationRepair `json:"repairs,omitempty"`
 	AdditionalFiles []PendingFile        `json:"additionalFiles,omitempty"`
 }
@@ -64,11 +84,29 @@ type ImplementationDraftSource struct {
 }
 
 type ImplementationPlan struct {
-	Summary    string        `json:"summary"`
-	Files      []PlannedFile `json:"files"`
-	OutOfScope []string      `json:"outOfScope"`
-	Risks      []string      `json:"risks"`
-	Tests      []string      `json:"tests"`
+	Summary            string                `json:"summary"`
+	Files              []PlannedFile         `json:"files"`
+	OutOfScope         []string              `json:"outOfScope"`
+	Risks              []string              `json:"risks"`
+	Tests              []string              `json:"tests"`
+	AcceptanceCriteria []AcceptanceCriterion `json:"acceptanceCriteria"`
+}
+
+// Criteria are approved with the plan and are checked against code again after
+// generation. They describe observable outcomes, not merely a list of edits.
+type AcceptanceCriterion struct {
+	ID          string   `json:"id"`
+	Requirement string   `json:"requirement"`
+	Paths       []string `json:"paths"`
+	Checks      []string `json:"checks"`
+	FailureRefs []string `json:"failureRefs"`
+}
+
+type CriterionResult struct {
+	ID       string   `json:"id"`
+	Status   string   `json:"status"` // met, unmet, unverified (static verification only)
+	Evidence string   `json:"evidence"`
+	Paths    []string `json:"paths"`
 }
 
 type PlannedFile struct {
@@ -163,6 +201,9 @@ func ValidatePlan(p *ImplementationPlan) error {
 	if err := ValidatePlanDependencies(p.Files); err != nil {
 		return err
 	}
+	if err := ValidateAcceptanceCriteria(p.AcceptanceCriteria); err != nil {
+		return err
+	}
 	for _, list := range [][]string{p.OutOfScope, p.Risks, p.Tests} {
 		if len(list) > 10 {
 			return errors.New("invalid_plan")
@@ -212,17 +253,20 @@ func NextImplementation(prev *Implementation, request, cacheID string) *Implemen
 		return next
 	}
 	next.Version = prev.Version + 1
-	if prev.Status == "published" && prev.Branch != "" && ValidCommit(prev.Commit) {
+	published := prev.Status == "published" || prev.Status == "checking_ci"
+	if published && prev.Branch != "" && ValidCommit(prev.Commit) {
 		next.BaseBranch, next.BaseCommit = prev.BaseBranch, prev.Commit
 		next.Branch, next.PullNumber, next.PullURL = prev.Branch, prev.PullNumber, prev.PullURL
 		next.ExpectedHead = prev.Commit
 		next.Title = prev.Title
 		return next
 	}
-	if prev.Request != "" && prev.Status != "published" {
+	if prev.Request != "" && !published {
 		next.Request = AppendRequest(prev.Request, request, 4096)
+		next.CIRepair = prev.CIRepair
+		next.RequiredCriteria = append([]AcceptanceCriterion{}, prev.RequiredCriteria...)
 	}
-	if prev.Status != "published" && prev.Status != "publishing" && prev.Plan != nil && len(prev.Changes) > 0 && ValidCommit(prev.BaseCommit) {
+	if !published && prev.Status != "publishing" && prev.Plan != nil && len(prev.Changes) > 0 && ValidCommit(prev.BaseCommit) {
 		next.Revising = true
 		next.BaseBranch, next.BaseCommit = prev.BaseBranch, prev.BaseCommit
 		next.Branch, next.Title = prev.Branch, prev.Title

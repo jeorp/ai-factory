@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"ai-factory/backend/internal/domain"
 	"ai-factory/backend/internal/github"
@@ -10,6 +10,9 @@ import (
 
 func (run *implementRun) publish(ctx context.Context) error {
 	impl := run.impl
+	if !impl.CanPublish() && !impl.RefUpdated && impl.RefBranch == "" {
+		return errors.New("implementation_verification_incomplete")
+	}
 	files := []domain.FileChange{}
 	for _, c := range impl.Changes {
 		f, err := run.savedChange(ctx, c.Path)
@@ -45,11 +48,9 @@ func (run *implementRun) publish(ctx context.Context) error {
 	if final.PullNumber > 0 {
 		impl.PullNumber, impl.PullURL = final.PullNumber, final.PullURL
 	}
-	impl.Status = "published"
-	if impl.ExpectedHead != "" {
-		run.cp.Answer = fmt.Sprintf("ブランチ %s に追加の変更をコミットしました（%s）。\n%s", impl.Branch, impl.Commit[:7], impl.PullURL)
-	} else {
-		run.cp.Answer = fmt.Sprintf("Draft PRを作成しました: %s\n\nブランチ: %s\nCIの結果を確認してください。アプリ内ではコードやテストを実行していません。", impl.PullURL, impl.Branch)
+	impl.Status = "checking_ci"
+	if err := run.save(ctx, "PRを作成しました。GitHub CIの確認に進みます"); err != nil {
+		return err
 	}
-	return run.save(ctx, "PRを作成しました")
+	return run.checkPublishedCI(ctx)
 }

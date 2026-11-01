@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"strings"
 	"testing"
 
 	"ai-factory/backend/internal/domain"
@@ -31,6 +32,40 @@ func TestCannotPublishWhileVerificationIsUnfinished(t *testing.T) {
 	session := &domain.Session{Implementation: &domain.Implementation{Status: "verifying", Changes: []domain.ChangeSummary{{Path: "src/a.go", Action: "update"}}}}
 	if got := implementCommandProblem(session, &command{Type: "implement_publish"}); got != "implementation_not_ready" {
 		t.Fatalf("unfinished verification can publish: %s", got)
+	}
+}
+
+func TestPublishRejectsReadyStateWithoutAcceptanceCoverage(t *testing.T) {
+	session := &domain.Session{Implementation: &domain.Implementation{Status: "ready", Changes: []domain.ChangeSummary{{Path: "a.go", Action: "update"}}, Verification: &domain.ImplementationVerification{}}}
+	if got := implementCommandProblem(session, &command{Type: "implement_publish", Branch: "ai-factory/x", Title: "x"}); got != "implementation_verification_incomplete" {
+		t.Fatalf("forged ready bypassed coverage: %s", got)
+	}
+}
+
+func TestCIFeedbackCommandsKeepPublishedCommitAndOriginalRequest(t *testing.T) {
+	session := &domain.Session{Implementation: &domain.Implementation{Status: "published", Request: "UI言語を保存し全AI呼び出しへ渡す", Commit: strings.Repeat("d", 40), BaseCommit: strings.Repeat("c", 40), Branch: "ai-factory/x", PullNumber: 7}}
+	check := command{Type: "implement_check_ci"}
+	if got := implementCommandProblem(session, &check); got != "" {
+		t.Fatal(got)
+	}
+	applyImplementCommand(session, check)
+	if session.Implementation.Status != "checking_ci" || session.Implementation.Commit != strings.Repeat("d", 40) {
+		t.Fatal("CI check reset publication")
+	}
+	impl := session.Implementation
+	impl.Status = "published"
+	fix := command{Type: "implement_fix_ci"}
+	if implementCommandProblem(session, &fix) == "" {
+		t.Fatal("CI repair accepted without failure")
+	}
+	impl.CI = &domain.ImplementationCI{Commit: impl.Commit, State: "failed"}
+	if got := implementCommandProblem(session, &fix); got != "" {
+		t.Fatal(got)
+	}
+	applyImplementCommand(session, fix)
+	next := session.Implementation
+	if next.Status != "planning" || next.ExpectedHead != impl.Commit || next.PullNumber != 7 || next.Branch != impl.Branch || !strings.Contains(next.Request, "UI言語を保存し全AI呼び出しへ渡す") {
+		t.Fatalf("CI fix lost request/head: %+v", next)
 	}
 }
 

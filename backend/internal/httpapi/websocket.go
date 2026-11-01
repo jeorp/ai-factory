@@ -188,6 +188,9 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			if cp.Answer != "" {
 				if err = session.Add("assistant", cp.Answer, randomID()); err == nil {
 					session.State = "done"
+					if session.RunKind == "implement" && session.Implementation != nil && session.Implementation.Status == "verification_blocked" {
+						session.State = "user_wait"
+					}
 					if session.RunKind == "investigation" && session.Review != nil && session.Review.PendingInvestigation > 0 {
 						if session.Review.Investigations == nil {
 							session.Review.Investigations = map[string]string{}
@@ -289,7 +292,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				if send("session", session) != nil {
 					return
 				}
-			case "message", "resume", "review", "investigate", "implement", "implement_approve", "implement_amend", "implement_publish":
+			case "message", "resume", "review", "investigate", "implement", "implement_approve", "implement_amend", "implement_publish", "implement_check_ci", "implement_fix_ci", "implement_verify":
 				if cancelRun != nil {
 					problem("run_in_progress")
 					continue
@@ -330,9 +333,9 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				}
 				deadline := minTime(time.Now().Add(runDuration), time.UnixMilli(cmd.KeyExpiresAt))
 				// Publishing writes the saved change set and calls no AI model.
-				publishOnly := cmd.Type == "implement_publish" || (cmd.Type == "resume" && session.RunKind == "implement" && session.Implementation != nil && session.Implementation.Status == "publishing")
+				publishOnly := cmd.Type == "implement_publish" || cmd.Type == "implement_check_ci" || (cmd.Type == "resume" && session.RunKind == "implement" && session.Implementation != nil && (session.Implementation.Status == "publishing" || session.Implementation.Status == "checking_ci"))
 				if publishOnly {
-					deadline = time.Now().Add(5 * time.Minute)
+					deadline = time.Now().Add(6 * time.Minute)
 					cmd.APIKey = ""
 				}
 				if s.Config.AIProvider != "demo" && !publishOnly && (!validAIKey(cmd.APIKey) || !deadline.After(time.Now())) {
@@ -483,9 +486,24 @@ func implementCommandProblem(session *domain.Session, cmd *command) string {
 		if cmd.Text != "approve" && cmd.Text != "decline" {
 			return "invalid_implementation_amend"
 		}
+	case "implement_check_ci":
+		if impl == nil || impl.Status != "published" || !domain.ValidCommit(impl.Commit) || impl.PullNumber < 1 {
+			return "implementation_not_published"
+		}
+	case "implement_fix_ci":
+		if impl == nil || impl.Status != "published" || impl.CI == nil || impl.CI.State != "failed" || impl.CI.Commit != impl.Commit || impl.PullNumber < 1 {
+			return "implementation_ci_not_failed"
+		}
+	case "implement_verify":
+		if impl == nil || impl.Status != "verification_blocked" {
+			return "implementation_not_ready"
+		}
 	case "implement_publish":
 		if impl == nil || (impl.Status != "ready" && impl.Status != "publishing") || len(impl.Changes) == 0 {
 			return "implementation_not_ready"
+		}
+		if impl.Status == "ready" && !impl.CanPublish() {
+			return "implementation_verification_incomplete"
 		}
 		cmd.Title, cmd.Body, cmd.Branch = strings.TrimSpace(cmd.Title), strings.TrimSpace(cmd.Body), strings.TrimSpace(cmd.Branch)
 		if impl.ExpectedHead != "" {
@@ -522,6 +540,16 @@ func applyImplementCommand(session *domain.Session, cmd command) {
 	case "implement_amend":
 		session.RunKind = "implement"
 		session.Implementation.ResolveAmendment(cmd.Text == "approve")
+	case "implement_check_ci":
+		session.RunKind = "implement"
+		session.Implementation.Status = "checking_ci"
+	case "implement_verify":
+		session.RunKind = "implement"
+		session.Implementation.Status = "verifying"
+	case "implement_fix_ci":
+		session.RunKind = "implement"
+		prior := session.Implementation
+		session.Implementation = agent.StartCIFix(prior, agent.NewCacheID())
 	case "implement_publish":
 		impl := session.Implementation
 		session.RunKind = "implement"
