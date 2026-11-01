@@ -160,6 +160,7 @@ func (run *implementRun) save(ctx context.Context, progress string) error {
 
 func (run *implementRun) ready(ctx context.Context) error {
 	impl := run.impl
+	debugJSON(ctx, "publish_gate", map[string]any{"allowed": impl.CanPublish(), "status": impl.Status, "plan": impl.Plan, "verification": impl.Verification, "changes": impl.Changes})
 	if !impl.CanPublish() {
 		return errors.New("implementation_verification_incomplete")
 	}

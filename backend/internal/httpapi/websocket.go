@@ -16,6 +16,7 @@ import (
 )
 
 type command struct {
+	Effort          string `json:"effort"`
 	Type            string `json:"type"`
 	ID              string `json:"id"`
 	Text            string `json:"text"`
@@ -51,309 +52,45 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 	ws.SetReadLimit(16 * 1024)
 	ws.SetReadDeadline(time.Now().Add(10 * time.Second))
-	send := func(kind string, data any) error {
-		ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		return ws.WriteJSON(map[string]any{"type": kind, "data": data})
-	}
-	problem := func(message string) { send("error", map[string]string{"error": message}) }
+	conn := &socketConn{server: s, ws: ws}
 	var hello command
 	if ws.ReadJSON(&hello) != nil || hello.Type != "auth" {
-		problem("authentication_required")
+		conn.problem("authentication_required")
 		return
 	}
 	c, err = s.identity(r.Context(), r, hello.Token)
 	hello.Token = ""
 	if err != nil {
-		problem("login_required")
+		conn.problem("login_required")
 		return
 	}
+	conn.cred = c
 	select {
 	case s.slots <- struct{}{}:
 		defer func() { <-s.slots }()
 	default:
-		problem("server_busy")
+		conn.problem("server_busy")
 		return
 	}
 	session, err := s.Store.Acquire(r.Context(), c.UID, r.PathValue("id"), randomID())
 	if err != nil {
 		if errors.Is(err, domain.ErrConflict) {
-			problem("session_busy")
+			conn.problem("session_busy")
 		} else {
-			problem("session_unavailable")
+			conn.problem("session_unavailable")
 		}
 		return
 	}
+	conn.session = session
 	socketCtx, cancelSocket := context.WithDeadline(r.Context(), minTime(c.Expires, time.Now().Add(55*time.Minute)))
 	defer cancelSocket()
-	var cancelRun context.CancelFunc
-	var done chan error
-	var instructions chan domain.Message
-	defer func() {
-		if cancelRun != nil {
-			cancelRun()
-			<-done
-			session.State = "auth_wait"
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		s.Store.Release(ctx, c.UID, session)
-	}()
-	if send("session", session) != nil {
+	conn.ctx = socketCtx
+	conn.updates = make(chan update)
+	defer conn.release()
+	if conn.send("session", session) != nil {
 		return
 	}
-	inbound := make(chan command, 8)
-	readDone := make(chan struct{})
-	ws.SetReadDeadline(time.Now().Add(35 * time.Second))
-	ws.SetPongHandler(func(string) error { return ws.SetReadDeadline(time.Now().Add(35 * time.Second)) })
-	go func() {
-		defer close(readDone)
-		for {
-			var v command
-			if ws.ReadJSON(&v) != nil {
-				return
-			}
-			select {
-			case inbound <- v:
-			case <-socketCtx.Done():
-				return
-			}
-		}
-	}()
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	updates := make(chan update)
-	save := func() error {
-		ctx, cancel := context.WithTimeout(socketCtx, 5*time.Second)
-		defer cancel()
-		return s.Store.Save(ctx, c.UID, session)
-	}
-	for {
-		select {
-		case <-socketCtx.Done():
-			problem("connection_expired_reconnect")
-			return
-		case <-readDone:
-			return
-		case <-ticker.C:
-			if err = save(); err != nil {
-				problem("session_lease_lost")
-				return
-			}
-			if err = ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
-				return
-			}
-		case event := <-updates:
-			cp := event.Checkpoint
-			// Stop/cancel takes precedence over any late result from an external request.
-			if session.State == "stopping" {
-				event.Ack <- context.Canceled
-				continue
-			}
-			err = applyCheckpoint(session, cp)
-			if err == nil {
-				err = save()
-			}
-			event.Ack <- err
-			if err != nil {
-				problem("checkpoint_save_failed")
-				return
-			}
-			if send("session", session) != nil || send("progress", cp.Progress) != nil {
-				return
-			}
-		case runErr := <-done:
-			wasStopping := session.State == "stopping"
-			cancelRun()
-			cancelRun = nil
-			done = nil
-			instructions = nil
-			applyRunResult(session, runErr, wasStopping)
-			if err = save(); err != nil {
-				problem("checkpoint_save_failed")
-				return
-			}
-			if send("session", session) != nil {
-				return
-			}
-			if runErr != nil && session.State == "failed" {
-				problem(runErr.Error())
-			}
-		case cmd := <-inbound:
-			switch cmd.Type {
-			case "end":
-				if cancelRun != nil {
-					cancelRun()
-				}
-				send("ended", nil)
-				return
-			case "stop":
-				if cancelRun == nil && session.State == "ci_wait" {
-					session.State = "stopped"
-					if save() != nil || send("session", session) != nil {
-						return
-					}
-				}
-				if cancelRun != nil {
-					session.State = "stopping"
-					cancelRun()
-					if save() != nil {
-						return
-					}
-					if send("session", session) != nil {
-						return
-					}
-				}
-			case "instruction":
-				if !idPattern.MatchString(cmd.ID) || !safeText(cmd.Text) {
-					problem("invalid_instruction")
-					continue
-				}
-				if session.HasMessage(cmd.ID) {
-					send("session", session)
-					continue
-				}
-				if instructions != nil && len(instructions) >= cap(instructions) {
-					problem("instruction_queue_full")
-					continue
-				}
-				if err = session.Add("instruction", cmd.Text, cmd.ID); err != nil {
-					problem(err.Error())
-					continue
-				}
-				if save() != nil {
-					return
-				}
-				if instructions != nil {
-					instructions <- session.Messages[len(session.Messages)-1]
-				}
-				if send("session", session) != nil {
-					return
-				}
-			case "message", "resume", "review", "investigate", "implement", "implement_approve", "implement_amend", "implement_publish", "implement_check_ci", "implement_fix_ci", "implement_verify":
-				if cancelRun != nil {
-					problem("run_in_progress")
-					continue
-				}
-				if cmd.Type == "investigate" {
-					if session.Review == nil || session.Target.Kind != "pull" || cmd.UnverifiedIndex == nil || *cmd.UnverifiedIndex < 0 || *cmd.UnverifiedIndex >= len(session.Review.Unverified) || !idPattern.MatchString(cmd.ID) {
-						problem("invalid_investigation")
-						continue
-					}
-					cmd.Text = investigationPrompt(session, *cmd.UnverifiedIndex)
-				}
-				if problemText := implementCommandProblem(session, &cmd); problemText != "" {
-					problem(problemText)
-					continue
-				}
-				if cmd.Type == "review" && session.Target.Kind != "pull" {
-					problem("pull_request_required")
-					continue
-				}
-				if cmd.carriesMessage() && (!idPattern.MatchString(cmd.ID) || !safeText(cmd.Text) || (cmd.APIKey != "" && strings.Contains(cmd.Text, cmd.APIKey))) {
-					problem("invalid_message_no_secrets")
-					continue
-				}
-				if cmd.carriesMessage() && session.HasMessage(cmd.ID) {
-					send("session", session)
-					continue
-				}
-				// A finished chat or investigation must not hide a review that was
-				// interrupted earlier; resume returns to that review's saved cursor.
-				resumeReview := cmd.Type == "resume" && session.State == "done" && session.ReviewUnfinished()
-				if cmd.Type == "resume" && !resumeReview && ((len(session.Messages) == 0 && session.RunKind != "review") || session.State == "done") {
-					problem("nothing_to_resume")
-					continue
-				}
-				runDuration := agent.ReviewRunDuration
-				if strings.HasPrefix(cmd.Type, "implement") || (cmd.Type == "resume" && session.RunKind == "implement") {
-					runDuration = agent.ImplementRunTime
-				}
-				deadline := minTime(time.Now().Add(runDuration), time.UnixMilli(cmd.KeyExpiresAt))
-				// Publishing writes the saved change set and calls no AI model.
-				publishOnly := cmd.Type == "implement_publish" || cmd.Type == "implement_check_ci" || (cmd.Type == "resume" && session.RunKind == "implement" && session.Implementation != nil && (session.Implementation.Status == "publishing" || session.Implementation.Status == "checking_ci"))
-				if publishOnly {
-					deadline = time.Now().Add(6 * time.Minute)
-					cmd.APIKey = ""
-				}
-				if s.Config.AIProvider != "demo" && !publishOnly && (!validAIKey(cmd.APIKey, s.Config.ModelProviders[session.Model]) || !deadline.After(time.Now())) {
-					session.State = "auth_wait"
-					save()
-					problem("ai_key_required")
-					send("session", session)
-					continue
-				}
-				if s.Config.AIProvider == "demo" {
-					deadline = time.Now().Add(runDuration)
-					cmd.APIKey = ""
-				}
-				if session.HistoryBytes() > domain.MaxHistoryBytes-24*1024 || len(session.Messages) > 196 {
-					problem("history_limit_create_new_session")
-					continue
-				}
-				if cmd.carriesMessage() {
-					if err = session.Add("user", cmd.Text, cmd.ID); err != nil {
-						problem(err.Error())
-						continue
-					}
-				}
-				if cmd.Type == "investigate" {
-					session.RunKind = "investigation"
-					session.Review.PendingInvestigation = *cmd.UnverifiedIndex + 1
-				} else if cmd.Type == "review" {
-					session.RunKind = "review"
-					session.Review = nil
-					session.ReviewScope = ""
-				} else if cmd.Type == "message" {
-					if session.Review != nil {
-						session.Review.PendingInvestigation = 0
-					}
-					session.RunKind = "chat"
-				}
-				if resumeReview {
-					session.RunKind = "review"
-				}
-				applyImplementCommand(session, cmd)
-				session.State = "accepted"
-				if save() != nil {
-					return
-				}
-				if send("session", session) != nil {
-					return
-				}
-				runCtx, cancel := context.WithDeadline(socketCtx, deadline)
-				cancelRun = cancel
-				done = make(chan error, 1)
-				instructions = make(chan domain.Message, 8)
-				// Snapshot slices before the worker starts; only this event loop mutates durable state.
-				snapshot := *session
-				snapshot.Messages = append([]domain.Message{}, session.Messages...)
-				snapshot.Sources = append([]domain.Source{}, session.Sources...)
-				traceID := randomID()
-				logger := slog.Default().With("trace_id", traceID, "session_id", session.ID, "command", cmd.Type, "model", session.Model)
-				input := agent.Input{Session: snapshot, Key: cmd.APIKey, GitHubToken: c.Token, Instructions: instructions, Logger: logger}
-				cmd.APIKey = ""
-				session.State = "running"
-				if save() != nil {
-					cancelRun()
-					cancelRun = nil
-					return
-				}
-				if send("session", session) != nil {
-					cancelRun()
-					cancelRun = nil
-					return
-				}
-				if send("trace", map[string]string{"traceId": traceID}) != nil {
-					cancelRun()
-					cancelRun = nil
-					return
-				}
-				s.startWorker(runCtx, input, logger, updates, done)
-			default:
-				problem("unknown_command")
-			}
-		}
-	}
+	conn.serve()
 }
 
 // maxAIKeyBytes caps API keys. Vertex AI takes a Google OAuth access token,
@@ -506,6 +243,7 @@ func applyCheckpoint(session *domain.Session, cp agent.Checkpoint) error {
 	session.Sources = cp.Sources
 	session.Metrics = cp.Metrics
 	session.Limitations = cp.Limitations
+	session.Normalize()
 	if len(session.Limitations) > 20 {
 		session.Limitations = session.Limitations[len(session.Limitations)-20:]
 	}

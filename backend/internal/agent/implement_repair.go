@@ -15,6 +15,7 @@ const maxImplementationRepairs = 2
 func (run *implementRun) repair(ctx context.Context, result *domain.ImplementationVerification) (bool, error) {
 	impl := run.impl
 	if impl.RepairRound >= maxImplementationRepairs {
+		debugJSON(ctx, "repair_decision", map[string]any{"reason": "repair_limit", "round": impl.RepairRound, "verification": result})
 		result.Unverified = appendUnique(result.Unverified, "自動修正の上限（2回）に達しました。残っている指摘を確認してください。")
 		return false, nil
 	}
@@ -45,8 +46,10 @@ func (run *implementRun) repair(ctx context.Context, result *domain.Implementati
 	}
 	result.Unverified = appendUnique(result.Unverified, rejected...)
 	if len(files) == 0 && len(pending) == 0 {
+		debugJSON(ctx, "repair_decision", map[string]any{"reason": "no_eligible_repairs", "verification": result, "rejected_additions": rejected})
 		return false, nil
 	}
+	debugJSON(ctx, "repair_decision", map[string]any{"reason": "scheduled", "round": impl.RepairRound + 1, "selected_files": files, "pending_files": pending, "rejected_additions": rejected, "verification": result})
 	impl.EditStartRevision = impl.ChangeRevision
 	impl.RepairRound++
 	feedback := append([]string{}, result.Issues...)

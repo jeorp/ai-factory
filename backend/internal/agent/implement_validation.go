@@ -7,8 +7,60 @@ import (
 	"ai-factory/backend/internal/domain"
 )
 
-// implementationResultError carries only a fixed classification, never model text.
-type implementationResultError struct{ reason string }
+// implementationResultError carries fixed classifications and numeric metadata, never model text.
+type implementationResultError struct {
+	reason string
+	limit  *editLimitIssue
+}
+
+type editLimitIssue struct {
+	FileIndex int
+	EditIndex int
+	Field     string
+	Bytes     int
+	Limit     int
+}
+
+func editTextLimit(d Decision) *editLimitIssue {
+	if d.Implementation == nil {
+		return nil
+	}
+	for i, c := range d.Implementation.Changes {
+		for j, e := range c.LineEdits {
+			for _, v := range []struct {
+				field       string
+				size, limit int
+			}{
+				{"expectedStart", len(e.ExpectedStart), 4096}, {"expectedEnd", len(e.ExpectedEnd), 4096}, {"lineEdits.content", len(e.Content), 64 * 1024},
+			} {
+				if v.size > v.limit {
+					return &editLimitIssue{i + 1, j + 1, v.field, v.size, v.limit}
+				}
+			}
+		}
+		for j, e := range c.Edits {
+			for _, v := range []struct {
+				field       string
+				size, limit int
+			}{
+				{"search", len(e.Search), 32 * 1024}, {"replace", len(e.Replace), 64 * 1024},
+			} {
+				if v.size > v.limit {
+					return &editLimitIssue{i + 1, j + 1, v.field, v.size, v.limit}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func newImplementationResultError(reason string, d Decision) *implementationResultError {
+	e := &implementationResultError{reason: reason}
+	if reason == "edit_text_limit" {
+		e.limit = editTextLimit(d)
+	}
+	return e
+}
 
 func (e *implementationResultError) Error() string { return "invalid_implementation_result" }
 
@@ -77,16 +129,9 @@ func implementationDecisionIssue(d Decision) string {
 			if len(c.Path) > 512 || len(c.Content) > domain.MaxChangeFileBytes || len(c.Edits) > 40 || len(c.LineEdits) > 40 || len(c.SourceHash) > 64 {
 				return "change_shape"
 			}
-			for _, e := range c.LineEdits {
-				if len(e.ExpectedStart) > 4096 || len(e.ExpectedEnd) > 4096 || len(e.Content) > 64*1024 {
-					return "edit_text_limit"
-				}
-			}
-			for _, e := range c.Edits {
-				if len(e.Search) > 32*1024 || len(e.Replace) > 64*1024 {
-					return "edit_text_limit"
-				}
-			}
+		}
+		if editTextLimit(d) != nil {
+			return "edit_text_limit"
 		}
 		for _, u := range r.Unverified {
 			if len(u) > 512 {
@@ -128,6 +173,13 @@ func implementationResponseIssue(input string, d Decision) string {
 		Task *implementTask `json:"implementTask"`
 	}
 	parseErr := json.Unmarshal([]byte(input), &body)
+	if body.Task != nil && body.Task.Mode == "edit" && d.Implementation != nil {
+		for _, c := range d.Implementation.Changes {
+			if (body.Task.EditFormat == lineRangeFormat && len(c.Edits) > 0) || (body.Task.EditFormat != lineRangeFormat && len(c.LineEdits) > 0) {
+				return "edit_format_mismatch"
+			}
+		}
+	}
 	verifying := body.Task != nil && body.Task.Mode == "verify"
 	reading := verifying && (d.Read != nil || d.Search != nil)
 	if verifying != (d.Verification != nil || reading) {

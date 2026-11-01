@@ -6,6 +6,10 @@ describe('error messages', () => {
   expect(errorMessage('login_required')).toContain('ログインし直して');
   expect(errorMessage(new Error('session_busy'))).toContain('別の接続');
  });
+ it('keeps the busy-run message generic and effort-specific only for effort changes', () => {
+  expect(errorMessage('run_in_progress')).not.toContain('エフォート');
+  expect(errorMessage('effort_change_in_progress')).toContain('エフォート');
+ });
  it('falls back to a generic message that keeps the code', () => {
   expect(errorMessage('unknown_code')).toBe('処理を完了できませんでした（unknown_code）。');
  });

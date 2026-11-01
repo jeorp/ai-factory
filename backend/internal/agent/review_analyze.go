@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"ai-factory/backend/internal/domain"
+	"ai-factory/backend/internal/github"
 )
 
 // analyze runs one model invocation over the current patch fragment or a small
@@ -31,6 +32,7 @@ func (run *reviewRun) analyze(ctx context.Context, task reviewTask) (Decision, e
 		body, _ := json.Marshal(payload)
 		// Reduce optional background before source evidence. Every omission is visible.
 		if !reviewInputFits(body) {
+			debugJSON(ctx, "context_reduced", map[string]any{"phase": "review_" + task.Mode, "reason": "background_over_input_limit", "original_bytes": len(body), "prior": task.Prior, "focus": focus})
 			payload["body"] = ""
 			payload["repositoryOverview"] = nil
 			payload["focus"] = domain.Clip(focus, 1024)
@@ -42,6 +44,7 @@ func (run *reviewRun) analyze(ctx context.Context, task reviewTask) (Decision, e
 		for capBytes := 16000; !reviewInputFits(body) && len(ev) > 0 && capBytes >= 1000; capBytes -= 1000 {
 			for i := range ev {
 				if len(ev[i].Content) > capBytes {
+					debugJSON(ctx, "context_reduced", map[string]any{"phase": "review_" + task.Mode, "reason": "evidence_over_input_limit", "read": ev[i].Read, "received_bytes": len(ev[i].Content), "clip_limit": capBytes})
 					ev[i].Content = domain.Clip(ev[i].Content, capBytes)
 					run.limit("入力上限により関連コードの後半を省略しました: " + ev[i].Read.Path)
 				}
@@ -58,7 +61,7 @@ func (run *reviewRun) analyze(ctx context.Context, task reviewTask) (Decision, e
 		run.modelCalls++
 		run.logger.Info("model_call_started", "step", run.modelCalls, "review_phase", task.Mode, "input_bytes", len(body), "estimated_input_tokens", reviewTokens(string(body)), "batch_files", len(task.Patches))
 		run.recordInputBytes(len(body))
-		d, usage, err := run.r.AI.Next(ctx, in.Key, in.Session.Model, string(body))
+		d, usage, err := run.r.next(ctx, in, string(body))
 		run.logger.Info("model_call_finished", "step", run.modelCalls, "review_phase", task.Mode, "outcome", outcome(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 		if err == nil {
 			run.markApplied()
@@ -103,7 +106,7 @@ func (run *reviewRun) analyze(ctx context.Context, task reviewTask) (Decision, e
 				run.limit(u)
 			}
 			for _, f := range d.Review.Findings {
-				run.acceptFinding(task, ev, f)
+				run.acceptFinding(ctx, task, ev, f)
 			}
 			return d, nil
 		}
@@ -139,6 +142,7 @@ func (run *reviewRun) analyze(ctx context.Context, task reviewTask) (Decision, e
 		if ctx.Err() != nil {
 			return Decision{}, ctx.Err()
 		}
+		debugJSON(ctx, "read_result", map[string]any{"workflow": "review", "read": read, "content": content, "received_bytes": len(content), "clip_limit": 24000, "outcome": outcome(err)})
 		if err != nil {
 			content = "取得できませんでした: " + err.Error()
 			run.limit(read.Path + ": " + content)
@@ -161,9 +165,20 @@ func (run *reviewRun) analyze(ctx context.Context, task reviewTask) (Decision, e
 
 // acceptFinding saves a finding only when its location is backed by the
 // patch or by fetched source, and it is not a duplicate.
-func (run *reviewRun) acceptFinding(task reviewTask, ev []evidence, f domain.Finding) {
+func (run *reviewRun) acceptFinding(ctx context.Context, task reviewTask, ev []evidence, f domain.Finding) {
+	disposition := "accepted"
+	if debugTrace(ctx) != nil {
+		defer func() {
+			reads := []github.Read{}
+			for _, e := range ev {
+				reads = append(reads, e.Read)
+			}
+			debugJSON(ctx, "review_finding_decision", map[string]any{"phase": task.Mode, "finding": f, "reason": disposition, "read_sources": reads})
+		}()
+	}
 	review := run.review
 	if nonIssueFinding(f) || excludedReviewFinding(review, f.Path) {
+		disposition = "non_issue_or_out_of_scope"
 		run.logger.Info("review_finding_rejected", "reason", "non_issue_or_out_of_scope", "path", f.Path)
 		return
 	}
@@ -188,17 +203,20 @@ func (run *reviewRun) acceptFinding(task reviewTask, ev []evidence, f domain.Fin
 		supported = false
 	}
 	if !supported {
+		disposition = "unsupported_location_or_sources"
 		run.limit("根拠の元コード・位置を確認できない指摘を保留しました: " + f.Path + " " + f.Title)
 		return
 	}
 	for _, old := range review.Findings {
 		if old.Path == f.Path && old.Line == f.Line && old.Side == f.Side && old.Title == f.Title {
+			disposition = "duplicate"
 			return
 		}
 	}
 	if len(review.Findings) < 50 {
 		review.Findings = append(review.Findings, f)
 	} else {
+		disposition = "finding_limit"
 		run.limit("指摘の保存上限50件に達しました。追加の指摘は保存していません。")
 	}
 }

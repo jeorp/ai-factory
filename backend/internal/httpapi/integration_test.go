@@ -110,7 +110,7 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	ai := &controlledAI{Gate: make(chan struct{}), Started: make(chan struct{}, 5)}
 	gh := &github.Client{Demo: true, Cache: &github.FirestoreReadCache{DB: db}}
 	storage := &store.Store{DB: db}
-	cfg := Config{Local: true, Demo: false, Project: project, Origin: "http://app.test", Models: []string{"gpt-5-mini"}, CookieKey: []byte(strings.Repeat("a", 32))}
+	cfg := Config{Local: true, Demo: false, Project: project, Origin: "http://app.test", Models: []string{"gpt-5-mini", "gemini-3.1-pro-preview"}, ModelProviders: map[string]string{"gpt-5-mini": "openai", "gemini-3.1-pro-preview": "gemini"}, CookieKey: []byte(strings.Repeat("a", 32))}
 	api := New(cfg, auth, storage, gh, &agent.Runner{AI: ai, GitHub: gh}, http.DefaultClient)
 	srv := httptest.NewServer(api.Handler())
 	defer srv.Close()
@@ -233,6 +233,41 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 			}
 		}
 	}
+
+	// Effort is validated at creation and persisted through the socket lease.
+	for _, effort := range []string{"minimal", "unexpected"} {
+		response := request(two, "POST", "/api/v1/sessions", map[string]string{"target": "demo/ai-factory", "model": "gemini-3.1-pro-preview", "effort": effort})
+		response.Body.Close()
+		if response.StatusCode != 422 {
+			t.Fatalf("invalid effort accepted: %s status=%d", effort, response.StatusCode)
+		}
+	}
+	response := request(two, "POST", "/api/v1/sessions", map[string]string{"target": "demo/ai-factory", "model": "gemini-3.1-pro-preview"})
+	var effortSession domain.Session
+	json.NewDecoder(response.Body).Decode(&effortSession)
+	response.Body.Close()
+	if response.StatusCode != 201 || effortSession.Effort != "low" {
+		t.Fatalf("missing default: %+v status=%d", effortSession, response.StatusCode)
+	}
+	t.Cleanup(func() { storage.Delete(ctx, two.uid, effortSession.ID) })
+	effortWS, _, e := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/api/v1/sessions/"+effortSession.ID+"/ws", http.Header{"Origin": []string{cfg.Origin}, "Cookie": []string{two.cookie}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	effortWS.WriteJSON(command{Type: "auth", Token: two.token})
+	wait(effortWS, func(s domain.Session) bool { return s.ID == effortSession.ID })
+	effortWS.WriteJSON(command{Type: "set_effort", Effort: "high"})
+	wait(effortWS, func(s domain.Session) bool { return s.Effort == "high" })
+	effortWS.WriteJSON(command{Type: "set_effort", Effort: "minimal"})
+	var rejectedEffort envelope
+	if e := effortWS.ReadJSON(&rejectedEffort); e != nil || rejectedEffort.Type != "error" || !strings.Contains(string(rejectedEffort.Data), "effort_not_allowed") {
+		t.Fatalf("invalid effort not rejected: %v %+v", e, rejectedEffort)
+	}
+	stored, e := storage.Get(ctx, two.uid, effortSession.ID)
+	if e != nil || stored.Effort != "high" {
+		t.Fatalf("effort not saved: %v %+v", e, stored)
+	}
+	effortWS.Close()
 	ws := dial(one)
 	defer ws.Close()
 	initial := wait(ws, func(s domain.Session) bool { return s.ID == session.ID })
@@ -258,6 +293,19 @@ func TestEmulatorSessionLifecycle(t *testing.T) {
 	case <-ai.Started:
 	case <-time.After(5 * time.Second):
 		t.Fatal("AI did not start")
+	}
+	ws.WriteJSON(command{Type: "set_effort", Effort: "high"})
+	var busyEffort envelope
+	for {
+		if e := ws.ReadJSON(&busyEffort); e != nil {
+			t.Fatal(e)
+		}
+		if busyEffort.Type == "error" {
+			break
+		}
+	}
+	if !strings.Contains(string(busyEffort.Data), "effort_change_in_progress") {
+		t.Fatalf("effort changed during run: %+v", busyEffort)
 	}
 	ws.WriteJSON(command{Type: "instruction", ID: randomID(), Text: "認証を優先"})
 	wait(ws, func(s domain.Session) bool { return len(s.Messages) == 2 })

@@ -48,7 +48,7 @@
 画面の「AIモデル」には `GEMINI_MODELS`（カンマ区切り、先頭が既定）の許可リストが表示される。未設定時は `gemini-3.5-flash-lite`、`gemini-3.8-flash`、`gemini-3.1-pro-preview` の3つ。`gemini-4-argon` や `gemini-2.5-pro` なども追加できる。
 
 - Proモデル（`gemini-3.1-pro-preview`）とGemini 4 Argonには無料枠がないため、課金を有効にしたプロジェクトのキーが必要。無料枠のキーでは利用枠エラーになる。
-- Gemini 3以降のモデルには `thinkingLevel=low` を指定し、思考トークンを抑える。`minimal` はProで使えないため全モデル共通で `low` を使う。Gemini 2.xは既定の思考設定のまま送る。
+- Gemini 3以降のモデルには、通常チャット・PRレビュー・実装のすべてで、会話に保存されたエフォートを `thinkingLevel` に指定する。既定は対応値が分かっているモデルでは `medium`、一覧にないモデルでは全モデルで使える `low`（`domain.DefaultEffort`）。新規セッションのモデル選択横と、既存の会話の入力欄の上から変更でき、次の実行から適用される。実行中は変更できない。モデルごとの対応値はサーバーで検証する。Gemini 2.xは既定の思考設定のまま送る。
 - Geminiは思考トークンを `maxOutputTokens` に含めるため、回答枠に8192トークンの余裕を加えている。思考トークンも出力として課金される。
 - 料金表示（`frontend/web/src/lib/pricing.ts`）は2026-10-31時点の200kトークン以下の単価。未登録のモデルは料金を推定しない。
 
@@ -152,6 +152,35 @@ API の標準出力には JSON ログが出力され、`trace_id` で一回の�
 
 ローカルの Compose では `docker compose logs api` で確認する。本番では API の標準出力を収集するログ基盤で `trace_id` または `session_id` を検索する。これは構造化ログによる相関であり、外部サービス内部までの分散トレースではない。
 
+### ローカル限定の詳細debugログ
+
+`AGENT_DEBUG_LOG=1` を付けてAPIを再起動すると、コード本文を含む詳細ログを出力します。
+
+```sh
+AGENT_DEBUG_LOG=1 docker compose up --build -d --wait --no-deps api
+docker compose logs --no-color --since 10m api | python3 scripts/read-agent-debug.py > /tmp/ai-factory-debug.jsonl
+```
+
+`agent_debug_model_input` / `agent_debug_model_output` にモデルの入力と解析後の応答、`agent_debug_provider_request` / `agent_debug_provider_response` にプロバイダーへの本文と応答を記録します。`trace_id`・`session_id`、モデル呼び出しごとの `ai_call_id` で追跡できます。APIキー・GitHubトークンと認識できる認証情報はマスクし、認証ヘッダーは記録しません。ログには依頼文・取得コード・生成コードが含まれるため、共有前に内容を確認してください。各payloadは512 KiBまでで、切り詰めた場合は `truncated=true` と元のバイト数を記録します。
+
+長いpayloadはDockerのログ境界で日本語が壊れないよう、UTF-8を保った小さなレコードに分割します。`payload_id` と `chunk_index` / `chunk_count` で関連づけ、上記のスクリプトで元のpayloadに戻せます。取得期間の境界などでレコードが欠けるとスクリプトはエラーになるため、ログの取得期間を広げてください。実装のモデル呼び出しには `call`・`attempt`・`retry_count` も記録します。
+
+`agent_debug_edit_rejected` のpayloadには、ファイルごとの `planned_action` / `submitted_action`、原文ハッシュ、失敗した編集番号を記録します。行範囲編集では `line_edit` の期待文字列と `actual_start` / `actual_end`、前後2行の `source_context` を比較できます。検索置換では失敗時点の `current_source`（先行する置換を適用済み）、検索文字列と置換内容、一致件数を記録します。編集の照合条件や再試行上限は変えません。編集失敗後のモデル入力には `implementTask.editFailure` として、対象パス・原文ハッシュ・実際の行数・失敗した行範囲の正しい境界行を渡します。空行や4096バイトを超える行など、確認文字列に使えない境界は省略し、切り詰めた文字列を正解として渡しません。この訂正情報は追加取得を挟んでも保持します。
+
+品質の判断を追うため、次のイベントも同じローカル限定フラグで出力します。
+
+| イベント（`agent_debug_` 接頭辞） | 確認できる内容 |
+| --- | --- |
+| `chat_context` / `context_reduced` / `evidence_evicted` | 会話履歴・取得情報のうち入力に残った範囲と、省略・破棄した情報 |
+| `read_result` / `search_result` / `verification_read` | 取得元が固定ベースか生成済みコードか、検索結果・省略範囲・全文確認の可否 |
+| `plan_rejected` / `plan_gap_review` / `plan_accepted` | 計画を拒否した理由、追加検討した関連ファイル、承認待ちにした計画と実装順 |
+| `verification_coverage` | 受け入れ条件、全文確認できたパス、AIとサーバーの検証結果、公開可否 |
+| `repair_decision` / `publish_gate` | 修復対象・対象外・回数上限と、公開できるかの判断 |
+| `review_finding_decision` | 指摘の採用・重複・対象外・根拠不足・保存上限による除外 |
+| `model_result` | モデル呼び出しの結果、検証での拒否理由、使用トークン |
+
+既定は無効です。`APP_ENV=local` に加え、既存のローカル用設定検証（demoプロジェクト・両Emulator・loopback Origin）を通った場合だけ利用できます。本番設定やCloud Run（`K_SERVICE` がある環境）で `AGENT_DEBUG_LOG=1` にすると起動を拒否します。通常のログはこれまでどおり本文を含みません。無効に戻すには `AGENT_DEBUG_LOG=0 docker compose up -d --no-deps api` を実行します。
+
 ## 動作確認
 
 ### PRレビュー
@@ -178,7 +207,7 @@ API の標準出力には JSON ログが出力され、`trace_id` で一回の�
 3. 変更は最大5ファイルずつ検索・置換ブロックで作成し、サーバーが元ファイルへの一意な一致を確認して適用する。
 4. 差分を確認し、ブランチ名・PRタイトル・本文を確認して「Draft PRを作成」を押すとGitHubへ書き込む。PR作成はAIキーを使わない。
 
-計画・変更・整合性確認・CI確認の詳細は[設計と制限の実装・PR作成](architecture.md#実装pr作成)にある。
+計画・変更・整合性確認・CI確認の詳細は[設計と制限の実装・PR作成](architecture.md#実装pr作成)にある。実ログで確認した編集失敗と、修正済み・未修正の課題は[実装編集・照合・再試行の問題整理](implementation-edit-reliability.md)にある。
 
 Emulator統合テスト `TestEmulatorImplementationLifecycle` は固定デモのAIとGitHubで、計画・承認・差分・不正なブランチ名や秘密情報の拒否・PR作成・Firestoreへの保存を実WebSocket経由で確認する。Emulatorはfirebase-toolsで起動できる。
 

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSSRApp, h } from 'vue';
+import { renderToString } from '@vue/server-renderer';
+import ImplementationPanel from '../components/ImplementationPanel.vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { useWorkspace } from './workspace';
 import type { Session } from '../types';
@@ -36,6 +39,16 @@ describe('run progress after failure and reconnection', () => {
   Socket.instance.receive('progress', '計画を作成中');
   expect(work.progress).toBe('');
   expect(work.current?.state).toBe('failed');
+  work.disconnect();
+ });
+ it('renders stored implementation results with null verification lists', async () => {
+  const work = useWorkspace(); await work.open(session('failed'));
+  const restored = { ...session('failed'), implementation: { request: 'fix', status: 'verification_blocked', version: 1, baseBranch: 'main', baseCommit: 'c'.repeat(40), nextStep: 0, changes: [], unverified: [], summary: '', verification: { issues: null, unverified: null } } } as unknown as Session;
+  Socket.instance.receive('session', restored);
+  expect(work.current?.implementation?.verification?.issues).toEqual([]);
+  const html = await renderToString(createSSRApp({ render: () => h(ImplementationPanel, { sessionId: restored.id, repository: 'a/b', implementation: work.current!.implementation!, sessionState: 'failed', running: false, connected: false, canRun: false }) }));
+  expect(html).toContain('AIによる整合性確認');
+  expect(html).toContain('要求の達成を確認できていないため公開を止めています');
   work.disconnect();
  });
  it('starts a reopened conversation without the previous progress message', async () => {

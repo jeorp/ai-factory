@@ -67,7 +67,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) { reply(w, 200, map[string]bool{"ok": true}) })
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
-		reply(w, 200, map[string]any{"demo": s.Config.Demo, "aiProvider": s.Config.AIProvider, "models": s.Config.Models, "modelProviders": s.Config.ModelProviders, "installUrl": "https://github.com/apps/" + s.Config.AppSlug + "/installations/new", "reviewPolicy": map[string]any{"maxFiles": agent.ReviewMaxFiles, "diffTokens": agent.ReviewDiffTokens, "inputTokens": agent.ReviewInputTokens, "inputBytes": agent.ReviewInputBytes, "maxCalls": agent.ReviewMaxCalls, "maxMinutes": int(agent.ReviewRunDuration.Minutes()), "runInputTokens": agent.ReviewRunInputTokens, "runOutputTokens": agent.ReviewRunOutputTokens}})
+		reply(w, 200, map[string]any{"demo": s.Config.Demo, "aiProvider": s.Config.AIProvider, "models": s.Config.Models, "modelProviders": s.Config.ModelProviders, "modelEfforts": s.modelEfforts(), "modelEffortDefaults": s.modelEffortDefaults(), "installUrl": "https://github.com/apps/" + s.Config.AppSlug + "/installations/new", "reviewPolicy": map[string]any{"maxFiles": agent.ReviewMaxFiles, "diffTokens": agent.ReviewDiffTokens, "inputTokens": agent.ReviewInputTokens, "inputBytes": agent.ReviewInputBytes, "maxCalls": agent.ReviewMaxCalls, "maxMinutes": int(agent.ReviewRunDuration.Minutes()), "runInputTokens": agent.ReviewRunInputTokens, "runOutputTokens": agent.ReviewRunOutputTokens}})
 	})
 	mux.HandleFunc("GET /auth/github", s.login)
 	mux.HandleFunc("GET /auth/callback", s.callback)
@@ -163,6 +163,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, c credential) {
 	var body struct {
 		Target string `json:"target"`
 		Model  string `json:"model"`
+		Effort string `json:"effort"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -180,6 +181,14 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, c credential) {
 		fail(w, 422, "model_not_allowed")
 		return
 	}
+	levels := s.effortOptions(body.Model)
+	if !domain.ValidEffort(levels, body.Effort) {
+		fail(w, 422, "effort_not_allowed")
+		return
+	}
+	if body.Effort == "" {
+		body.Effort = domain.DefaultEffort(body.Model, levels)
+	}
 	repo, err := s.GitHub.Authorize(r.Context(), c.Token, target.Repository)
 	if err != nil {
 		fail(w, 403, "repository_forbidden")
@@ -190,7 +199,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, c credential) {
 		fail(w, 502, "commit_lookup_failed")
 		return
 	}
-	v := domain.Session{OverviewPending: true, ID: randomID(), Title: target.Repository, Target: target, Model: body.Model, State: "auth_wait", Messages: []domain.Message{}, Sources: []domain.Source{}, Limitations: []string{}, UpdatedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(30 * 24 * time.Hour)}
+	v := domain.Session{OverviewPending: true, ID: randomID(), Title: target.Repository, Target: target, Model: body.Model, Effort: body.Effort, State: "auth_wait", Messages: []domain.Message{}, Sources: []domain.Source{}, Limitations: []string{}, UpdatedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(30 * 24 * time.Hour)}
 	if target.Kind != "repository" {
 		v.Title = body.Target
 	}

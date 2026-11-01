@@ -105,6 +105,7 @@ func (run *implementRun) plan(ctx context.Context) error {
 		d, err := run.call(ctx, payload)
 		if err != nil && err.Error() == "ai_input_limit" && len(ev) > 0 {
 			run.retry("plan", call+1, &retries, err)
+			debugJSON(ctx, "context_reduced", map[string]any{"phase": "plan", "reason": "ai_input_limit", "discarded_evidence": ev[0]})
 			ev = ev[1:]
 			correction = "入力上限のため古い取得結果を省略しました。"
 			// The request never reached the model, so it does not use up a call.
@@ -188,6 +189,7 @@ func (run *implementRun) plan(ctx context.Context) error {
 		}
 		if err != nil {
 			run.retry("plan", call+1, &retries, err)
+			debugJSON(ctx, "plan_rejected", map[string]any{"reason": err.Error(), "plan": plan, "required_criteria": impl.RequiredCriteria})
 			correction = "計画が無効です: " + err.Error() + "。acceptanceCriteriaに依頼全体を分解したid・requirement・paths・checksを必ず含めてください。変更対象は20ファイル以内、.github/workflows・バイナリ・ロックファイルは対象外です。dependsOnは計画内の別ファイルだけを重複なく指定し、循環する変更は5ファイル以内にしてください。作成済みファイルのactionはdraftPlanのものを維持してください。"
 			continue
 		}
@@ -196,6 +198,7 @@ func (run *implementRun) plan(ctx context.Context) error {
 			return err
 		}
 		if len(problems) > 0 {
+			debugJSON(ctx, "plan_rejected", map[string]any{"reason": "plan_path_mismatch", "problems": problems, "plan": plan})
 			run.retry("plan", call+1, &retries, errors.New("plan_path_mismatch"))
 			// The model sometimes plans an update for a path it never read. Catch
 			// it here so the user only approves plans that can be applied.
@@ -208,6 +211,7 @@ func (run *implementRun) plan(ctx context.Context) error {
 			// to planned files and files it read while planning.
 			gapReviewed = true
 			if related := relatedFiles(plan, impl.ContextFiles, allPaths); len(related) > 0 {
+				debugJSON(ctx, "plan_gap_review", map[string]any{"related_paths": related, "plan": plan})
 				run.logger.Info("implement_plan_gap_review", "count", len(related))
 				correction = "計画の見直し: 次のファイルは計画にありませんが、関連する可能性があります: " + strings.Join(related, "、") + "。変更した定義・関数・型の利用箇所やテストで変更が必要なものは計画に加えてください。必要なら読んで確認できます。不要なら同じ計画をそのまま返してください。"
 				continue
@@ -215,6 +219,7 @@ func (run *implementRun) plan(ctx context.Context) error {
 		}
 		impl.Plan = plan
 		impl.Steps = domain.PlanSteps(work)
+		debugJSON(ctx, "plan_accepted", map[string]any{"plan": plan, "steps": impl.Steps, "required_criteria": impl.RequiredCriteria})
 		impl.NextStep = 0
 		impl.Status = "plan_ready"
 		impl.Summary = domain.Clip(d.Summary, 2048)

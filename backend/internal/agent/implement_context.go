@@ -39,6 +39,7 @@ func (run *implementRun) read(ctx context.Context, read github.Read, ev *[]evide
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	debugJSON(ctx, "read_result", map[string]any{"workflow": run.impl.Status, "read": read, "source_generated": overlaid, "received_bytes": len(content), "content": content, "outcome": outcome(err), "clip_limit": 16000})
 	if err != nil {
 		content = "取得できませんでした: " + err.Error()
 	} else {
@@ -53,6 +54,9 @@ func (run *implementRun) read(ctx context.Context, read github.Read, ev *[]evide
 		}
 	}
 	*ev = append(*ev, evidence{Read: read, Content: content})
+	if len(*ev) > keep {
+		debugJSON(ctx, "evidence_evicted", map[string]any{"phase": run.impl.Status, "discarded": (*ev)[:len(*ev)-keep]})
+	}
 	if len(*ev) > keep {
 		*ev = (*ev)[len(*ev)-keep:]
 	}

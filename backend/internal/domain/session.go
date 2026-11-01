@@ -104,6 +104,7 @@ type Session struct {
 	Title              string              `json:"title"`
 	Target             Target              `json:"target"`
 	Model              string              `json:"model"`
+	Effort             string              `json:"effort,omitempty"`
 	RunKind            string              `json:"runKind"`
 	ReviewScope        string              `json:"reviewScope,omitempty"`
 	ActivePullRequest  int                 `json:"activePullRequest"`
@@ -139,6 +140,14 @@ func (s *Session) Normalize() {
 		}
 		if i.Unverified == nil {
 			i.Unverified = []string{}
+		}
+		if v := i.Verification; v != nil {
+			if v.Issues == nil {
+				v.Issues = []string{}
+			}
+			if v.Unverified == nil {
+				v.Unverified = []string{}
+			}
 		}
 	}
 	if r := s.Review; r != nil {

@@ -89,9 +89,14 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 		log = log.With("verification_knowledge_version", knowledge.Version, "verification_languages", languages)
 	}
 	log.Info("implement_model_call_started", "input_bytes", len(body))
-	d, usage, err := run.r.AI.Next(ctx, run.in.Key, run.in.Session.Model, string(body))
+	d, usage, err := run.r.next(withDebugAttrs(ctx, "call", run.calls, "attempt", max(1, task.Attempt), "retry_count", task.RetryCount), run.in, string(body))
 	log.Info("implement_model_call", "duration_ms", time.Since(started).Milliseconds(), "outcome", outcome(err), "error_code", implementationErrorCode(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 	if implementationErrorCode(err) == "invalid_implementation_result" {
+		var invalid *implementationResultError
+		if errors.As(err, &invalid) && invalid.limit != nil {
+			v := invalid.limit
+			log = log.With("file_index", v.FileIndex, "edit_index", v.EditIndex, "field", v.Field, "actual_bytes", v.Bytes, "limit_bytes", v.Limit)
+		}
 		log.Info("implement_response_rejected", "reason", implementationResultReason(err), "has_read", d.Read != nil, "has_search", d.Search != nil, "has_plan", d.Plan != nil, "has_implementation", d.Implementation != nil, "has_verification", d.Verification != nil, "has_start_implementation", d.StartImplementation != nil, "has_start_review", d.StartReview != nil, "has_review", d.Review != nil, "answer_bytes", len(d.Answer), "summary_bytes", len(d.Summary))
 	}
 	if d.IntentIssue == "empty_fields" || d.IntentIssue == "field_length_limit" {

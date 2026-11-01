@@ -144,11 +144,12 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 	retries := 0
 	invalidResponses := 0
 	editFormat := ""
+	var editFailure *implementEditFailure
 	var pending []domain.PendingFile
 	var rejected []string
 	for call := 0; call < ImplementStepCalls; call++ {
 		final := reads >= ImplementStepReads || call == ImplementStepCalls-1
-		task := implementTask{Mode: "edit", Request: impl.Request, BaseBranch: impl.BaseBranch, Plan: impl.Plan, Step: impl.NextStep + 1, TotalSteps: len(impl.Steps), Files: editTaskFiles(files, editFormat), Done: impl.Changes, Declined: impl.Declined, ReadBudget: ImplementStepReads - reads, FinalAnswer: final, Correction: correction, Attempt: call + 1, RetryCount: retries, RepairFeedback: impl.RepairFeedback, EditFormat: editFormat}
+		task := implementTask{Mode: "edit", Request: impl.Request, BaseBranch: impl.BaseBranch, Plan: impl.Plan, Step: impl.NextStep + 1, TotalSteps: len(impl.Steps), Files: editTaskFiles(files, editFormat), Done: impl.Changes, Declined: impl.Declined, ReadBudget: ImplementStepReads - reads, FinalAnswer: final, Correction: correction, Attempt: call + 1, RetryCount: retries, RepairFeedback: impl.RepairFeedback, EditFormat: editFormat, EditFailure: editFailure}
 		d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev, "context": related, "previousChanges": previous})
 		// Shed the optional context before splitting the step.
 		// The request never reached the model, so shedding does not use up a
@@ -156,6 +157,7 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 		// reads are bounded.
 		if err != nil && err.Error() == "ai_input_limit" && (len(ev) > 0 || len(related) > 0 || len(previous) > 0) {
 			run.retry("edit", call+1, &retries, err)
+			debugJSON(ctx, "context_reduced", map[string]any{"phase": "edit", "reason": "ai_input_limit", "step": impl.NextStep + 1, "evidence": ev, "related_context": related, "previous_changes": previous})
 			switch {
 			case len(ev) > 0:
 				ev = nil
@@ -164,12 +166,13 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 			default:
 				previous = nil
 			}
-			correction = "入力上限のため関連コードの一部を省略しました。"
+			correction += "入力上限のため関連コードの一部を省略しました。"
 			call--
 			continue
 		}
 		if err != nil && err.Error() == "ai_input_limit" && len(step) > 1 {
 			parts, ok := domain.SplitPlanStep(impl.Plan.Files, step)
+			debugJSON(ctx, "step_split", map[string]any{"step_paths": step, "replacement_steps": parts, "can_split": ok})
 			if !ok {
 				return nil, err
 			}
@@ -193,7 +196,8 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 		if err != nil {
 			return nil, err
 		}
-		correction = ""
+		// Keep edit feedback across additional reads; only a new rejected edit
+		// supersedes it. Reads do not apply or repair the rejected proposal.
 		invalidResponses = 0
 		if d.Read != nil && !final {
 			reads++
@@ -208,6 +212,9 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 			continue
 		}
 		changes, err := applyProposals(step, impl, originals, d.Implementation.Changes)
+		if err != nil {
+			run.debugEditFailure(ctx, step, originals, d.Implementation.Changes, err)
+		}
 		if len(d.Implementation.Changes) == 0 && len(d.Implementation.AdditionalFiles) == 0 && len(d.Implementation.Unverified) > 0 && len(changes) == 0 {
 			for _, reason := range d.Implementation.Unverified {
 				impl.Unverified = appendUnique(impl.Unverified, domain.Clip(reason, 512))
@@ -223,6 +230,7 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 		if err != nil {
 			run.retry("edit", call+1, &retries, err)
 			correction = run.editFailureCorrection(step, err, &editFormat)
+			editFailure = editFailureFeedback(originals, d.Implementation.Changes, err)
 			if editFormat == lineRangeFormat && call < ImplementStepCalls-1 {
 				if err := run.save(ctx, "原文の行範囲を指定する方式で編集を再試行しています"); err != nil {
 					return nil, err

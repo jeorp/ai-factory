@@ -135,7 +135,10 @@ func TestGeminiThinkingConfigPerModel(t *testing.T) {
 		model string
 		level any
 	}{
-		{"gemini-3.5-flash-lite", "low"},
+		{"gemini-3.5-flash-lite", "medium"},
+		{"gemini-3.6-flash", "medium"},
+		{"gemini-3-pro-preview", "low"},
+		// Unlisted models keep low: medium is not supported by every model.
 		{"gemini-3.8-flash", "low"},
 		{"gemini-3.1-pro-preview", "low"},
 		{"gemini-4-argon", "low"},

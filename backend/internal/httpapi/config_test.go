@@ -99,3 +99,26 @@ func TestGeminiAndVertexTogether(t *testing.T) {
 		t.Fatal("expected demo to be rejected in a provider list")
 	}
 }
+
+func TestAgentDebugIsLocalOptInOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name, environment, flag, service string
+		wantEnabled, wantError           bool
+	}{
+		{"default local off", "local", "", "", false, false},
+		{"explicit local on", "local", "1", "", true, false},
+		{"production rejected", "production", "1", "", false, true},
+		{"cloud run rejected even with local env", "local", "1", "api-service", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setLocalGeminiEnv(t)
+			t.Setenv("APP_ENV", tc.environment)
+			t.Setenv("AGENT_DEBUG_LOG", tc.flag)
+			t.Setenv("K_SERVICE", tc.service)
+			c, err := LoadConfig()
+			if (err != nil) != tc.wantError || c.AgentDebug != tc.wantEnabled {
+				t.Fatalf("enabled=%v err=%v", c.AgentDebug, err)
+			}
+		})
+	}
+}

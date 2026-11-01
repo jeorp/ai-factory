@@ -24,6 +24,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if c.AgentDebug {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		slog.Warn("agent_debug_logging_enabled", "local_only", true)
+	}
 	ctx := context.Background()
 	app, err := firebase.NewApp(ctx, &firebase.Config{ProjectID: c.Project})
 	if err != nil {
@@ -61,7 +65,7 @@ func main() {
 	if c.Demo {
 		ciWait = 0
 	}
-	api := httpapi.New(c, auth, &store.Store{DB: db}, gh, &agent.Runner{AI: ai, GitHub: gh, Writer: gh, CIWait: ciWait}, client)
+	api := httpapi.New(c, auth, &store.Store{DB: db}, gh, &agent.Runner{AI: ai, GitHub: gh, Writer: gh, CIWait: ciWait, Debug: c.AgentDebug}, client)
 	server := &http.Server{Addr: ":" + c.Port, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 16 * 1024}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
