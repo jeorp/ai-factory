@@ -20,27 +20,12 @@ type Gemini struct {
 }
 
 func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, Usage, error) {
-	if len(input) > aiInputLimit(input) {
-		return Decision{}, Usage{}, errors.New("ai_input_limit")
+	if err := checkDecisionInput(input); err != nil {
+		return Decision{}, Usage{}, err
 	}
-	if reviewWorkflow(input) && !reviewInputFits([]byte(input)) {
-		return Decision{}, Usage{}, errors.New("ai_input_limit")
-	}
-	read := map[string]any{"type": []string{"object", "null"}, "properties": map[string]any{
-		"kind": map[string]any{"type": "string", "enum": []string{"repository", "file", "pull_request", "issue", "pull_requests", "issues"}},
-		"path": map[string]any{"type": "string"}, "number": map[string]any{"type": "integer"}, "detail": map[string]any{"type": "string", "enum": []string{"summary", "files", "comments"}},
-	}, "required": []string{"kind", "path", "number", "detail"}, "additionalProperties": false}
-	schema := map[string]any{"type": "object", "properties": map[string]any{"intent": intentSchema(), "answer": map[string]any{"type": "string"}, "summary": map[string]any{"type": "string"}, "read": read}, "required": []string{"intent", "answer", "summary", "read"}, "additionalProperties": false}
-	addReviewSchema(schema)
-	addImplementationSchema(schema)
-	instructions := decisionInstructions(schema, input) + "\nintentのgoal・investigation・responseはそれぞれ空にせず、各100文字以内で簡潔に記載してください。"
-	maxOutput := 4096
-	if reviewWorkflow(input) {
-		maxOutput = 8192
-	}
-	if implementWorkflow(input) {
-		maxOutput = ImplementOutputToks
-	}
+	schema := decisionSchema(geminiReadSchema())
+	instructions := decisionInstructions(schema, input) + intentLengthRule
+	maxOutput := decisionOutputTokens(input)
 	config := geminiGenerationConfig(model, maxOutput, schema)
 	levels := domain.GeminiEfforts(model)
 	if effort := selectedEffort(ctx); effort != "" {
@@ -110,37 +95,18 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	if json.Unmarshal([]byte(text.String()), &d) != nil {
 		return d, usage, errors.New("gemini_invalid_output")
 	}
-	if len(d.Answer) > 16*1024 || len(d.Summary) > 2048 {
-		return d, usage, errors.New("gemini_answer_too_long")
-	}
-	if !validIntent(d.Intent) {
-		d.IntentIssue = "empty_fields"
-		if len(d.Intent.Goal) > 1024 || len(d.Intent.Investigation) > 1024 || len(d.Intent.Response) > 1024 {
-			d.IntentIssue = "field_length_limit"
-		}
-		// Intent is optional internal planning metadata, not the decision itself.
-		// Discard an unusable hypothesis; the chat runner retains its last valid
-		// one, and specialized workflows do not depend on it.
-		d.Intent = IntentPlan{}
-	}
-	if !validReviewResult(d.Review) {
-		return d, usage, errors.New("gemini_invalid_review")
-	}
-	if !validReviewAction(d) {
-		return d, usage, errors.New("gemini_invalid_review_action")
-	}
-	if d.Read != nil {
-		if err := d.Read.Validate(); err != nil {
-			return d, usage, err
-		}
-	}
-	if !validPriorityDecision(input, d) {
-		return d, usage, errors.New("invalid_priority_result")
-	}
-	if issue := implementationResponseIssue(input, d); issue != "" {
-		return d, usage, newImplementationResultError(issue, d)
+	if err := checkDecision(input, &d, "gemini"); err != nil {
+		return d, usage, err
 	}
 	return d, usage, nil
+}
+
+// geminiReadSchema expresses an optional read with a nullable type list, the
+// form the Gemini response schema accepts.
+func geminiReadSchema() map[string]any {
+	read := readObjectSchema()
+	read["type"] = []string{"object", "null"}
+	return read
 }
 
 // geminiThinkingHeadroom is added to maxOutputTokens because Gemini counts
