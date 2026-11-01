@@ -144,3 +144,52 @@ func TestProjectDocumentationMissingUnavailableAndBounded(t *testing.T) {
 		})
 	}
 }
+
+func TestDocumentationUsesSavedReadmeOverlay(t *testing.T) {
+	w := newRevisionWriter()
+	impl := &domain.Implementation{CacheID: "docs", Version: 1, Changes: []domain.ChangeSummary{{Path: "README.md", Action: "update"}}}
+	if err := w.PutChange(context.Background(), impl.CacheID, impl.Version, domain.FileChange{Path: "README.md", Action: "update", Content: "new contract"}); err != nil {
+		t.Fatal(err)
+	}
+	run := &implementRun{r: &Runner{Writer: w}, impl: impl, projectDocumentation: &projectDocumentation{Path: "README.md", Content: "old contract"}}
+	doc, err := run.currentProjectDocumentation(context.Background())
+	if err != nil || !doc.Modified || !strings.Contains(doc.Content, "new contract") || strings.Contains(doc.Content, "old contract") {
+		t.Fatalf("wrong documentation: %+v %v", doc, err)
+	}
+}
+
+func TestDocumentationIsShedWhenInputExceedsLimit(t *testing.T) {
+	w := newFakeWriter()
+	w.files["README.md"] = strings.Repeat("documentation ", 600)
+	called := false
+	run := &implementRun{r: &Runner{Writer: w, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
+		called = true
+		var body struct {
+			Documentation projectDocumentation `json:"projectDocumentation"`
+		}
+		if err := json.Unmarshal([]byte(input), &body); err != nil {
+			t.Fatal(err)
+		}
+		if !body.Documentation.Unavailable || body.Documentation.Content != "" {
+			t.Fatalf("documentation was not shed: %+v", body.Documentation)
+		}
+		return Decision{}, Usage{}, nil
+	})}, in: Input{Session: baseSession()}, impl: &domain.Implementation{BaseCommit: implBase}, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	// Find a request that fits without the README but exceeds the limit with it.
+	filler := ""
+	for n := 1000; n < ReviewInputBytes; n += 1000 {
+		candidate := strings.Repeat("x", n)
+		bare, _ := json.Marshal(map[string]any{"filler": candidate, "instructions": "", "target": run.target(), "repositoryOverview": run.in.Session.RepositoryOverview, "projectDocumentation": &projectDocumentation{Path: "README.md", Unavailable: true}})
+		full, _ := json.Marshal(map[string]any{"filler": candidate, "instructions": "", "target": run.target(), "repositoryOverview": run.in.Session.RepositoryOverview, "projectDocumentation": &projectDocumentation{Path: "README.md", Content: w.files["README.md"]}})
+		if implementInputFits(bare) && !implementInputFits(full) {
+			filler = candidate
+			break
+		}
+	}
+	if filler == "" {
+		t.Fatal("could not construct boundary input")
+	}
+	if _, err := run.call(context.Background(), map[string]any{"filler": filler}); err != nil || !called {
+		t.Fatalf("optional documentation prevented call: %v", err)
+	}
+}

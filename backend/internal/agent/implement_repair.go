@@ -47,6 +47,7 @@ func (run *implementRun) repair(ctx context.Context, result *domain.Implementati
 	if len(files) == 0 && len(pending) == 0 {
 		return false, nil
 	}
+	impl.EditStartRevision = impl.ChangeRevision
 	impl.RepairRound++
 	feedback := append([]string{}, result.Issues...)
 	for _, f := range files {

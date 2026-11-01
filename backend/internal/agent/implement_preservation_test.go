@@ -92,7 +92,7 @@ func TestRevisionPreservesUnchangedFilesWhileEditingNewFile(t *testing.T) {
 func TestRevisionCanKeepEntireSavedStepWithoutWritingOrChangingRevision(t *testing.T) {
 	w, old := preservationFixture(t)
 	next := domain.NextImplementation(old, "retain the current draft", "retained-draft")
-	next.Status, next.DraftSource, next.ChangeRevision = "editing", nil, 7
+	next.Status, next.DraftSource, next.ChangeRevision, next.EditStartRevision = "editing", nil, 7, 7
 	next.Steps = []domain.ImplementationStep{{Files: []string{"src/a.go", "src/b.go", "src/old.go"}}}
 	for _, c := range old.Changes {
 		f, _ := w.GetChange(context.Background(), old.CacheID, old.Version, c.Path)
@@ -105,11 +105,9 @@ func TestRevisionCanKeepEntireSavedStepWithoutWritingOrChangingRevision(t *testi
 		return Decision{Implementation: &ImplementResult{}}, Usage{}, nil
 	})}
 	var last Checkpoint
-	if err := runImplementationFixture(r, next, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 1 || last.Implementation.Status != "ready" || last.Implementation.ChangeRevision != 7 || len(last.Implementation.Unverified) != 0 {
-		t.Fatalf("retention changed state or retried: calls=%d %+v", calls, last.Implementation)
+	err := runImplementationFixture(r, next, func(cp Checkpoint) error { last = cp; return nil })
+	if err == nil || err.Error() != "implementation_edit_blocked" || calls != 1 || last.Implementation.ChangeRevision != 7 {
+		t.Fatalf("retention without a new change was accepted: err=%v calls=%d %+v", err, calls, last.Implementation)
 	}
 }
 
@@ -135,11 +133,9 @@ func TestRevisionRetentionStillBlocksMissingNewFiles(t *testing.T) {
 		return Decision{Implementation: &ImplementResult{}}, Usage{}, nil
 	})}
 	var last Checkpoint
-	if err := runImplementationFixture(r, next, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if last.Implementation.Status != "verification_blocked" || !strings.Contains(strings.Join(last.Implementation.Unverified, " "), "src/new.go") {
-		t.Fatalf("missing new work became publishable: %+v", last.Implementation)
+	err := runImplementationFixture(r, next, func(cp Checkpoint) error { last = cp; return nil })
+	if err == nil || err.Error() != "implementation_edit_blocked" || !strings.Contains(strings.Join(last.Implementation.Unverified, " "), "src/new.go") {
+		t.Fatalf("missing new work became publishable: %v %+v", err, last.Implementation)
 	}
 }
 
@@ -171,40 +167,28 @@ func TestEditSchemaLimitsProposalsToCurrentStep(t *testing.T) {
 	}
 }
 
-func TestCIFixRetainsPublishedFilesAlongsideActualRepair(t *testing.T) {
-	for _, omit := range []bool{true, false} {
-		impl := &domain.Implementation{CIRepair: true, PullNumber: 7, BaseCommit: implBase, ExpectedHead: implBase, CacheID: "ci-fix", Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "engine.go", Action: "update"}, {Path: "summary.go", Action: "update"}}}}
-		originals := map[string]string{"engine.go": "broken engine", "summary.go": "published summary"}
-		proposals := []ChangeProposal{{Path: "engine.go", Action: "update", Edits: []domain.Edit{{Search: "broken engine", Replace: "fixed engine"}}}}
-		if !omit {
-			proposals = append(proposals, ChangeProposal{Path: "summary.go", Action: "update", Content: "published summary"})
-		}
-		changes, err := applyProposals([]string{"engine.go", "summary.go"}, impl, originals, proposals)
-		if err != nil {
-			t.Fatal(err)
-		}
-		w := newRevisionWriter()
-		run := &implementRun{impl: impl, r: &Runner{Writer: w}}
-		covered, err := run.persistChanges(context.Background(), changes)
-		if err != nil || !covered["engine.go"] || !covered["summary.go"] {
-			t.Fatalf("repair did not preserve published file: %v %+v", err, covered)
-		}
-		for path, want := range map[string]string{"engine.go": "fixed engine", "summary.go": "published summary"} {
-			got, ok := w.GetChange(context.Background(), impl.CacheID, impl.Version, path)
-			if !ok || got.Action != "update" || got.Content != want {
-				t.Fatalf("wrong repair overlay for %s: %+v", path, got)
-			}
-		}
+func TestCIFixDoesNotCoverUneditedPublishedFiles(t *testing.T) {
+	impl := &domain.Implementation{CIRepair: true, PullNumber: 7, BaseCommit: implBase, ExpectedHead: implBase, CacheID: "ci-fix", Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "engine.go", Action: "update"}, {Path: "summary.go", Action: "update"}}}}
+	changes, err := applyProposals([]string{"engine.go", "summary.go"}, impl, map[string]string{"engine.go": "broken", "summary.go": "published"}, []ChangeProposal{{Path: "engine.go", Action: "update", Content: "fixed"}})
+	if err != nil || len(changes) != 1 || changes[0].Path != "engine.go" {
+		t.Fatalf("unedited file counted as changed: %+v %v", changes, err)
+	}
+	w := newRevisionWriter()
+	run := &implementRun{impl: impl, r: &Runner{Writer: w}}
+	covered, err := run.persistChanges(context.Background(), changes)
+	if err != nil || covered["summary.go"] {
+		t.Fatalf("unedited file covered: %+v %v", covered, err)
+	}
+	if _, ok := w.GetChange(context.Background(), impl.CacheID, impl.Version, "summary.go"); ok {
+		t.Fatal("unedited file saved")
 	}
 }
 
-func TestCIFixCannotCompleteWithOnlyUnchangedBaseFiles(t *testing.T) {
-	for _, proposals := range [][]ChangeProposal{nil, {{Path: "engine.go", Action: "update", Content: "broken engine"}}} {
-		impl := &domain.Implementation{CIRepair: true, PullNumber: 7, BaseCommit: implBase, ExpectedHead: implBase, Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "engine.go", Action: "update"}}}}
-		_, err := applyProposals([]string{"engine.go"}, impl, map[string]string{"engine.go": "broken engine"}, proposals)
-		if err == nil || !strings.Contains(err.Error(), "update_without_change") {
-			t.Fatalf("unchanged failed PR treated as repaired: %v", err)
-		}
+func TestCIFixRejectsExplicitUnchangedBaseFile(t *testing.T) {
+	impl := &domain.Implementation{CIRepair: true, PullNumber: 7, BaseCommit: implBase, ExpectedHead: implBase, Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "engine.go", Action: "update"}}}}
+	_, err := applyProposals([]string{"engine.go"}, impl, map[string]string{"engine.go": "broken"}, []ChangeProposal{{Path: "engine.go", Action: "update", Content: "broken"}})
+	if err == nil || !strings.Contains(err.Error(), "update_without_change") {
+		t.Fatalf("unchanged failed PR treated as repaired: %v", err)
 	}
 }
 
@@ -212,5 +196,52 @@ func TestCIFixCannotRetainAnUnverifiedBase(t *testing.T) {
 	impl := &domain.Implementation{CIRepair: true, PullNumber: 7, BaseCommit: implBase, ExpectedHead: strings.Repeat("d", 40), Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "engine.go", Action: "update"}}}}
 	if _, retained := retainedChange(impl, map[string]string{"engine.go": "base"}, "engine.go"); retained {
 		t.Fatal("retained a file from a different PR head")
+	}
+}
+
+func TestRetainedStepWithUnverifiedCanPrecedeRealEdit(t *testing.T) {
+	w, old := preservationFixture(t)
+	next := domain.NextImplementation(old, "change b", "multi-step-draft")
+	next.Status, next.DraftSource = "editing", nil
+	next.Steps = []domain.ImplementationStep{{Files: []string{"src/a.go"}}, {Files: []string{"src/b.go"}}}
+	for _, c := range old.Changes {
+		f, _ := w.GetChange(context.Background(), old.CacheID, old.Version, c.Path)
+		_ = w.PutChange(context.Background(), next.CacheID, next.Version, f)
+	}
+	edits := 0
+	r := &Runner{Writer: w, AI: implementProviderFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
+		task := implementTaskOf(t, input)
+		edits++
+		if task.Step == 1 {
+			return Decision{Implementation: &ImplementResult{Unverified: []string{"unchanged a"}}}, Usage{}, nil
+		}
+		return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "src/b.go", Action: "create", Content: "revised b"}}}}, Usage{}, nil
+	})}
+	var last Checkpoint
+	if err := runImplementationFixture(r, next, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if edits != 2 || last.Implementation.ChangeRevision != 1 || !strings.Contains(strings.Join(last.Implementation.Unverified, " "), "unchanged a") {
+		t.Fatalf("retained step failed: edits=%d %+v", edits, last.Implementation)
+	}
+}
+
+func TestRepairWithoutChangeStopsBeforeAnotherVerification(t *testing.T) {
+	w, old := preservationFixture(t)
+	old.Status, old.RepairFeedback = "editing", "fix a"
+	old.ChangeRevision, old.EditStartRevision = 4, 4
+	old.Verification = &domain.ImplementationVerification{Issues: []string{"a is broken"}}
+	old.Steps = []domain.ImplementationStep{{Files: []string{"src/a.go"}}}
+	calls := 0
+	r := &Runner{Writer: w, AI: implementProviderFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
+		calls++
+		return Decision{Implementation: &ImplementResult{}}, Usage{}, nil
+	})}
+	var last Checkpoint
+	if err := runImplementationFixture(r, old, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || last.Implementation.Status != "verification_blocked" || len(last.Implementation.Verification.Issues) == 0 {
+		t.Fatalf("no-op repair was accepted: calls=%d %+v", calls, last.Implementation)
 	}
 }
