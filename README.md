@@ -1,12 +1,20 @@
 # AI Factory
 
-GitHubの情報を参照し、PRの差分を分割レビューし、依頼に応じて実装したDraft PRを確認後に作成するチャットアプリです。[AIファクトリー PRレビュー MVP 仕様書](https://chatgpt.com/space/page_fac25bd05bb48191a477ebdc827f840f)の第一段階（GitHubチャット）と第二段階のPR取得・レビュー計画・分割確認・全体照合・結果表示を実装しています。
+> **Want to use this code? Please contact the copyright holder first.** This public repository does not grant permission to copy, modify, redistribute, or use its code in another project. See the [code use terms](LICENSE.md) before using it.
 
-`../system-design-skill-developer` に合わせた Vue 3 / TypeScript / Vue Router / Pinia、Go、Firebase Auth / Firestore、Docker Composeを使用します。AIはOpenAIまたはGemini Developer APIを選択できます。WebSocketと認証Cookieを同じOriginで扱うため、公開時はVueのビルド成果物もGo APIと同じCloud Runサービスから配信します。
+AI Factory is a chat app for exploring GitHub repositories, reviewing pull requests in manageable batches, and turning requested changes into draft pull requests. The implementation workflow includes approval of the plan and review of the resulting diff.
 
-## ローカル起動
+| Feature | What it does |
+| --- | --- |
+| GitHub chat | Answers questions using repository, pull request, and issue information |
+| Pull request review | Reviews diffs in batches and shows findings with evidence and areas that remain unverified |
+| Implementation | Creates changes after plan approval and opens a draft pull request after diff review |
 
-必要: Docker、Go 1.27.2以降、Node.js 22.12以上の対応LTS（22または24）、npm。
+The stack uses Vue 3, TypeScript, Vue Router, Pinia, Go, Firebase Auth, Firestore, and Docker Compose, following `../system-design-skill-developer`. You can choose OpenAI or the Gemini Developer API. In production, the Go API serves the built Vue app from the same Cloud Run service so WebSocket connections and authentication cookies share one origin.
+
+## Run locally
+
+You need Docker, Go 1.27.2 or later, npm, and a supported Node.js LTS release (22.12 or later in the 22.x line, or 24.x). Run these commands from the repository root:
 
 ```sh
 docker compose up --build -d --wait
@@ -15,61 +23,68 @@ npm ci
 npm run dev
 ```
 
-[アプリ](http://127.0.0.1:5175/)を開き、「開発用ログイン」→「セッションを作成」→質問を送信してください。**既定は固定デモ**です。実際のGitHubやOpenAIへ接続せず、APIキーも不要です。Firebase Emulatorには実際に認証・保存します。デモの参照先URLもサンプルであり、実在するコードの根拠ではありません。
+Open the [web app](http://127.0.0.1:5175/), use the demo login button, create a session, and send a question. The default mode is a **fixed demo**: it does not connect to GitHub or OpenAI and needs no API key. Firebase Emulator still handles authentication and stores the session. URLs shown as references in the demo are examples, not evidence of real code. The app's interface is currently in Japanese.
 
-停止: WebのターミナルでCtrl+C、ルートで `docker compose down`。Emulatorのデータは専用volumeに保存します。他プロジェクトとポート・データを分離しています。
-
-| サービス | URL |
+| Service | URL |
 | --- | --- |
-| Web | http://127.0.0.1:5175 |
+| Web app | http://127.0.0.1:5175 |
 | API | http://127.0.0.1:8181 |
 | Emulator UI | http://127.0.0.1:4101 |
 | Firebase Auth / Firestore | 127.0.0.1:9197 / 127.0.0.1:8186 |
 
-## 実装範囲
+To stop, press `Ctrl+C` in the web terminal and run `docker compose down` from the repository root. Emulator data lives in a dedicated volume, with ports and data separated from other projects.
 
-- GitHub App OAuth（state・PKCE）、Firebaseカスタムトークンによる本人認証。
-- GitHub Appに許可したリポジトリの一覧、リポジトリ・PR・Issue URLからセッション作成。
-- 読み取り専用GitHub MCP接続。サーバーが対象リポジトリ・コミット・操作を固定。
-- 実装・PR作成: チャットの依頼から実装計画 → 利用者の承認 → 変更作成 → 差分確認 → 新しい `ai-factory/` ブランチへのDraft PR作成。書き込みはサーバー側の専用処理だけが行い、コードやテストは実行しない（検証は対象リポジトリのCI）。
-- OpenAI Responses APIの構造化出力を使った段階的な情報取得と回答。
-- WebSocketでの質問・追加指示・停止、進捗表示、切断時の中断、再接続後の会話復元と手動再開。
-- 取得結果と保存履歴の分離、直近の会話＋要点へのコンテキスト制限、同一実行内の重複取得抑制。
-- OpenAIキーはブラウザーと実行中のサーバーのメモリのみ。最大1時間、終了・ログアウト・ページ終了時に破棄。
-- Firestoreのユーザー分離、接続leaseによる二重実行防止、30日の保存期限、本人による削除。
-- 取得回数・バイト数・入力／出力トークン・処理時間・プロセスヒープ観測値の表示。
+## Features
 
-通常のリポジトリの会話でPRを取得したあと、そのまま「このPRをレビューして」と送ると分割レビューを開始します。「PR #123 をレビューして」と番号を指定することもできます。取得したPR番号はセッションに保存され、既存の会話でも参照元から対象を引き継ぎます。対象が分からない場合は同じチャットでPR番号を確認します。ベース・ヘッドのSHA、最大10ファイルのグループ計画、差分の処理位置、指摘、未確認事項を保存します。指摘には重要度・ファイル／行・問題・影響・根拠・修正案を表示します。PRが更新されたら中断し、チャットで再レビューを依頼すると最新の対象を取得します。
+### GitHub chat and access control
 
-「バックエンドだけ」「フロントエンドだけ」という指定はレビュー範囲として保存します。バックエンド指定では `frontend/`、フロントエンド指定では `backend/` の差分をAIへ送らず、計画に対象外と表示します。共通の設定・ドキュメントは対象に残し、再開時も範囲を引き継ぎます。指摘は修正が必要な不具合に限定し、「特になし」などの明示的な正常評価は保存しません。
+- GitHub App OAuth (state and PKCE) and Firebase custom tokens authenticate users. You can list repositories allowed by the GitHub App and create sessions from repository, pull request, or issue URLs.
+- The GitHub MCP connection is read-only. The server pins the target repository, commit, and permitted operations. With OpenAI, the app uses structured output from the Responses API to fetch information and answer in stages.
+- WebSocket supports questions, follow-up instructions, stopping, and progress updates. A disconnect interrupts the run; after reconnecting, you can restore the conversation and resume manually.
+- The model receives recent conversation turns and a summary. Retrieved results are kept separate from saved history, and duplicate reads within a run are suppressed. The UI shows read counts, byte counts, input and output tokens, elapsed time, and observed process heap usage.
+- OpenAI API keys stay in browser and server memory for at most one hour and are discarded when the session ends, the user logs out, or the page closes. Firestore data is separated by user, connection leases prevent duplicate runs, and records expire after 30 days. Users can also delete their data.
 
-未確認の範囲・制限は、各項目を表示する前にAIが専用の構造化出力で優先度を高・中・低・未評価で確認し、理由とともに優先度順に表示します。評価できない項目も残します。既存レビューは未評価として表示します。各項目の追加調査結果は会話とレビューに保存します。優先度の確認にもAI呼び出しを使用します。
+### Pull request review
 
-PRレビューは関連する差分を最大10ファイル、約2万トークンずつまとめて確認します。入力全体は約3万トークンを目安に調整します（o200k_baseによる共通推定で、モデル固有の実トークン数とは異なります）。20回ごとの手動再開はなくし、最大15分・AI呼び出し100回・入力50万／出力6.4万トークンまで自動で続けます。上限・停止・切断後は「保存済みの状態から再開」で続けます。通常チャットの1回の実行は最大3分です。先頭200ファイルまでを計画し、取得不能・バイナリ・入力上限などの未確認範囲を明示します。PRメタデータ・ページ単位の差分にはGitHub REST API、関連コード・コメントには読み取り専用MCPを利用します。
+After fetching a pull request in a repository conversation, ask “Review this PR” or specify a number, such as “Review PR #123.” The PR number is saved in the session and carried over from the source in existing conversations. If the target is unclear, the app asks for the PR number in chat.
 
-指摘選択・編集・GitHubへの投稿、投稿時のヘッド確認・重複投稿防止は未実装です。アプリ側の課金・クレジット管理、Vertex AI、コード実行は含みません。
+- The app saves the base and head SHAs, a review plan in groups of up to 10 files, progress through the diff, findings, and unverified areas. Each finding shows severity, file and line, problem, impact, evidence, and a suggested fix. If the PR changes, review stops; a new request fetches its latest state.
+- You can limit a review to “backend only” or “frontend only.” The corresponding `frontend/` or `backend/` diff is excluded from the AI input and marked out of scope in the plan. Shared configuration and documentation remain in scope, and the selection survives resumption.
+- Findings are limited to issues that need a fix. The AI ranks unverified items as high, medium, low, or unevaluated, with reasons. Items it cannot assess remain visible; older reviews are marked unevaluated. Follow-up research is saved in both the conversation and review.
 
-## 実接続・開発・公開準備
+The review processes up to 10 related files and roughly 20,000 tokens per batch, targeting roughly 30,000 tokens for the full input. Token estimates use `o200k_base` and may differ from a model's actual count. A run continues for up to 15 minutes, 100 AI calls, 500,000 input tokens, and 64,000 output tokens, and plans the first 200 files. You can resume from saved progress after a limit, stop, or disconnect. Unreadable or binary files and input-limit omissions are reported as unverified. PR metadata and paginated diffs come from the GitHub REST API; related code and comments come from the read-only MCP connection. Ordinary chat runs have a three-minute limit.
 
-[開発・実接続ガイド](docs/development.md)、[設計と制限](docs/architecture.md)、[Cloud Run配置](docs/deployment.md)を参照してください。実接続には利用者が所有するGitHub Appと、選択したAIのAPIキーが必要です。認証情報の登録やクラウドへのデプロイは行っていません。
+### Implementation and draft pull requests
 
-## 検証
+For an implementation request, the app presents a plan. After the user approves it, the agent creates changes. The user reviews the diff before the server opens a draft pull request on a new `ai-factory/` branch. Only dedicated server-side code writes to GitHub. The app does not run the target repository's code or tests; it checks GitHub CI after the PR is published. See the [development guide](docs/development.md) and [architecture and limits](docs/architecture.md) for details.
+
+## Current limitations
+
+Selecting or editing review findings, posting them to GitHub, checking the head at posting time, and preventing duplicate posts are not implemented. The app also does not include billing or credit management, Vertex AI, or execution of target repository code.
+
+## Connect to live services
+
+Live GitHub and AI access require a GitHub App owned by the user and an API key for the selected AI provider. Follow the [development guide](docs/development.md) for setup, [architecture and limits](docs/architecture.md) for the design, and [Cloud Run deployment guide](docs/deployment.md) for deployment. Credentials have not been registered and the app has not been deployed to the cloud.
+
+To try the Gemini Developer API, set `AI_PROVIDER=gemini` in `.env` and restart with `docker compose up --build -d`. For example, set `GEMINI_MODELS=gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.1-pro-preview` to choose the available models (Pro has no free tier). Enter a Gemini API key from Google AI Studio in the app. The key is not stored in an environment variable; it is used temporarily for each session. Set `PROVIDER=demo` to keep GitHub in fixed-demo mode.
+
+Gemini free-tier availability and limits depend on the Google project and model. A project with billing enabled may incur charges. On the free tier, submitted information may be used to improve Google's services, so check the terms before sending private code. This API is separate from Vertex AI.
+
+## Verify
 
 ```sh
 cd backend
 go test -race ./...
 go vet ./...
-# 先にルートで docker compose up -d --wait firebase-emulator
+# First run docker compose up -d --wait firebase-emulator from the repository root.
 RUN_EMULATOR_TESTS=1 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9197 FIRESTORE_EMULATOR_HOST=127.0.0.1:8186 go test -race ./internal/httpapi -run TestEmulator -v
 cd ../frontend/web
 npm test
 npm run build:local
 ```
 
-実際のGitHub App認証・GitHub MCP・OpenAIを組み合わせたE2Eは、認証情報を設定した環境で別途実施してください。通常テストでは外部通信をスタブに置き換え、統合テストではFirebase Auth / Firestore Emulatorと実WebSocket接続を使います。
+Regular tests replace external connections with stubs. Integration tests use Firebase Auth and Firestore Emulator with a real WebSocket connection. End-to-end testing against a real GitHub App, GitHub MCP, and OpenAI must be run separately in an environment with credentials.
 
-### Gemini Developer APIを試す
+## Code use terms
 
-`.env` に `AI_PROVIDER=gemini` を設定し（モデルの選択肢は `GEMINI_MODELS=gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.1-pro-preview` のようにカンマ区切りで指定。Proは無料枠なし）、`docker compose up --build -d` で再起動します。画面でGoogle AI StudioのGemini APIキーを入力してください。キーは環境変数に保存せず、セッションごとに一時的に利用します。GitHubも固定デモにするには `PROVIDER=demo` を指定します。
-
-無料枠の利用可否や上限はGoogleのプロジェクトとモデルに依存します。課金済みプロジェクトでは料金が発生する場合があります。無料枠では送信した情報がGoogleのサービス改善に使用される場合があるため、非公開コードを送る前に利用条件を確認してください。Vertex AIとは別のAPIです。
+This repository is public, but no license is granted to use its code in another project. Copying, modifying, redistributing, commercial use, and AI model training require prior written permission from the copyright holder, except for activities allowed by GitHub's Terms of Service or applicable law, such as viewing and forking. See [Copyright and use terms](LICENSE.md).
