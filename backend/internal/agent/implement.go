@@ -70,15 +70,17 @@ func StartImplementation(prev *domain.Implementation, req ImplementRequest, cach
 }
 
 type implementRun struct {
-	r            *Runner
-	in           Input
-	emit         func(Checkpoint) error
-	cp           Checkpoint
-	impl         *domain.Implementation
-	logger       *slog.Logger
-	instructions []domain.Message
-	calls        int
-	ciEvidence   []evidence // pinned failure evidence, never evicted with optional reads
+	r                          *Runner
+	in                         Input
+	emit                       func(Checkpoint) error
+	cp                         Checkpoint
+	impl                       *domain.Implementation
+	logger                     *slog.Logger
+	instructions               []domain.Message
+	calls                      int
+	ciEvidence                 []evidence // pinned failure evidence, never evicted with optional reads
+	projectDocumentation       *projectDocumentation
+	projectDocumentationLoaded bool
 }
 
 func (r *Runner) runImplementation(ctx context.Context, in Input, emit func(Checkpoint) error) (runErr error) {

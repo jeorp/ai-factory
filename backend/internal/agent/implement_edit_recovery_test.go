@@ -29,7 +29,8 @@ func TestEditingCarriesCIContextAndPreservesBlockedReason(t *testing.T) {
 	})}
 	var saved Checkpoint
 	err := runImplementationFixture(r, impl, func(cp Checkpoint) error { saved = cp; return nil })
-	if err == nil || err.Error() != "implementation_edit_blocked" || len(saved.Implementation.Unverified) != 1 || len(w.cache) != 0 || saved.Implementation.NextStep != 0 || saved.Metrics.ToolCalls != 2 {
+	// Two CI reads plus the automatic lookup of project documentation.
+	if err == nil || err.Error() != "implementation_edit_blocked" || len(saved.Implementation.Unverified) != 1 || len(w.cache) != 0 || saved.Implementation.NextStep != 0 || saved.Metrics.ToolCalls != 3 {
 		t.Fatalf("blocked reason lost: %v %+v", err, saved)
 	}
 }

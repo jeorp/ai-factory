@@ -78,7 +78,7 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 			"repairs":         map[string]any{"type": "array", "items": object(map[string]any{"path": map[string]any{"type": "string"}, "approach": map[string]any{"type": "string"}})},
 			"additionalFiles": pendingFilesSchema(),
 		}))
-		return implementVerifyPrompt
+		return implementVerifyPrompt + implementProjectDocumentationRule
 	}
 	if task.FinalAnswer || task.ReadBudget <= 0 {
 		props["read"] = map[string]any{"type": "null"}
@@ -102,21 +102,29 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 				"id": map[string]any{"type": "string"}, "requirement": map[string]any{"type": "string"}, "paths": stringList(), "checks": stringList(), "failureRefs": stringList(),
 			})},
 		}))
-		return implementPlanPrompt
+		return implementPlanPrompt + implementProjectDocumentationRule
 	}
 	props["answer"] = map[string]any{"type": "string", "enum": []string{""}}
 	lineEdit := object(map[string]any{"startLine": map[string]any{"type": "integer"}, "endLine": map[string]any{"type": "integer"}, "expectedStart": map[string]any{"type": "string"}, "expectedEnd": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}})
 	edit := object(map[string]any{"search": map[string]any{"type": "string"}, "replace": map[string]any{"type": "string"}})
+	changePath := map[string]any{"type": "string"}
+	if len(task.Files) > 0 {
+		paths := make([]string, 0, len(task.Files))
+		for _, f := range task.Files {
+			paths = append(paths, f.Path)
+		}
+		changePath["enum"] = paths
+	}
 	props["implementation"] = nullable(object(map[string]any{
 		"changes": map[string]any{"type": "array", "items": object(map[string]any{
-			"path": map[string]any{"type": "string"}, "action": map[string]any{"type": "string", "enum": []string{"create", "update", "delete"}},
+			"path": changePath, "action": map[string]any{"type": "string", "enum": []string{"create", "update", "delete"}},
 			"content": map[string]any{"type": "string"}, "edits": map[string]any{"type": "array", "items": edit},
 			"sourceHash": map[string]any{"type": "string"}, "lineEdits": map[string]any{"type": "array", "items": lineEdit},
 		})},
 		"unverified":      stringList(),
 		"additionalFiles": pendingFilesSchema(),
 	}))
-	return implementEditPrompt
+	return implementEditPrompt + implementProjectDocumentationRule
 }
 
 func implementationSearchSchema() map[string]any {
