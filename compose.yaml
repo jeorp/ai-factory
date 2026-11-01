@@ -26,6 +26,7 @@ services:
     WEB_BUILD_MODE: emulator
   environment:
    APP_ENV: local
+   AGENT_DEBUG_LOG: ${AGENT_DEBUG_LOG:-0}
    PROVIDER: ${PROVIDER:-demo}
    PORT: 8080
    GCP_PROJECT_ID: demo-ai-factory

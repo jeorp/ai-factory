@@ -89,7 +89,7 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 		log = log.With("verification_knowledge_version", knowledge.Version, "verification_languages", languages)
 	}
 	log.Info("implement_model_call_started", "input_bytes", len(body))
-	d, usage, err := run.r.AI.Next(ctx, run.in.Key, run.in.Session.Model, string(body))
+	d, usage, err := run.r.next(ctx, run.in, string(body))
 	log.Info("implement_model_call", "duration_ms", time.Since(started).Milliseconds(), "outcome", outcome(err), "error_code", implementationErrorCode(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 	if implementationErrorCode(err) == "invalid_implementation_result" {
 		var invalid *implementationResultError

@@ -76,6 +76,7 @@ func (p *OpenAI) Next(ctx context.Context, key, model, input string) (Decision, 
 	if len(body) > aiRequestLimit(input) {
 		return Decision{}, Usage{}, errors.New("ai_request_limit")
 	}
+	debugText(ctx, "provider_request", string(body))
 	endpoint := p.Endpoint
 	if endpoint == "" {
 		endpoint = "https://api.openai.com/v1/responses"
@@ -95,6 +96,7 @@ func (p *OpenAI) Next(ctx context.Context, key, model, input string) (Decision, 
 	if err != nil || len(raw) > aiResponseLimit(input) {
 		return Decision{}, Usage{}, errors.New("openai_response_limit")
 	}
+	debugText(ctx, "provider_response", string(raw))
 	var out struct {
 		Status string `json:"status"`
 		Usage  Usage  `json:"usage"`

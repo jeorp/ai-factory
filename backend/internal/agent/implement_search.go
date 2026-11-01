@@ -72,6 +72,7 @@ func (run *implementRun) search(ctx context.Context, query github.CodeSearch, ev
 				}
 			}
 		}
+		debugJSON(ctx, "search_result", map[string]any{"phase": run.impl.Status, "query": query, "result": result})
 		raw, _ := json.Marshal(result)
 		content = string(raw)
 		for _, match := range result.Matches {

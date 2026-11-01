@@ -53,6 +53,7 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	if err != nil || len(body) > aiRequestLimit(input) {
 		return Decision{}, Usage{}, errors.New("ai_request_limit")
 	}
+	debugText(ctx, "provider_request", string(body))
 	endpoint := p.Endpoint
 	if endpoint == "" {
 		endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" + url.PathEscape(model) + ":generateContent"
@@ -75,6 +76,7 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	if err != nil || len(raw) > aiResponseLimit(input) {
 		return Decision{}, Usage{}, errors.New("gemini_response_limit")
 	}
+	debugText(ctx, "provider_response", string(raw))
 	var out struct {
 		Candidates []struct {
 			FinishReason string `json:"finishReason"`

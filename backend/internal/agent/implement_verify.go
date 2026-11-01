@@ -323,6 +323,7 @@ func (run *implementRun) verify(ctx context.Context) error {
 	}
 	run.validateCoverage(result, observed)
 	impl.Verification = result
+	debugJSON(ctx, "verification_coverage", map[string]any{"required_criteria": impl.Plan.AcceptanceCriteria, "observed_paths": observed, "verification": result, "generated_changes": impl.Changes, "can_publish": impl.CanPublish(), "repair_round": impl.RepairRound})
 	run.logger.Info("implement_verification_completed", "files", len(files), "batches", len(summaries), "issues", len(result.Issues), "unverified", len(result.Unverified))
 	if len(result.Issues) > 0 {
 		started, err := run.repair(ctx, result)
@@ -365,6 +366,7 @@ func (run *implementRun) readVerificationFile(ctx context.Context, read github.R
 		return false, ctx.Err()
 	}
 	complete := err == nil && exists && len(content) <= 16000
+	debugJSON(ctx, "verification_read", map[string]any{"read": read, "source_generated": overlaid, "exists": exists, "complete": complete, "content": content, "received_bytes": len(content), "clip_limit": 16000, "outcome": outcome(err)})
 	codePaths := []string{}
 	if err == nil && exists {
 		codePaths = append(codePaths, read.Path)

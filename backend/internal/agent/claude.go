@@ -68,6 +68,7 @@ func (p *Claude) Next(ctx context.Context, key, model, input string) (Decision, 
 	if body, err := json.Marshal(params); err != nil || len(body) > aiRequestLimit(input) {
 		return Decision{}, Usage{}, errors.New("ai_request_limit")
 	}
+	debugJSON(ctx, "provider_request", params)
 	opts := []option.RequestOption{}
 	if p.HTTP != nil {
 		opts = append(opts, option.WithHTTPClient(p.HTTP))
@@ -95,6 +96,7 @@ func (p *Claude) Next(ctx context.Context, key, model, input string) (Decision, 
 			return Decision{}, Usage{}, errors.New("claude_invalid_output")
 		}
 	}
+	debugJSON(ctx, "provider_response", message)
 	usage := Usage{InputTokens: int(message.Usage.InputTokens + message.Usage.CacheReadInputTokens + message.Usage.CacheCreationInputTokens), OutputTokens: int(message.Usage.OutputTokens)}
 	if err := stream.Err(); err != nil {
 		return Decision{}, usage, claudeError(err, p.Vertex)

@@ -35,6 +35,7 @@ type Checkpoint struct {
 	Metrics            domain.Metrics
 }
 type Runner struct {
+	Debug  bool // local-only detailed diagnostics; enabled by validated server configuration
 	AI     Provider
 	GitHub Reader
 	Writer Writer
@@ -59,6 +60,7 @@ type Input struct {
 // Run owns only transient evidence. Each emitted checkpoint must be durably saved before continuing.
 func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error) error {
 	ctx = withEffort(ctx, in.Session.Effort)
+	ctx = withAgentDebug(ctx, r.Debug, in)
 	if in.Session.OverviewPending {
 		if err := r.initializeOverview(ctx, &in, emit); err != nil {
 			return err
@@ -141,6 +143,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 			return err
 		}
 		input := buildContext(in.Session, cp.Summary, instructions, ev, cp.Limitations, intent, &budget)
+		debugChatContext(ctx, in.Session, ev, input)
 		if len(input) > domain.MaxInputBytes {
 			return errors.New("ai_input_limit")
 		}
@@ -149,7 +152,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		}
 		callStart := time.Now()
 		logger.Info("model_call_started", "step", step+1, "input_bytes", len(input))
-		decision, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, input)
+		decision, usage, err := r.next(ctx, in, input)
 		errorCode := implementationErrorCode(err)
 		if errorCode == "implementation_error" {
 			errorCode = "model_error"
@@ -283,6 +286,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			debugJSON(ctx, "read_result", map[string]any{"workflow": "chat", "read": read, "received_bytes": len(content), "content": content, "outcome": outcome(err), "clip_limit": 8000})
 			if err != nil {
 				content = "取得できませんでした: " + err.Error()
 				cp.Limitations = append(cp.Limitations, content)

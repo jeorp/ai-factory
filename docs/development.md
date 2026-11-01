@@ -89,6 +89,33 @@ WebSocket最初のフレームは `{type:"auth",token:"Firebase ID token"}`。�
 
 ローカルの Compose では `docker compose logs api` で確認する。本番では API の標準出力を収集するログ基盤で `trace_id` または `session_id` を検索する。これは構造化ログによる相関であり、外部サービス内部までの分散トレースではない。
 
+### ローカル限定の詳細debugログ
+
+`AGENT_DEBUG_LOG=1` を付けてAPIを再起動すると、コード本文を含む詳細ログを出力します。
+
+```sh
+AGENT_DEBUG_LOG=1 docker compose up --build -d --wait --no-deps api
+docker compose logs --since 10m api > /tmp/ai-factory-debug.log
+```
+
+`agent_debug_model_input` / `agent_debug_model_output` にモデルの入力と解析後の応答、`agent_debug_provider_request` / `agent_debug_provider_response` にプロバイダーへの本文と応答を記録します。`trace_id`・`session_id`、モデル呼び出しごとの `ai_call_id` で追跡できます。APIキー・GitHubトークンと認識できる認証情報はマスクし、認証ヘッダーは記録しません。ログには依頼文・取得コード・生成コードが含まれるため、共有前に内容を確認してください。各payloadは512 KiBまでで、切り詰めた場合は `truncated=true` と元のバイト数を記録します。
+
+`agent_debug_edit_rejected` のpayloadには、ファイルごとの `planned_action` / `submitted_action`、原文ハッシュ、失敗した編集番号を記録します。行範囲編集では `line_edit` の期待文字列と `actual_start` / `actual_end`、前後2行の `source_context` を比較できます。検索置換では失敗時点の `current_source`（先行する置換を適用済み）、検索文字列と置換内容、一致件数を記録します。診断だけを追加し、編集の照合条件や再試行上限は変えません。
+
+品質の判断を追うため、次のイベントも同じローカル限定フラグで出力します。
+
+| イベント（`agent_debug_` 接頭辞） | 確認できる内容 |
+| --- | --- |
+| `chat_context` / `context_reduced` / `evidence_evicted` | 会話履歴・取得情報のうち入力に残った範囲と、省略・破棄した情報 |
+| `read_result` / `search_result` / `verification_read` | 取得元が固定ベースか生成済みコードか、検索結果・省略範囲・全文確認の可否 |
+| `plan_rejected` / `plan_gap_review` / `plan_accepted` | 計画を拒否した理由、追加検討した関連ファイル、承認待ちにした計画と実装順 |
+| `verification_coverage` | 受け入れ条件、全文確認できたパス、AIとサーバーの検証結果、公開可否 |
+| `repair_decision` / `publish_gate` | 修復対象・対象外・回数上限と、公開できるかの判断 |
+| `review_finding_decision` | 指摘の採用・重複・対象外・根拠不足・保存上限による除外 |
+| `model_result` | モデル呼び出しの結果、検証での拒否理由、使用トークン |
+
+既定は無効です。`APP_ENV=local` に加え、既存のローカル用設定検証（demoプロジェクト・両Emulator・loopback Origin）を通った場合だけ利用できます。本番設定やCloud Run（`K_SERVICE` がある環境）で `AGENT_DEBUG_LOG=1` にすると起動を拒否します。通常のログはこれまでどおり本文を含みません。無効に戻すには `AGENT_DEBUG_LOG=0 docker compose up -d --no-deps api` を実行します。
+
 ## 参照した公式資料
 
 - [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)

@@ -14,6 +14,7 @@ import (
 
 type Config struct {
 	Local                                                  bool
+	AgentDebug                                             bool
 	Demo                                                   bool
 	Project, Origin, Port, ClientID, ClientSecret, AppSlug string
 	CookieKey                                              []byte
@@ -45,6 +46,12 @@ func splitModels(value string) []string {
 
 func LoadConfig() (Config, error) {
 	c := Config{Local: os.Getenv("APP_ENV") == "local", Demo: os.Getenv("PROVIDER") == "demo", Project: os.Getenv("GCP_PROJECT_ID"), Origin: os.Getenv("WEB_ORIGIN"), Port: os.Getenv("PORT"), ClientID: os.Getenv("GITHUB_CLIENT_ID"), ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"), AppSlug: os.Getenv("GITHUB_APP_SLUG"), Models: []string{"gpt-5-mini"}}
+	if os.Getenv("AGENT_DEBUG_LOG") == "1" {
+		if !c.Local || os.Getenv("K_SERVICE") != "" {
+			return c, errors.New("AGENT_DEBUG_LOG is only allowed in local development")
+		}
+		c.AgentDebug = true
+	}
 	// AI_PROVIDER may list several real providers ("gemini,vertex"); the UI
 	// then offers every model, and each model runs on the provider it belongs to.
 	providers := splitModels(os.Getenv("AI_PROVIDER"))

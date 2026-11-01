@@ -156,6 +156,7 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 		// reads are bounded.
 		if err != nil && err.Error() == "ai_input_limit" && (len(ev) > 0 || len(related) > 0 || len(previous) > 0) {
 			run.retry("edit", call+1, &retries, err)
+			debugJSON(ctx, "context_reduced", map[string]any{"phase": "edit", "reason": "ai_input_limit", "step": impl.NextStep + 1, "evidence": ev, "related_context": related, "previous_changes": previous})
 			switch {
 			case len(ev) > 0:
 				ev = nil
@@ -170,6 +171,7 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 		}
 		if err != nil && err.Error() == "ai_input_limit" && len(step) > 1 {
 			parts, ok := domain.SplitPlanStep(impl.Plan.Files, step)
+			debugJSON(ctx, "step_split", map[string]any{"step_paths": step, "replacement_steps": parts, "can_split": ok})
 			if !ok {
 				return nil, err
 			}
@@ -208,6 +210,9 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 			continue
 		}
 		changes, err := applyProposals(step, impl, originals, d.Implementation.Changes)
+		if err != nil {
+			run.debugEditFailure(ctx, step, originals, d.Implementation.Changes, err)
+		}
 		if len(d.Implementation.Changes) == 0 && len(d.Implementation.AdditionalFiles) == 0 && len(d.Implementation.Unverified) > 0 && len(changes) == 0 {
 			for _, reason := range d.Implementation.Unverified {
 				impl.Unverified = appendUnique(impl.Unverified, domain.Clip(reason, 512))
