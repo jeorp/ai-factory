@@ -114,24 +114,48 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 	} else {
 		lineEdits["maxItems"] = 0
 	}
-	changePath := map[string]any{"type": "string"}
-	if len(task.Files) > 0 {
-		paths := make([]string, 0, len(task.Files))
-		for _, f := range task.Files {
-			paths = append(paths, f.Path)
-		}
-		changePath["enum"] = paths
-	}
 	props["implementation"] = nullable(object(map[string]any{
-		"changes": map[string]any{"type": "array", "items": object(map[string]any{
-			"path": changePath, "action": map[string]any{"type": "string", "enum": []string{"create", "update", "delete"}},
-			"content": map[string]any{"type": "string"}, "edits": edits,
-			"sourceHash": map[string]any{"type": "string"}, "lineEdits": lineEdits,
-		})},
+		"changes":         changeItemsSchema(task.Files, edits, lineEdits),
 		"unverified":      stringList(),
 		"additionalFiles": pendingFilesSchema(),
 	}))
 	return implementEditPrompt + implementProjectDocumentationRule
+}
+
+// changeItemsSchema binds every step path to its planned action. A shared
+// action enum would let a mixed create/update/delete step swap operations
+// between paths, so each path gets its own variant. The server still checks
+// path, action and uniqueness before applying any edit.
+func changeItemsSchema(files []implementFile, edits, lineEdits map[string]any) map[string]any {
+	noItems := func(items map[string]any) map[string]any {
+		return map[string]any{"type": "array", "items": items["items"], "maxItems": 0}
+	}
+	variant := func(path map[string]any, actions []string) map[string]any {
+		e, l, content := edits, lineEdits, map[string]any{"type": "string"}
+		if len(actions) == 1 && actions[0] != "update" {
+			// create carries full content only; delete carries nothing.
+			e, l = noItems(edits), noItems(lineEdits)
+			if actions[0] == "delete" {
+				content = map[string]any{"type": "string", "enum": []string{""}}
+			}
+		}
+		return object(map[string]any{
+			"path": path, "action": map[string]any{"type": "string", "enum": actions},
+			"content": content, "edits": e,
+			"sourceHash": map[string]any{"type": "string"}, "lineEdits": l,
+		})
+	}
+	if len(files) == 0 {
+		return map[string]any{"type": "array", "items": variant(map[string]any{"type": "string"}, []string{"create", "update", "delete"})}
+	}
+	variants := make([]any, 0, len(files))
+	for _, f := range files {
+		variants = append(variants, variant(map[string]any{"type": "string", "enum": []string{f.Path}}, []string{f.Action}))
+	}
+	if len(variants) == 1 {
+		return map[string]any{"type": "array", "items": variants[0]}
+	}
+	return map[string]any{"type": "array", "items": map[string]any{"anyOf": variants}}
 }
 
 func implementationSearchSchema() map[string]any {

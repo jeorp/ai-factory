@@ -16,6 +16,76 @@ type proposalEditError struct {
 func (e *proposalEditError) Error() string { return fmt.Sprintf("%s: %v", e.path, e.err) }
 func (e *proposalEditError) Unwrap() error { return e.err }
 
+// changeIssue is a pre-apply rejection of one entry in changes. Path is only
+// set to a path of the current step and actions only to valid enum values, so
+// the issue never echoes free text from the model.
+type changeIssue struct {
+	Code            string `json:"code"`
+	Change          int    `json:"change"`
+	Path            string `json:"path,omitempty"`
+	ExpectedAction  string `json:"expectedAction,omitempty"`
+	SubmittedAction string `json:"submittedAction,omitempty"`
+	FirstChange     int    `json:"firstChange,omitempty"`
+}
+
+// proposalStructureError lists every structural problem of a response so the
+// model can correct them together instead of discovering them one call at a time.
+type proposalStructureError struct{ issues []changeIssue }
+
+func (e *proposalStructureError) Error() string { return e.issues[0].Code }
+
+var validChangeActions = map[string]bool{"create": true, "update": true, "delete": true}
+
+// validateProposalStructure checks paths, uniqueness, planned actions and the
+// fields each action allows before any edit touches the source, so a source
+// mismatch in one entry cannot hide a duplicate or wrong action in another.
+func validateProposalStructure(step []string, impl *domain.Implementation, proposals []ChangeProposal) error {
+	inStep := map[string]bool{}
+	for _, p := range step {
+		inStep[p] = true
+	}
+	first := map[string]int{}
+	issues := []changeIssue{}
+	for i, p := range proposals {
+		issue := changeIssue{Change: i + 1}
+		if validChangeActions[p.Action] {
+			issue.SubmittedAction = p.Action
+		}
+		if !inStep[p.Path] {
+			issue.Code = "change_path_not_in_step"
+			issues = append(issues, issue)
+			continue
+		}
+		issue.Path = p.Path
+		if at, ok := first[p.Path]; ok {
+			issue.Code, issue.FirstChange = "change_path_duplicate", at
+			issues = append(issues, issue)
+			continue
+		}
+		first[p.Path] = i + 1
+		planned := impl.PlannedAction(p.Path)
+		switch {
+		case !validChangeActions[p.Action]:
+			issue.Code, issue.ExpectedAction = "invalid_change_action", planned
+		case p.Action != planned:
+			issue.Code, issue.ExpectedAction = "change_action_not_planned", planned
+		case p.Action != "update" && len(p.LineEdits) > 0, p.Action == "update" && len(p.LineEdits) > 0 && (len(p.Edits) > 0 || p.Content != ""):
+			issue.Code = "update_format_conflict"
+		case p.Action == "create" && (p.Content == "" || len(p.Edits) > 0):
+			issue.Code = "create_requires_content"
+		case p.Action == "update" && len(p.LineEdits) == 0 && len(p.Edits) == 0 && p.Content == "":
+			issue.Code = "update_requires_edits"
+		default:
+			continue
+		}
+		issues = append(issues, issue)
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	return &proposalStructureError{issues: issues}
+}
+
 // savedChange is the single expiry boundary for generated content. Callers
 // must not fall back to repository contents when the saved change is gone.
 func (run *implementRun) savedChange(ctx context.Context, path string) (domain.FileChange, error) {
@@ -49,40 +119,21 @@ func retainedChange(impl *domain.Implementation, originals map[string]string, pa
 // the current step with their approved action are accepted. Unedited saved
 // changes in a draft revision retain their original base-relative action.
 func applyProposals(step []string, impl *domain.Implementation, originals map[string]string, proposals []ChangeProposal) ([]domain.FileChange, error) {
-	inStep := map[string]bool{}
-	for _, p := range step {
-		inStep[p] = true
+	if err := validateProposalStructure(step, impl, proposals); err != nil {
+		return nil, err
 	}
 	out := []domain.FileChange{}
 	seen := map[string]bool{}
 	for _, p := range proposals {
-		if !inStep[p.Path] {
-			return nil, errors.New("change_path_not_in_step")
-		}
-		if seen[p.Path] {
-			return nil, errors.New("change_path_duplicate")
-		}
 		seen[p.Path] = true
-		if p.Action != impl.PlannedAction(p.Path) {
-			return nil, errors.New("change_action_not_planned")
-		}
-		if p.Action != "update" && len(p.LineEdits) > 0 {
-			return nil, errors.New("update_format_conflict")
-		}
 		switch p.Action {
 		case "delete":
 			out = append(out, domain.FileChange{Path: p.Path, Action: "delete"})
 		case "create":
-			if p.Content == "" || len(p.Edits) > 0 {
-				return nil, errors.New("create_requires_content")
-			}
 			out = append(out, domain.FileChange{Path: p.Path, Action: "create", Content: p.Content})
 		case "update":
 			content := p.Content
 			if len(p.LineEdits) > 0 {
-				if len(p.Edits) > 0 || p.Content != "" {
-					return nil, errors.New("update_format_conflict")
-				}
 				if p.SourceHash != domain.SourceHash(originals[p.Path]) {
 					return nil, &proposalEditError{path: p.Path, err: errors.New("edit_source_mismatch")}
 				}
@@ -95,8 +146,6 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 				if content, err = domain.ApplyEdits(originals[p.Path], p.Edits); err != nil {
 					return nil, &proposalEditError{path: p.Path, err: err}
 				}
-			} else if content == "" {
-				return nil, errors.New("update_requires_edits")
 			}
 			if content == originals[p.Path] {
 				if _, retained := retainedChange(impl, originals, p.Path); !retained {
