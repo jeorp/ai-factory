@@ -145,7 +145,7 @@ func (p *Claude) Next(ctx context.Context, key, model, input string) (Decision, 
 		return d, usage, errors.New("invalid_priority_result")
 	}
 	if issue := implementationResponseIssue(input, d); issue != "" {
-		return d, usage, &implementationResultError{reason: issue}
+		return d, usage, newImplementationResultError(issue, d)
 	}
 	return d, usage, nil
 }

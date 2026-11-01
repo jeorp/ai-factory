@@ -1,5 +1,7 @@
 // User-facing messages for error and limitation codes sent by the API.
 export const errorMessages: Record<string, string> = {
+ effort_not_allowed: 'このモデルでは選択したエフォートを使えません。対応する値を選んでください。',
+ run_in_progress: '実行中はエフォートを変更できません。完了または停止後に変更してください。',
  review_read_not_allowed: 'AIがレビュー中に利用できない情報の取得を繰り返したため停止しました。保存済みの状態から再開してください。',
  pr_changed_create_new_review: 'PRのベースまたはヘッドが更新されました。チャットで「もう一度レビューして」と依頼してください。', pull_request_required: 'チャットでレビューするPRの番号かURLを教えてください。',
  login_required: 'ログインの有効期限が切れました。GitHubでログインし直してください。', github_login_required: 'GitHubでログインしてください。',

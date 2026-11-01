@@ -16,6 +16,7 @@ import (
 )
 
 type command struct {
+	Effort          string `json:"effort"`
 	Type            string `json:"type"`
 	ID              string `json:"id"`
 	Text            string `json:"text"`
@@ -203,6 +204,23 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				}
+			case "set_effort":
+				if cancelRun != nil {
+					problem("run_in_progress")
+					continue
+				}
+				levels := s.effortOptions(session.Model)
+				if len(levels) == 0 || !domain.ValidEffort(levels, cmd.Effort) {
+					problem("effort_not_allowed")
+					continue
+				}
+				session.Effort = cmd.Effort
+				if session.Effort == "" {
+					session.Effort = domain.DefaultEffort(levels)
+				}
+				if save() != nil || send("session", session) != nil {
+					return
+				}
 			case "instruction":
 				if !idPattern.MatchString(cmd.ID) || !safeText(cmd.Text) {
 					problem("invalid_instruction")
@@ -329,7 +347,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				snapshot.Messages = append([]domain.Message{}, session.Messages...)
 				snapshot.Sources = append([]domain.Source{}, session.Sources...)
 				traceID := randomID()
-				logger := slog.Default().With("trace_id", traceID, "session_id", session.ID, "command", cmd.Type, "model", session.Model)
+				logger := slog.Default().With("trace_id", traceID, "session_id", session.ID, "command", cmd.Type, "model", session.Model, "effort", session.Effort)
 				input := agent.Input{Session: snapshot, Key: cmd.APIKey, GitHubToken: c.Token, Instructions: instructions, Logger: logger}
 				cmd.APIKey = ""
 				session.State = "running"
@@ -506,6 +524,7 @@ func applyCheckpoint(session *domain.Session, cp agent.Checkpoint) error {
 	session.Sources = cp.Sources
 	session.Metrics = cp.Metrics
 	session.Limitations = cp.Limitations
+	session.Normalize()
 	if len(session.Limitations) > 20 {
 		session.Limitations = session.Limitations[len(session.Limitations)-20:]
 	}

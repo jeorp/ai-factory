@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"ai-factory/backend/internal/domain"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -40,7 +41,15 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	if implementWorkflow(input) {
 		maxOutput = ImplementOutputToks
 	}
-	body, err := json.Marshal(map[string]any{"systemInstruction": map[string]any{"parts": []any{map[string]string{"text": instructions}}}, "contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": input}}}}, "generationConfig": geminiGenerationConfig(model, maxOutput, schema)})
+	config := geminiGenerationConfig(model, maxOutput, schema)
+	levels := domain.GeminiEfforts(model)
+	if effort := selectedEffort(ctx); effort != "" {
+		if !domain.ValidEffort(levels, effort) {
+			return Decision{}, Usage{}, errors.New("effort_not_allowed")
+		}
+		config["thinkingConfig"] = map[string]any{"thinkingLevel": effort}
+	}
+	body, err := json.Marshal(map[string]any{"systemInstruction": map[string]any{"parts": []any{map[string]string{"text": instructions}}}, "contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": input}}}}, "generationConfig": config})
 	if err != nil || len(body) > aiRequestLimit(input) {
 		return Decision{}, Usage{}, errors.New("ai_request_limit")
 	}
@@ -127,7 +136,7 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 		return d, usage, errors.New("invalid_priority_result")
 	}
 	if issue := implementationResponseIssue(input, d); issue != "" {
-		return d, usage, &implementationResultError{reason: issue}
+		return d, usage, newImplementationResultError(issue, d)
 	}
 	return d, usage, nil
 }
@@ -137,15 +146,13 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 // default (Pro and newer Flash models) stop with MAX_TOKENS before answering.
 const geminiThinkingHeadroom = 8192
 
-// geminiGenerationConfig keeps thinking short and predictable across model
-// families. Gemini 3 and later accept thinkingLevel, and "low" is supported by
-// every current Flash, Flash-Lite and Pro model; "minimal" is not available
-// on Pro models. Gemini 2.x models predate thinkingLevel, so they keep their
-// default thinking and rely on the extra output headroom.
+// geminiGenerationConfig uses medium thinking for Gemini 3 and later across
+// chat, review and implementation. Gemini 2.x keeps its default thinking
+// configuration and the extra output headroom.
 func geminiGenerationConfig(model string, answerTokens int, schema map[string]any) map[string]any {
 	config := map[string]any{"maxOutputTokens": answerTokens + geminiThinkingHeadroom, "responseMimeType": "application/json", "responseJsonSchema": schema}
-	if !strings.HasPrefix(model, "gemini-2") && !strings.HasPrefix(model, "gemini-1") {
-		config["thinkingConfig"] = map[string]any{"thinkingLevel": "low"}
+	if levels := domain.GeminiEfforts(model); len(levels) > 0 {
+		config["thinkingConfig"] = map[string]any{"thinkingLevel": domain.DefaultEffort(levels)}
 	}
 	return config
 }

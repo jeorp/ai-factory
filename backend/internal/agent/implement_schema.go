@@ -107,6 +107,13 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 	props["answer"] = map[string]any{"type": "string", "enum": []string{""}}
 	lineEdit := object(map[string]any{"startLine": map[string]any{"type": "integer"}, "endLine": map[string]any{"type": "integer"}, "expectedStart": map[string]any{"type": "string"}, "expectedEnd": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}})
 	edit := object(map[string]any{"search": map[string]any{"type": "string"}, "replace": map[string]any{"type": "string"}})
+	edits := map[string]any{"type": "array", "items": edit}
+	lineEdits := map[string]any{"type": "array", "items": lineEdit}
+	if task.EditFormat == lineRangeFormat {
+		edits["maxItems"] = 0
+	} else {
+		lineEdits["maxItems"] = 0
+	}
 	changePath := map[string]any{"type": "string"}
 	if len(task.Files) > 0 {
 		paths := make([]string, 0, len(task.Files))
@@ -118,8 +125,8 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 	props["implementation"] = nullable(object(map[string]any{
 		"changes": map[string]any{"type": "array", "items": object(map[string]any{
 			"path": changePath, "action": map[string]any{"type": "string", "enum": []string{"create", "update", "delete"}},
-			"content": map[string]any{"type": "string"}, "edits": map[string]any{"type": "array", "items": edit},
-			"sourceHash": map[string]any{"type": "string"}, "lineEdits": map[string]any{"type": "array", "items": lineEdit},
+			"content": map[string]any{"type": "string"}, "edits": edits,
+			"sourceHash": map[string]any{"type": "string"}, "lineEdits": lineEdits,
 		})},
 		"unverified":      stringList(),
 		"additionalFiles": pendingFilesSchema(),

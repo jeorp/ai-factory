@@ -7,7 +7,7 @@
 画面の「AIモデル」には `GEMINI_MODELS`（カンマ区切り、先頭が既定）の許可リストが表示される。未設定時は `gemini-3.5-flash-lite`、`gemini-3.8-flash`、`gemini-3.1-pro-preview` の3つ。`gemini-4-argon` や `gemini-2.5-pro` なども追加できる。
 
 - Proモデル（`gemini-3.1-pro-preview`）とGemini 4 Argonには無料枠がないため、課金を有効にしたプロジェクトのキーが必要。無料枠のキーでは利用枠エラーになる。
-- Gemini 3以降のモデルには `thinkingLevel=low` を指定し、思考トークンを抑える。`minimal` はProで使えないため全モデル共通で `low` を使う。Gemini 2.xは既定の思考設定のまま送る。
+- Gemini 3以降のモデルには、通常チャット・PRレビュー・実装のすべてで、会話に保存されたエフォートを `thinkingLevel` に指定する。既定は `medium`。新規セッションのモデル選択横と、既存の会話の入力欄の上から変更でき、次の実行から適用される。実行中は変更できない。モデルごとの対応値はサーバーで検証する。Gemini 2.xは既定の思考設定のまま送る。
 - Geminiは思考トークンを `maxOutputTokens` に含めるため、回答枠に8192トークンの余裕を加えている。思考トークンも出力として課金される。
 - 料金表示（`frontend/web/src/lib/pricing.ts`）は2026-10-31時点の200kトークン以下の単価。未登録のモデルは料金を推定しない。
 

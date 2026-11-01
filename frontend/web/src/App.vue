@@ -11,6 +11,7 @@ import { useApiKey } from './composables/useApiKey';
 import { useWorkspace } from './stores/workspace';
 import { busy, states, type Config, type Repository, type Session } from './types';
 import Icon from './components/Icon.vue';
+import EffortSelect from './components/EffortSelect.vue';
 import AppSidebar from './components/AppSidebar.vue';
 import WelcomePanel from './components/WelcomePanel.vue';
 import ApiKeyCard from './components/ApiKeyCard.vue';
@@ -37,6 +38,11 @@ const transcript = ref<HTMLElement>();
 
 // New session form.
 const repositories = ref<Repository[]>([]); const repositoryChoice = ref(''); const manualTarget = ref(''); const model = ref('');
+const effort = ref('medium');
+const newEfforts = computed(() => config.value.modelEfforts?.[model.value] || []);
+watch(newEfforts, levels => { if (!levels.includes(effort.value)) effort.value = levels.includes('medium') ? 'medium' : levels[0] || ''; });
+const currentEfforts = computed(() => config.value.modelEfforts?.[current.value?.model || ''] || []);
+const currentEffort = computed(() => current.value?.effort || (currentEfforts.value.includes('medium') ? 'medium' : currentEfforts.value[0] || ''));
 const target = computed(() => repositoryChoice.value === '__manual__' ? manualTarget.value.trim() : repositoryChoice.value);
 
 // AI key and composer.
@@ -90,7 +96,7 @@ async function signOut() {
 }
 async function createSession() {
  await action(async () => {
-  const s = await api<Session>('/sessions', { method: 'POST', body: JSON.stringify({ target: target.value, model: model.value }) });
+  const s = await api<Session>('/sessions', { method: 'POST', body: JSON.stringify({ target: target.value, model: model.value, ...(newEfforts.value.length ? { effort: effort.value } : {}) }) });
   await work.open(s);
   showNew.value = false; repositoryChoice.value = ''; manualTarget.value = ''; keys.consent = false; keys.draft = ''; keys.sync();
  });
@@ -106,6 +112,7 @@ function send() {
  try { work.send(mode.value, text.value.trim(), crypto.randomUUID(), undefined, pull > 0 ? { pullNumber: pull } : undefined); text.value = ''; }
  catch (e) { appError.value = errorMessage(e); }
 }
+const setEffort = (value: string) => sendToSession('set_effort', '', crypto.randomUUID(), undefined, { effort: value });
 const investigate = (index: number) => sendToSession('investigate', '', crypto.randomUUID(), index);
 const amendImplementation = (approve: boolean) => sendToSession('implement_amend', approve ? 'approve' : 'decline');
 const publishImplementation = (value: { branch: string; title: string; body: string }) => sendToSession('implement_publish', '', crypto.randomUUID(), undefined, value);
@@ -144,7 +151,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
    <div v-if="appError || work.error" class="error-banner" role="alert">{{ appError || errorMessage(work.error) }}<button class="plain-button" @click="dismissError">閉じる</button></div>
    <div v-if="config.demo" class="demo-banner">{{ config.aiProvider === 'demo' ? '固定デモです。実際のGitHubやAIには接続しません。' : 'GitHubは固定デモです。質問とサンプル情報はGeminiへ送信されます。' }}</div>
 
-   <WelcomePanel v-if="!current || showNew" v-model:repository-choice="repositoryChoice" v-model:manual-target="manualTarget" v-model:model="model" :login="login" :config="config" :repositories="repositories" :loading="loading" :action-pending="actionPending" :target="target" @sign-in="signIn" @create="createSession" @refresh-repositories="action(refreshRepositories)" />
+   <WelcomePanel v-if="!current || showNew" v-model:repository-choice="repositoryChoice" v-model:manual-target="manualTarget" v-model:model="model" v-model:effort="effort" :login="login" :config="config" :repositories="repositories" :loading="loading" :action-pending="actionPending" :target="target" @sign-in="signIn" @create="createSession" @refresh-repositories="action(refreshRepositories)" />
 
    <div v-else class="conversation-layout" :class="{ 'details-hidden': !showDetails && !openedFile, 'code-open': !!openedFile }">
     <section class="conversation">
@@ -160,6 +167,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
       <SourceFiles v-if="!current.review" :key="current.id" :session="current" @open="openFile" @clear="closeFile" />
       <div v-if="running && current.implementation?.status !== 'checking_ci'" class="progress-message"><span class="loading-dots">•••</span>{{ current.state === 'stopping' ? '停止を要求しています…' : work.progress || '処理を開始しています…' }}</div>
      </div>
+     <div v-if="currentEfforts.length" class="session-effort"><EffortSelect id="session-effort" :levels="currentEfforts" :value="currentEffort" :disabled="running || !work.connected" @change="setEffort" /><span>次の実行から適用 · 高いほど時間・費用が増える場合があります</span></div>
      <SessionComposer v-model:text="text" v-model:mode="mode" v-model:fix-pull="fixPull" :session="current" :running="running" :connected="work.connected" :reconnecting="work.reconnecting" :can-run="canRun" :can-send="canSend" @send="send" @stop="sendToSession('stop')" @resume="sendToSession('resume')" />
     </section>
     <aside v-if="openedFile" ref="codePanel" class="code-panel" aria-label="コードパネル" tabindex="-1">

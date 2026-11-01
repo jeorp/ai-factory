@@ -135,10 +135,10 @@ func TestGeminiThinkingConfigPerModel(t *testing.T) {
 		model string
 		level any
 	}{
-		{"gemini-3.5-flash-lite", "low"},
-		{"gemini-3.8-flash", "low"},
-		{"gemini-3.1-pro-preview", "low"},
-		{"gemini-4-argon", "low"},
+		{"gemini-3.5-flash-lite", "medium"},
+		{"gemini-3.8-flash", "medium"},
+		{"gemini-3.1-pro-preview", "medium"},
+		{"gemini-4-argon", "medium"},
 		{"gemini-2.5-pro", nil},
 		{"gemini-2.5-flash", nil},
 	}

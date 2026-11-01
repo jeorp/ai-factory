@@ -45,3 +45,16 @@ func TestReviewUnfinishedIgnoresLaterRunKinds(t *testing.T) {
 		t.Fatal("missing review reported unfinished")
 	}
 }
+
+func TestNormalizeImplementationVerificationLists(t *testing.T) {
+	s := Session{Implementation: &Implementation{Verification: &ImplementationVerification{}}}
+	s.Normalize()
+	if s.Implementation.Verification.Issues == nil || s.Implementation.Verification.Unverified == nil {
+		t.Fatal("verification lists must serialize as arrays")
+	}
+	s.Implementation.Verification.Issues = []string{"keep finding"}
+	s.Normalize()
+	if len(s.Implementation.Verification.Issues) != 1 {
+		t.Fatal("normalization discarded a finding")
+	}
+}

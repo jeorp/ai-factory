@@ -58,6 +58,7 @@ type Input struct {
 
 // Run owns only transient evidence. Each emitted checkpoint must be durably saved before continuing.
 func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error) error {
+	ctx = withEffort(ctx, in.Session.Effort)
 	if in.Session.OverviewPending {
 		if err := r.initializeOverview(ctx, &in, emit); err != nil {
 			return err

@@ -26,7 +26,13 @@ export const useWorkspace = defineStore('workspace', () => {
  function disconnect(clear = false) { generation++; clearTimeout(retry); clearTimeout(ciRetry); socket?.close(); socket = undefined; connected.value = false; reconnecting.value = false; if (clear) { clearKey(); current.value = null; } }
  function normalize(session: Session) {
   session.messages ||= []; session.sources ||= []; session.limitations ||= [];
-  if (session.implementation) { session.implementation.changes ||= []; session.implementation.unverified ||= []; }
+  if (session.implementation) {
+   session.implementation.changes ||= []; session.implementation.unverified ||= [];
+   if (session.implementation.verification) {
+    session.implementation.verification.issues ||= [];
+    session.implementation.verification.unverified ||= [];
+   }
+  }
   if (session.review) { session.review.steps ||= []; session.review.findings ||= []; session.review.unverified ||= []; for (const step of session.review.steps) step.files ||= []; }
   return session;
  }
