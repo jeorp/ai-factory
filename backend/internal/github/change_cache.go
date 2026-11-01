@@ -37,13 +37,10 @@ func (c *Client) RawFile(ctx context.Context, token, repository, commit, p strin
 
 // rawFile is used only after authorization and path/commit validation.
 func (c *Client) rawFile(ctx context.Context, token, repository, commit, p string) (string, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+repository+"/contents/"+escapePath(p)+"?ref="+url.QueryEscape(commit), nil)
+	req, err := newAPIRequest(ctx, token, http.MethodGet, "/repos/"+repository+"/contents/"+escapePath(p)+"?ref="+url.QueryEscape(commit), nil, "application/vnd.github.raw+json")
 	if err != nil {
 		return "", false, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github.raw+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return "", false, errors.New("github_unavailable")

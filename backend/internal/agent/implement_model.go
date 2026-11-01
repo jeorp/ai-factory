@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"ai-factory/backend/internal/domain"
@@ -91,18 +90,12 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 	if d.IntentIssue == "empty_fields" || d.IntentIssue == "field_length_limit" {
 		log.Info("implement_intent_discarded", "reason", d.IntentIssue)
 	}
-	run.cp.Metrics.InputTokens += usage.InputTokens
-	run.cp.Metrics.OutputTokens += usage.OutputTokens
-	run.cp.Metrics.LastInputTokens += usage.InputTokens
-	run.cp.Metrics.LastOutputTokens += usage.OutputTokens
-	if usage.InputTokens != 0 || usage.OutputTokens != 0 {
-		run.cp.Metrics.HasLastUsage = true
-	}
+	addUsage(&run.cp.Metrics, usage)
 	if err != nil {
 		return d, err
 	}
 	raw, _ := json.Marshal(d)
-	if (len(run.in.Key) > 0 && strings.Contains(string(raw), run.in.Key)) || (len(run.in.GitHubToken) > 0 && strings.Contains(string(raw), run.in.GitHubToken)) {
+	if echoes(string(raw), run.in) {
 		return d, errors.New("credential_echo_blocked")
 	}
 	return d, nil

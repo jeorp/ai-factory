@@ -33,13 +33,10 @@ type User struct {
 }
 
 func (c *Client) get(ctx context.Context, token, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com"+path, nil)
+	req, err := newAPIRequest(ctx, token, http.MethodGet, path, nil, "application/vnd.github+json")
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return errors.New("github_unavailable")
@@ -355,13 +352,10 @@ func (c *Client) jobLog(ctx context.Context, token, repository string, id int) (
 		v := sanitizeJobLog("demo job log\nFAIL TestDemo")
 		return v, len(v), nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://api.github.com/repos/%s/actions/jobs/%d/logs", repository, id), nil)
+	req, err := newAPIRequest(ctx, token, http.MethodGet, fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", repository, id), nil, "application/vnd.github+json")
 	if err != nil {
 		return "", 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return "", 0, errors.New("github_unavailable")
@@ -492,4 +486,16 @@ func (c *Client) rpc(ctx context.Context, token, method string, params any, sess
 		return rpcResult{}, errors.New("github_mcp_protocol_error")
 	}
 	return rpcResult{v.Result, resp.Header.Get("Mcp-Session-Id"), n}, nil
+}
+
+// newAPIRequest builds an authenticated request for a GitHub REST API path.
+func newAPIRequest(ctx context.Context, token, method, path string, body io.Reader, accept string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, "https://api.github.com"+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", accept)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	return req, nil
 }

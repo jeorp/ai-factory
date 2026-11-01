@@ -825,10 +825,6 @@ func (r *Runner) runReview(ctx context.Context, in Input, emit func(Checkpoint) 
 	return save("レビュー結果を保存しました")
 }
 
-func echoes(s string, in Input) bool {
-	return in.Key != "" && strings.Contains(s, in.Key) || in.GitHubToken != "" && strings.Contains(s, in.GitHubToken)
-}
-
 func hunk(line string) (int, int, bool) {
 	var l, r int
 	parts := strings.Fields(line)

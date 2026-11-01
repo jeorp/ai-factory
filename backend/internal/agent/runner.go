@@ -157,12 +157,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 				logger.Info("model_response_validation_failed", "step", step+1, "reason", err.Error())
 			}
 		}
-		cp.Metrics.InputTokens += usage.InputTokens
-		cp.Metrics.OutputTokens += usage.OutputTokens
-		cp.Metrics.LastInputTokens += usage.InputTokens
-		cp.Metrics.LastOutputTokens += usage.OutputTokens
-		if usage.InputTokens != 0 || usage.OutputTokens != 0 {
-			cp.Metrics.HasLastUsage = true
+		if addUsage(&cp.Metrics, usage) {
 			measure()
 			if emitErr := emit(cp); emitErr != nil {
 				return emitErr
@@ -185,7 +180,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		}
 		// Never checkpoint echoed credentials, including in summaries or model-generated paths.
 		raw, _ := json.Marshal(decision)
-		if (len(in.Key) > 0 && strings.Contains(string(raw), in.Key)) || (len(in.GitHubToken) > 0 && strings.Contains(string(raw), in.GitHubToken)) {
+		if echoes(string(raw), in) {
 			return errors.New("credential_echo_blocked")
 		}
 		if validIntent(decision.Intent) {

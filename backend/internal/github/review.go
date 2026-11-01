@@ -36,13 +36,10 @@ type ChangedFile struct {
 // The REST adapter supplies typed, paginated PR metadata/patches. Related source
 // and comments still use the read-only MCP adapter. Never follow response URLs.
 func (c *Client) reviewGet(ctx context.Context, token, path string, out any) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com"+path, nil)
+	req, err := newAPIRequest(ctx, token, http.MethodGet, path, nil, "application/vnd.github+json")
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return 0, errors.New("github_unavailable")
