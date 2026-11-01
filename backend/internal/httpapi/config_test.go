@@ -49,3 +49,30 @@ func TestGeminiModelsAllowlistRejectsInvalidEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestVertexClaudeConfig(t *testing.T) {
+	setLocalGeminiEnv(t)
+	t.Setenv("AI_PROVIDER", "vertex")
+	t.Setenv("CLAUDE_MODELS", "")
+	t.Setenv("VERTEX_REGION", "")
+	t.Setenv("VERTEX_PROJECT_ID", "")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected VERTEX_PROJECT_ID to be required")
+	}
+	t.Setenv("VERTEX_PROJECT_ID", "my-project-123")
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Models, DefaultClaudeModels) || c.VertexRegion != "global" || c.VertexProject != "my-project-123" {
+		t.Fatalf("unexpected config: %+v", c)
+	}
+	t.Setenv("CLAUDE_MODELS", "claude-haiku-4-5@20251001, claude-sonnet-5-5")
+	if c, err = LoadConfig(); err != nil || c.Models[0] != "claude-haiku-4-5@20251001" {
+		t.Fatalf("unexpected models: %v %v", c.Models, err)
+	}
+	t.Setenv("CLAUDE_MODELS", "gemini-3.8-flash")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected non-Claude model to be rejected")
+	}
+}

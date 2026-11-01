@@ -16,11 +16,16 @@ type Config struct {
 	CookieKey                                              []byte
 	Models                                                 []string
 	AIProvider                                             string
+	VertexProject, VertexRegion                            string
 }
 
 // DefaultGeminiModels lists the Gemini models offered when GEMINI_MODELS is
 // unset. The first entry is selected by default in the UI.
 var DefaultGeminiModels = []string{"gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-pro-preview"}
+
+// DefaultClaudeModels lists the Claude models on Vertex AI offered when
+// CLAUDE_MODELS is unset. The first entry is selected by default in the UI.
+var DefaultClaudeModels = []string{"claude-haiku-5-5", "claude-sonnet-5-5"}
 
 // splitModels parses a comma-separated allowlist, ignoring spaces around entries.
 func splitModels(value string) []string {
@@ -41,7 +46,7 @@ func LoadConfig() (Config, error) {
 			c.AIProvider = "openai"
 		}
 	}
-	if c.AIProvider != "demo" && c.AIProvider != "openai" && c.AIProvider != "gemini" {
+	if c.AIProvider != "demo" && c.AIProvider != "openai" && c.AIProvider != "gemini" && c.AIProvider != "vertex" {
 		return c, errors.New("invalid AI_PROVIDER")
 	}
 	if !c.Demo && c.AIProvider == "demo" {
@@ -53,6 +58,22 @@ func LoadConfig() (Config, error) {
 			c.Models = splitModels(value)
 		}
 	}
+	if c.AIProvider == "vertex" {
+		c.Models = DefaultClaudeModels
+		if value := os.Getenv("CLAUDE_MODELS"); value != "" {
+			c.Models = splitModels(value)
+		}
+		c.VertexProject, c.VertexRegion = os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("VERTEX_REGION")
+		if c.VertexRegion == "" {
+			c.VertexRegion = "global"
+		}
+		if !regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`).MatchString(c.VertexProject) {
+			return c, errors.New("VERTEX_PROJECT_ID required")
+		}
+		if !regexp.MustCompile(`^[a-z0-9-]+$`).MatchString(c.VertexRegion) {
+			return c, errors.New("invalid VERTEX_REGION")
+		}
+	}
 	if c.Port == "" {
 		c.Port = "8080"
 	}
@@ -62,6 +83,9 @@ func LoadConfig() (Config, error) {
 	for _, model := range c.Models {
 		if c.AIProvider == "gemini" && !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`).MatchString(model) {
 			return c, errors.New("invalid Gemini model allowlist")
+		}
+		if c.AIProvider == "vertex" && !regexp.MustCompile(`^claude-[a-z0-9.-]+(@[0-9]{8})?$`).MatchString(model) {
+			return c, errors.New("invalid Claude model allowlist")
 		}
 		if strings.TrimSpace(model) != model || model == "" {
 			return c, errors.New("invalid model allowlist")

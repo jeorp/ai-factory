@@ -153,7 +153,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		logger.Info("model_call_finished", "step", step+1, "duration_ms", time.Since(callStart).Milliseconds(), "outcome", outcome(err), "error_code", errorCode, "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 		if err != nil {
 			switch err.Error() {
-			case "gemini_answer_too_long", "gemini_invalid_intent", "gemini_invalid_review", "gemini_invalid_review_action":
+			case "gemini_answer_too_long", "gemini_invalid_intent", "gemini_invalid_review", "gemini_invalid_review_action", "claude_answer_too_long", "claude_invalid_review", "claude_invalid_review_action":
 				logger.Info("model_response_validation_failed", "step", step+1, "reason", err.Error())
 			}
 		}

@@ -45,6 +45,9 @@ func main() {
 		ai = agent.Demo{}
 	} else if c.AIProvider == "gemini" {
 		ai = &agent.Gemini{HTTP: client}
+	} else if c.AIProvider == "vertex" {
+		// The SDK's own client has no overall timeout; the run deadline bounds streamed answers.
+		ai = &agent.ClaudeVertex{Project: c.VertexProject, Region: c.VertexRegion}
 	}
 	ciWait := 5 * time.Minute
 	if c.Demo {
