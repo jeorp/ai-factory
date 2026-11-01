@@ -13,7 +13,7 @@ func TestSavePrioritiesPreservesUnassessedItems(t *testing.T) {
 	r := &domain.Review{Unverified: []string{"a", "b", "c", "d"}}
 	items := []priorityItem{{0, "a"}, {1, "b"}, {2, "c"}, {3, "d"}}
 	var response []PriorityAssessment
-	_ = json.Unmarshal([]byte(`[{"index":0,"level":"high","reason":"重要な機能が未確認"},{"index":1,"level":"low","reason":"影響が限定的"},{"index":1,"level":"high","reason":"重複"},{"index":2,"level":"bad","reason":"不正"}]`), &response)
+	_ = json.Unmarshal([]byte(`[{"index":0,"level":"high","reason":"重要な機能が未確認"},{"index":1,"level":"low","reason":"影響が限定的"},{"index":1,"level":"high","reason":"重複"},{"index":2,"level":"","reason":""}]`), &response)
 	savePriorities(r, items, response)
 	if r.Priorities["0"].Level != "high" || r.Priorities["0"].Reason != "重要な機能が未確認" {
 		t.Fatalf("valid priority lost: %+v", r.Priorities)

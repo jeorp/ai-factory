@@ -48,7 +48,7 @@ func addPrioritySchema(schema map[string]any, items []priorityItem) {
 }
 
 func validPriorityResponse(value PriorityAssessment) bool {
-	return (value.Level == "high" || value.Level == "medium" || value.Level == "low" || value.Level == "unknown") && strings.TrimSpace(value.Reason) != "" && len(value.Reason) <= 512
+	return (value.Level == "high" || value.Level == "medium" || value.Level == "low" || value.Level == "unknown") && len(value.Reason) <= 512
 }
 
 func validPriorityDecision(input string, d Decision) bool {
