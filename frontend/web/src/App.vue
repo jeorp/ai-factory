@@ -126,7 +126,7 @@ onUnmounted(() => { clearInterval(keyTimer); window.removeEventListener('pagehid
 watch(() => current.value?.messages.length, async () => { await nextTick(); transcript.value?.scrollTo({ top: transcript.value.scrollHeight, behavior: 'smooth' }); });
 // A run that fails on a rejected key drops the key so the card asks for a new one.
 watch(() => [current.value?.id, current.value?.state] as const, ([id, state], [previousId, previous]) => {
- const rejected = ['gemini_key_invalid', 'openai_http_401', 'claude_token_invalid'].includes(current.value?.limitations?.at(-1) || '');
+ const rejected = ['gemini_key_invalid', 'openai_http_401', 'claude_token_invalid', 'claude_token_expired'].includes(current.value?.limitations?.at(-1) || '');
  if (id === previousId && state === 'failed' && previous && ['running', 'accepted', 'stopping'].includes(previous) && rejected) {
   keys.discard(); appError.value = 'APIキーが無効です。保存済みのキーを削除するか、新しいキーを入力してください。';
  }

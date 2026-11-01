@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -145,6 +146,25 @@ func claudeError(err error) error {
 	}
 	var apierr *anthropic.Error
 	if errors.As(err, &apierr) {
+		// Google's status and reason are fixed enums (no request data), so they
+		// are safe to log and explain auth failures that share one HTTP status.
+		var body struct {
+			Error struct {
+				Status  string `json:"status"`
+				Details []struct {
+					Reason string `json:"reason"`
+				} `json:"details"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal([]byte(apierr.RawJSON()), &body)
+		reason := ""
+		if len(body.Error.Details) > 0 {
+			reason = body.Error.Details[0].Reason
+		}
+		slog.Info("claude_vertex_error", "http_status", apierr.StatusCode, "google_status", body.Error.Status, "reason", reason)
+		if reason == "ACCESS_TOKEN_EXPIRED" {
+			return errors.New("claude_token_expired")
+		}
 		switch apierr.StatusCode {
 		case http.StatusUnauthorized:
 			return errors.New("claude_token_invalid")

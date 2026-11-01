@@ -13,6 +13,7 @@ export const errorMessages: Record<string, string> = {
  invalid_repository: 'owner/repository またはGitHubのリポジトリ・PR・Issue URLを指定してください。', invalid_github_url: 'GitHub.comのリポジトリ・PR・Issue URLを指定してください。',
  store_unavailable: '保存先に接続できません。Firebase EmulatorまたはFirestoreを確認してください。', openai_http_401: 'OpenAI APIキーを確認してください。', openai_http_429: 'OpenAIの利用枠またはレート制限に達しました。', gemini_key_invalid: 'Gemini APIキーが無効と判定されました。Google AI Studioでキーを確認してください。', gemini_api_disabled: 'Gemini APIの利用設定またはキーの制限を確認してください。', gemini_bad_request: 'Geminiへのリクエスト形式が拒否されました。', gemini_precondition: 'Geminiプロジェクトの利用条件を確認してください。', gemini_http_400: 'Geminiがリクエストを拒否しました。キーやモデルの設定を確認してください。', gemini_http_404: 'このプロジェクトでモデルを利用できません。新しいセッションで利用可能なモデルを選択してください。', gemini_http_403: 'Gemini APIキーやプロジェクトの設定を確認してください。', gemini_http_429: 'Geminiの利用枠またはレート制限に達しました。',
  claude_token_invalid: 'Vertex AIのアクセストークンが無効か期限切れです。gcloud auth print-access-token で取得し直してください。',
+ claude_token_expired: 'Vertex AIのアクセストークンの有効期限が切れています。gcloud auth print-access-token で取得し直してください。',
  claude_permission_denied: 'Vertex AIへのアクセスが拒否されました。GCPプロジェクトでVertex AI APIを有効にし、アカウントの権限を確認してください。',
  claude_model_unavailable: 'Vertex AIでこのClaudeモデルを使えません。Model GardenでモデルをEnableし、リージョンとモデル名を確認してください。',
  claude_http_429: 'Vertex AIのClaude利用枠（クォータ）に達しました。少し待つか、GCPでクォータを確認してください。',
