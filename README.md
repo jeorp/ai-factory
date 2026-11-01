@@ -1,6 +1,6 @@
 # AI Factory
 
-> **Want to use this code? Please contact the copyright holder first.** This public repository does not grant permission to copy, modify, redistribute, or use its code in another project. See the [code use terms](LICENSE.md) before using it.
+> **Commercial use of this code is prohibited.** For any other use beyond viewing and forking on GitHub, contact the copyright holder first. This public repository does not grant permission to copy, modify, redistribute, or use its code in another project. See the [code use terms](LICENSE.md).
 
 AI Factory is a chat app for exploring GitHub repositories, reviewing pull requests in manageable batches, and turning requested changes into draft pull requests. The implementation workflow includes approval of the plan and review of the resulting diff.
 
@@ -87,4 +87,4 @@ Regular tests replace external connections with stubs. Integration tests use Fir
 
 ## Code use terms
 
-This repository is public, but no license is granted to use its code in another project. Copying, modifying, redistributing, commercial use, and AI model training require prior written permission from the copyright holder, except for activities allowed by GitHub's Terms of Service or applicable law, such as viewing and forking. See [Copyright and use terms](LICENSE.md).
+**Commercial use of this repository's code is prohibited.** No license is granted to use the code in another project. Other uses, including copying, modifying, redistributing, and AI model training, require prior written permission from the copyright holder. Activities allowed by GitHub's Terms of Service or applicable law, such as viewing and forking, are unaffected. See [Copyright and use terms](LICENSE.md).
