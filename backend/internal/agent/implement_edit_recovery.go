@@ -48,6 +48,10 @@ func (run *implementRun) editFailureCorrection(step []string, err error, format 
 	if errors.As(err, &edit) {
 		editIndex, matches = edit.Index, edit.Matches
 	}
+	var structure *proposalStructureError
+	if errors.As(err, &structure) {
+		return run.structureCorrection(step, structure)
+	}
 	run.logger.Info("implement_edit_rejected", "step", run.impl.NextStep+1, "file_index", fileIndex, "edit_index", editIndex, "match_count", matches, "error_code", code, "next_edit_format", *format)
 	correction := fmt.Sprintf("前回の変更は保存していません。適用失敗: %s（%s、編集%d）。", code, location, editIndex)
 	if *format == lineRangeFormat {
@@ -60,17 +64,24 @@ func (run *implementRun) editFailureCorrection(step []string, err error, format 
 // This snapshot is unchanged until an entire step has passed validation.
 type implementEditFailure struct {
 	Code          string `json:"code"`
-	Path          string `json:"path"`
+	Path          string `json:"path,omitempty"`
 	EditIndex     int    `json:"editIndex,omitempty"`
-	SourceHash    string `json:"sourceHash"`
-	LineCount     int    `json:"lineCount"`
+	SourceHash    string `json:"sourceHash,omitempty"`
+	LineCount     int    `json:"lineCount,omitempty"`
 	StartLine     int    `json:"startLine,omitempty"`
 	EndLine       int    `json:"endLine,omitempty"`
 	ExpectedStart string `json:"expectedStart,omitempty"`
 	ExpectedEnd   string `json:"expectedEnd,omitempty"`
+	// ChangeIssues lists structural rejections found before any edit was
+	// applied: the changes position, the step path, and planned/submitted action.
+	ChangeIssues []changeIssue `json:"changeIssues,omitempty"`
 }
 
 func editFailureFeedback(originals map[string]string, proposals []ChangeProposal, err error) *implementEditFailure {
+	var structure *proposalStructureError
+	if errors.As(err, &structure) {
+		return &implementEditFailure{Code: structure.issues[0].Code, ChangeIssues: structure.issues}
+	}
 	var wrapped *proposalEditError
 	if !errors.As(err, &wrapped) {
 		return nil
@@ -110,4 +121,48 @@ func editFailureFeedback(originals map[string]string, proposals []ChangeProposal
 		break
 	}
 	return feedback
+}
+
+// structureCorrection names each rejected entry precisely. The action is never
+// rewritten by the server: the model must regenerate a valid edit itself.
+func (run *implementRun) structureCorrection(step []string, structure *proposalStructureError) string {
+	parts := make([]string, 0, len(structure.issues))
+	for _, issue := range structure.issues {
+		fileIndex := 0
+		for i, path := range step {
+			if path == issue.Path {
+				fileIndex = i + 1
+				break
+			}
+		}
+		run.logger.Info("implement_change_rejected", "step", run.impl.NextStep+1, "change_index", issue.Change, "file_index", fileIndex, "first_change_index", issue.FirstChange, "expected_action", issue.ExpectedAction, "submitted_action", issue.SubmittedAction, "error_code", issue.Code)
+		submitted := issue.SubmittedAction
+		if submitted == "" {
+			submitted = "不正な値"
+		}
+		switch issue.Code {
+		case "change_path_not_in_step":
+			parts = append(parts, fmt.Sprintf("changesの%d件目のpathはこの区切りの対象外です。対象は%sだけです。", issue.Change, strings.Join(step, "、")))
+		case "change_path_duplicate":
+			parts = append(parts, fmt.Sprintf("changesの%d件目は%d件目と同じpath（%s）です。1ファイルの変更は1件にまとめてください。", issue.Change, issue.FirstChange, issue.Path))
+		case "change_action_not_planned", "invalid_change_action":
+			hint := ""
+			switch issue.ExpectedAction {
+			case "update":
+				hint = "ファイル全体をcontentに書かず、originalまたはnumberedOriginalに対するeditsかlineEditsで変更してください。"
+			case "create":
+				hint = "contentにファイル全体を書き、editsとlineEditsは空にしてください。"
+			case "delete":
+				hint = "content・edits・lineEditsはすべて空にしてください。"
+			}
+			parts = append(parts, fmt.Sprintf("changesの%d件目（%s）のactionは計画どおり%sにしてください（提出: %s）。%s", issue.Change, issue.Path, issue.ExpectedAction, submitted, hint))
+		case "update_format_conflict":
+			parts = append(parts, fmt.Sprintf("changesの%d件目（%s）はlineEditsとedits・contentを混在できません。action=updateのlineEditsだけを使うか、editsで返してください。", issue.Change, issue.Path))
+		case "create_requires_content":
+			parts = append(parts, fmt.Sprintf("changesの%d件目（%s）はaction=createなのでcontentにファイル全体を書き、editsは空にしてください。", issue.Change, issue.Path))
+		case "update_requires_edits":
+			parts = append(parts, fmt.Sprintf("changesの%d件目（%s）はaction=updateですが変更内容がありません。editsかlineEditsを返してください。", issue.Change, issue.Path))
+		}
+	}
+	return "前回の変更は適用前の構造検証で拒否し、保存していません。editFailure.changeIssuesに拒否した項目があります（changeはchangesの何件目か、pathとexpectedActionは計画の値）。" + strings.Join(parts, "") + "各pathはfilesと同じactionで1回だけ返し、ほかの項目も含めて変更全体を出し直してください。"
 }
