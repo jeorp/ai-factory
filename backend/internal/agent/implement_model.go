@@ -38,10 +38,16 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 	if run.calls >= ImplementMaxCalls {
 		return Decision{}, errors.New("implementation_call_limit")
 	}
+	if err := run.loadProjectDocumentation(ctx); err != nil {
+		return Decision{}, err
+	}
 	run.drain()
 	payload["instructions"] = run.pinned()
 	payload["target"] = run.target()
 	payload["repositoryOverview"] = run.in.Session.RepositoryOverview
+	if run.projectDocumentation != nil {
+		payload["projectDocumentation"] = run.projectDocumentation
+	}
 	if run.impl.CIRepair {
 		payload["ciRepair"] = true
 		payload["requiredCriteria"] = run.impl.RequiredCriteria

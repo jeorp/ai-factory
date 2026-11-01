@@ -78,7 +78,7 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 			"repairs":         map[string]any{"type": "array", "items": object(map[string]any{"path": map[string]any{"type": "string"}, "approach": map[string]any{"type": "string"}})},
 			"additionalFiles": pendingFilesSchema(),
 		}))
-		return implementVerifyPrompt
+		return implementVerifyPrompt + implementProjectDocumentationRule
 	}
 	if task.FinalAnswer || task.ReadBudget <= 0 {
 		props["read"] = map[string]any{"type": "null"}
@@ -102,7 +102,7 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 				"id": map[string]any{"type": "string"}, "requirement": map[string]any{"type": "string"}, "paths": stringList(), "checks": stringList(), "failureRefs": stringList(),
 			})},
 		}))
-		return implementPlanPrompt
+		return implementPlanPrompt + implementProjectDocumentationRule
 	}
 	props["answer"] = map[string]any{"type": "string", "enum": []string{""}}
 	lineEdit := object(map[string]any{"startLine": map[string]any{"type": "integer"}, "endLine": map[string]any{"type": "integer"}, "expectedStart": map[string]any{"type": "string"}, "expectedEnd": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}})
@@ -116,7 +116,7 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 		"unverified":      stringList(),
 		"additionalFiles": pendingFilesSchema(),
 	}))
-	return implementEditPrompt
+	return implementEditPrompt + implementProjectDocumentationRule
 }
 
 func implementationSearchSchema() map[string]any {
