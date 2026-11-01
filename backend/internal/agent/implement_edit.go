@@ -97,11 +97,11 @@ func (run *implementRun) loadStepFiles(ctx context.Context, step []string) ([]im
 					return nil, nil, err
 				}
 				content = current.Content
-				f.PreserveExisting = impl.Revising
 				break
 			}
 		}
 		originals[p] = content
+		_, f.PreserveExisting = retainedChange(impl, originals, p)
 		if f.Action == "update" || f.Action == "create" && content != "" {
 			f.Original = content
 		}

@@ -26,10 +26,12 @@ func (run *implementRun) savedChange(ctx context.Context, path string) (domain.F
 	return f, nil
 }
 
-// retainedDraftChange uses only the cached contents loaded for this step. A
-// repository file, or a file without a saved change, is not a completed edit.
-func retainedDraftChange(impl *domain.Implementation, originals map[string]string, path string) (domain.FileChange, bool) {
-	if !impl.Revising {
+// retainedChange uses the verified contents loaded for this step. Draft
+// revisions retain saved changes; CI fixes may also retain files from the exact
+// published PR head, provided the repair makes another real change.
+func retainedChange(impl *domain.Implementation, originals map[string]string, path string) (domain.FileChange, bool) {
+	ciFix := impl.CIRepair && impl.PullNumber > 0 && domain.ValidCommit(impl.ExpectedHead) && impl.BaseCommit == impl.ExpectedHead
+	if !impl.Revising && !ciFix {
 		return domain.FileChange{}, false
 	}
 	content, ok := originals[path]
@@ -40,6 +42,9 @@ func retainedDraftChange(impl *domain.Implementation, originals map[string]strin
 		if c.Path == path && c.Action == impl.PlannedAction(path) {
 			return domain.FileChange{Path: path, Action: c.Action, Content: content}, true
 		}
+	}
+	if ciFix && impl.PlannedAction(path) == "update" {
+		return domain.FileChange{Path: path, Action: "update", Content: content}, true
 	}
 	return domain.FileChange{}, false
 }
@@ -54,6 +59,7 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 	}
 	out := []domain.FileChange{}
 	seen := map[string]bool{}
+	materialChange := len(impl.Changes) > 0
 	for _, p := range proposals {
 		if !inStep[p.Path] {
 			return nil, errors.New("change_path_not_in_step")
@@ -71,11 +77,13 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 		switch p.Action {
 		case "delete":
 			out = append(out, domain.FileChange{Path: p.Path, Action: "delete"})
+			materialChange = true
 		case "create":
 			if p.Content == "" || len(p.Edits) > 0 {
 				return nil, errors.New("create_requires_content")
 			}
 			out = append(out, domain.FileChange{Path: p.Path, Action: "create", Content: p.Content})
+			materialChange = true
 		case "update":
 			content := p.Content
 			if len(p.LineEdits) > 0 {
@@ -98,9 +106,11 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 				return nil, errors.New("update_requires_edits")
 			}
 			if content == originals[p.Path] {
-				if _, retained := retainedDraftChange(impl, originals, p.Path); !retained {
+				if _, retained := retainedChange(impl, originals, p.Path); !retained {
 					return nil, &proposalEditError{path: p.Path, err: errors.New("update_without_change")}
 				}
+			} else {
+				materialChange = true
 			}
 			out = append(out, domain.FileChange{Path: p.Path, Action: "update", Content: content})
 		default:
@@ -109,10 +119,13 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 	}
 	for _, path := range step {
 		if !seen[path] {
-			if f, retained := retainedDraftChange(impl, originals, path); retained {
+			if f, retained := retainedChange(impl, originals, path); retained {
 				out = append(out, f)
 			}
 		}
+	}
+	if len(out) > 0 && !materialChange {
+		return nil, &proposalEditError{path: out[0].Path, err: errors.New("update_without_change")}
 	}
 	return out, nil
 }

@@ -170,3 +170,47 @@ func TestEditSchemaLimitsProposalsToCurrentStep(t *testing.T) {
 		t.Fatalf("previous changes permitted in current step: %+v", path)
 	}
 }
+
+func TestCIFixRetainsPublishedFilesAlongsideActualRepair(t *testing.T) {
+	for _, omit := range []bool{true, false} {
+		impl := &domain.Implementation{CIRepair: true, PullNumber: 7, BaseCommit: implBase, ExpectedHead: implBase, CacheID: "ci-fix", Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "engine.go", Action: "update"}, {Path: "summary.go", Action: "update"}}}}
+		originals := map[string]string{"engine.go": "broken engine", "summary.go": "published summary"}
+		proposals := []ChangeProposal{{Path: "engine.go", Action: "update", Edits: []domain.Edit{{Search: "broken engine", Replace: "fixed engine"}}}}
+		if !omit {
+			proposals = append(proposals, ChangeProposal{Path: "summary.go", Action: "update", Content: "published summary"})
+		}
+		changes, err := applyProposals([]string{"engine.go", "summary.go"}, impl, originals, proposals)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := newRevisionWriter()
+		run := &implementRun{impl: impl, r: &Runner{Writer: w}}
+		covered, err := run.persistChanges(context.Background(), changes)
+		if err != nil || !covered["engine.go"] || !covered["summary.go"] {
+			t.Fatalf("repair did not preserve published file: %v %+v", err, covered)
+		}
+		for path, want := range map[string]string{"engine.go": "fixed engine", "summary.go": "published summary"} {
+			got, ok := w.GetChange(context.Background(), impl.CacheID, impl.Version, path)
+			if !ok || got.Action != "update" || got.Content != want {
+				t.Fatalf("wrong repair overlay for %s: %+v", path, got)
+			}
+		}
+	}
+}
+
+func TestCIFixCannotCompleteWithOnlyUnchangedBaseFiles(t *testing.T) {
+	for _, proposals := range [][]ChangeProposal{nil, {{Path: "engine.go", Action: "update", Content: "broken engine"}}} {
+		impl := &domain.Implementation{CIRepair: true, PullNumber: 7, BaseCommit: implBase, ExpectedHead: implBase, Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "engine.go", Action: "update"}}}}
+		_, err := applyProposals([]string{"engine.go"}, impl, map[string]string{"engine.go": "broken engine"}, proposals)
+		if err == nil || !strings.Contains(err.Error(), "update_without_change") {
+			t.Fatalf("unchanged failed PR treated as repaired: %v", err)
+		}
+	}
+}
+
+func TestCIFixCannotRetainAnUnverifiedBase(t *testing.T) {
+	impl := &domain.Implementation{CIRepair: true, PullNumber: 7, BaseCommit: implBase, ExpectedHead: strings.Repeat("d", 40), Plan: &domain.ImplementationPlan{Files: []domain.PlannedFile{{Path: "engine.go", Action: "update"}}}}
+	if _, retained := retainedChange(impl, map[string]string{"engine.go": "base"}, "engine.go"); retained {
+		t.Fatal("retained a file from a different PR head")
+	}
+}
