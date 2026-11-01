@@ -574,6 +574,8 @@ func (run *implementRun) edit(ctx context.Context) error {
 		correction := ""
 		var applied []domain.FileChange
 		var result *ImplementResult
+		var pending []domain.PendingFile
+		var rejected []string
 		split := false
 		for call := 0; call < ImplementStepCalls && result == nil; call++ {
 			final := reads >= ImplementStepReads || call == ImplementStepCalls-1
@@ -628,6 +630,14 @@ func (run *implementRun) edit(ctx context.Context) error {
 				correction = "前回の変更は適用できませんでした: " + err.Error() + "。searchは元ファイル内で一意に一致する原文をそのまま指定し、計画どおりのpathとactionだけを返してください。計画外のファイルも変更が必要ならchangesに入れず、additionalFilesで提案してください。"
 				continue
 			}
+			pending, rejected, err = run.checkAdditions(ctx, d.Implementation.AdditionalFiles)
+			if err != nil {
+				return err
+			}
+			if len(changes) == 0 && len(pending) == 0 {
+				correction = "有効な変更も追加提案もありません: " + strings.Join(rejected, " / ") + "。変更を返すか、有効な追加ファイルを提案してください。"
+				continue
+			}
 			applied, result = changes, d.Implementation
 			run.cp.Summary = domain.Clip(d.Summary, 2048)
 		}
@@ -667,19 +677,20 @@ func (run *implementRun) edit(ctx context.Context) error {
 				impl.Changes = append(impl.Changes, summary)
 			}
 		}
-		pending, rejected, err := run.checkAdditions(ctx, result.AdditionalFiles)
-		if err != nil {
-			return err
-		}
-		// A step that changed nothing because it first needs other files is
-		// repeated after the user decides, instead of being marked unchanged.
-		holdStep := len(applied) == 0 && len(pending) > 0
-		if !holdStep {
-			for _, p := range step {
-				if !covered[p] {
+		// Keep only unfinished files in the current step while an amendment is
+		// pending; completed files must not be edited twice on resume.
+		remaining := []string{}
+		for _, p := range step {
+			if !covered[p] {
+				remaining = append(remaining, p)
+				if len(pending) == 0 {
 					impl.Unverified = append(impl.Unverified, "計画にあるが変更されなかったファイル: "+p)
 				}
 			}
+		}
+		holdStep := len(pending) > 0 && len(remaining) > 0
+		if holdStep {
+			impl.Steps[impl.NextStep].Files = remaining
 		}
 		for _, u := range result.Unverified {
 			impl.Unverified = append(impl.Unverified, domain.Clip(u, 512))

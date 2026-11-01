@@ -70,7 +70,10 @@ func (i *Implementation) ResolveAmendment(approve bool) {
 			added = append(added, PlannedFile{Path: f.Path, Action: f.Action, Approach: f.Approach})
 		}
 		i.Plan.Files = append(i.Plan.Files, added...)
-		i.Steps = append(i.Steps, PlanSteps(added)...)
+		// Edit approved dependencies before resuming any unfinished step.
+		steps := append([]ImplementationStep{}, i.Steps[:i.NextStep]...)
+		steps = append(steps, PlanSteps(added)...)
+		i.Steps = append(steps, i.Steps[i.NextStep:]...)
 	} else {
 		for _, f := range i.PendingFiles {
 			i.Unverified = append(i.Unverified, "追加を見送ったファイル: "+f.Path+"（"+f.Reason+"）")

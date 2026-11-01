@@ -787,10 +787,87 @@ func TestDeclinedAdditionIsNotProposedAgain(t *testing.T) {
 	session.Implementation = last.Implementation
 	session.Implementation.ResolveAmendment(false)
 	err := runner.Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil })
-	if err == nil || err.Error() != "implementation_no_changes" || last.Implementation.Status == "amend_ready" {
+	if err == nil || err.Error() != "implementation_edit_failed" || last.Implementation.Status == "amend_ready" {
 		t.Fatalf("declined file asked again or run did not finish: %v %+v", err, last.Implementation)
 	}
-	if !strings.Contains(strings.Join(last.Implementation.Unverified, "\n"), "利用者が見送り済み") {
-		t.Fatalf("re-proposal not reported: %v", last.Implementation.Unverified)
+	if !strings.Contains(strings.Join(last.Implementation.Unverified, "\n"), "追加を見送ったファイル") {
+		t.Fatalf("decline not recorded: %v", last.Implementation.Unverified)
+	}
+}
+
+func TestAmendmentEditsDependenciesBeforeRemainingFiles(t *testing.T) {
+	writer := newFakeWriter()
+	writer.files["src/b.go"] = "package src\nvar B = 1\n"
+	writer.files["lib/use.go"] = "package lib\nvar X = 1\n"
+	var order []string
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		task := implementTaskOf(t, input)
+		var paths []string
+		for _, f := range task.Files {
+			paths = append(paths, f.Path)
+		}
+		order = append(order, strings.Join(paths, ","))
+		switch strings.Join(paths, ",") {
+		case "src/a.go,src/b.go":
+			return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "src/a.go", Action: "update", Edits: []domain.Edit{{Search: "return 1", Replace: "return 2"}}}}, AdditionalFiles: []domain.PendingFile{{Path: "lib/use.go", Action: "update", Approach: "change X", Reason: "needed by b"}}}}, Usage{}, nil
+		case "lib/use.go":
+			return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "lib/use.go", Action: "update", Edits: []domain.Edit{{Search: "var X = 1", Replace: "var X = 2"}}}}}}, Usage{}, nil
+		case "src/b.go":
+			if len(task.Done) != 2 {
+				t.Fatalf("dependency missing from prior changes: %+v", task.Done)
+			}
+			return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "src/b.go", Action: "update", Edits: []domain.Edit{{Search: "var B = 1", Replace: "var B = 2"}}}}}}, Usage{}, nil
+		}
+		return Decision{}, Usage{}, errors.New("unexpected step")
+	})
+	session := baseSession()
+	session.RunKind = "implement"
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go", "src/b.go"}}}, Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}, {Path: "src/b.go", Action: "update", Approach: "x"}}}}
+	runner := &Runner{AI: ai, Writer: writer}
+	var last Checkpoint
+	run := func() {
+		t.Helper()
+		if err := runner.Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		session.Implementation = last.Implementation
+	}
+	run()
+	if last.Implementation.Status != "amend_ready" || strings.Join(last.Implementation.Steps[0].Files, ",") != "src/b.go" {
+		t.Fatalf("unfinished step not retained: %+v", last.Implementation)
+	}
+	session.Implementation.ResolveAmendment(true)
+	run()
+	if got := strings.Join(order, " | "); got != "src/a.go,src/b.go | lib/use.go | src/b.go" {
+		t.Fatalf("wrong order: %s", got)
+	}
+	if len(last.Implementation.Changes) != 3 || last.Implementation.Status != "ready" {
+		t.Fatalf("incomplete: %+v", last.Implementation)
+	}
+}
+
+func TestInvalidAdditionWithoutChangesRetriesStep(t *testing.T) {
+	writer := newFakeWriter()
+	calls := 0
+	ai := providerFunc(func(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+		task := implementTaskOf(t, input)
+		calls++
+		if calls == 1 {
+			return Decision{Implementation: &ImplementResult{AdditionalFiles: []domain.PendingFile{{Path: ".github/workflows/ci.yml", Action: "update", Approach: "x", Reason: "y"}}}}, Usage{}, nil
+		}
+		if !strings.Contains(task.Correction, ".github/workflows/ci.yml") {
+			t.Fatalf("missing correction: %s", task.Correction)
+		}
+		return Decision{Implementation: &ImplementResult{Changes: []ChangeProposal{{Path: "src/a.go", Action: "update", Edits: []domain.Edit{{Search: "return 1", Replace: "return 2"}}}}}}, Usage{}, nil
+	})
+	session := baseSession()
+	session.RunKind = "implement"
+	session.Implementation = &domain.Implementation{Status: "editing", BaseBranch: "main", BaseCommit: implBase, CacheID: "0123456789abcdef", Steps: []domain.ImplementationStep{{Files: []string{"src/a.go"}}}, Plan: &domain.ImplementationPlan{Summary: "s", Files: []domain.PlannedFile{{Path: "src/a.go", Action: "update", Approach: "x"}}}}
+	var last Checkpoint
+	if err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session}, func(cp Checkpoint) error { last = cp; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || last.Implementation.Status != "ready" || len(last.Implementation.Changes) != 1 {
+		t.Fatalf("step was not retried: calls=%d impl=%+v", calls, last.Implementation)
 	}
 }
