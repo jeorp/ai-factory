@@ -175,20 +175,25 @@ func TestDocumentationIsShedWhenInputExceedsLimit(t *testing.T) {
 		}
 		return Decision{}, Usage{}, nil
 	})}, in: Input{Session: baseSession()}, impl: &domain.Implementation{BaseCommit: implBase}, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	// Find a request that fits without the README but exceeds the limit with it.
-	filler := ""
-	for n := 1000; n < ReviewInputBytes; n += 1000 {
-		candidate := strings.Repeat("x", n)
+	// Search for the largest request that fits with omission metadata. A
+	// space-separated input avoids pathological tokenization of a single word.
+	low, high := 0, ReviewInputBytes/2
+	for low < high {
+		mid := (low + high + 1) / 2
+		candidate := strings.Repeat("x ", mid)
 		bare, _ := json.Marshal(map[string]any{"filler": candidate, "instructions": "", "target": run.target(), "repositoryOverview": run.in.Session.RepositoryOverview, "projectDocumentation": &projectDocumentation{Path: "README.md", Unavailable: true}})
-		full, _ := json.Marshal(map[string]any{"filler": candidate, "instructions": "", "target": run.target(), "repositoryOverview": run.in.Session.RepositoryOverview, "projectDocumentation": &projectDocumentation{Path: "README.md", Content: w.files["README.md"]}})
-		if implementInputFits(bare) && !implementInputFits(full) {
-			filler = candidate
-			break
+		if implementInputFits(bare) {
+			low = mid
+		} else {
+			high = mid - 1
 		}
 	}
-	if filler == "" {
+	filler := strings.Repeat("x ", low)
+	full, _ := json.Marshal(map[string]any{"filler": filler, "instructions": "", "target": run.target(), "repositoryOverview": run.in.Session.RepositoryOverview, "projectDocumentation": &projectDocumentation{Path: "README.md", Content: w.files["README.md"]}})
+	if implementInputFits(full) {
 		t.Fatal("could not construct boundary input")
 	}
+
 	if _, err := run.call(context.Background(), map[string]any{"filler": filler}); err != nil || !called {
 		t.Fatalf("optional documentation prevented call: %v", err)
 	}
