@@ -149,63 +149,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				event.Ack <- context.Canceled
 				continue
 			}
-			session.Summary = cp.Summary
-			if cp.Target != nil {
-				session.Target = *cp.Target
-			}
-			if cp.RunKind != "" {
-				session.RunKind = cp.RunKind
-			}
-			if cp.ResetReview {
-				session.Review = nil
-				session.ReviewScope = cp.ReviewScope
-			}
-			if cp.ActivePullRequest > 0 {
-				session.ActivePullRequest = cp.ActivePullRequest
-			}
-			session.RepositoryOverview = cp.RepositoryOverview
-			session.OverviewPending = cp.OverviewPending
-			if cp.Review != nil {
-				session.Review = cp.Review
-				session.Target.Commit = cp.Review.Head
-			}
-			if cp.Implementation != nil {
-				session.Implementation = cp.Implementation
-			}
-			session.Sources = cp.Sources
-			session.Metrics = cp.Metrics
-			session.Limitations = cp.Limitations
-			if len(session.Limitations) > 20 {
-				session.Limitations = session.Limitations[len(session.Limitations)-20:]
-			}
-			for i := range session.Messages {
-				for _, id := range cp.Applied {
-					if session.Messages[i].ID == id {
-						session.Messages[i].Applied = true
-					}
-				}
-			}
-			if cp.Answer != "" {
-				if err = session.Add("assistant", cp.Answer, randomID()); err == nil {
-					session.State = "done"
-					if session.RunKind == "implement" && session.Implementation != nil && session.Implementation.Status == "verification_blocked" {
-						session.State = "user_wait"
-					}
-					if session.RunKind == "investigation" && session.Review != nil && session.Review.PendingInvestigation > 0 {
-						if session.Review.Investigations == nil {
-							session.Review.Investigations = map[string]string{}
-						}
-						result := cp.Answer
-						if len(result) > 4096 {
-							result = domain.Clip(result, 4096) + "\n（以降はチャットの回答を参照してください）"
-						}
-						session.Review.Investigations[strconv.Itoa(session.Review.PendingInvestigation-1)] = result
-						session.Review.PendingInvestigation = 0
-					}
-				}
-			} else {
-				err = nil
-			}
+			err = applyCheckpoint(session, cp)
 			if err == nil {
 				err = save()
 			}
@@ -223,22 +167,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			cancelRun = nil
 			done = nil
 			instructions = nil
-			if wasStopping {
-				session.State = "stopped"
-			} else if errors.Is(runErr, agent.ErrCIWaiting) {
-				session.State = "ci_wait"
-			} else if runErr != nil && runErr.Error() == "review_run_budget_resume" {
-				session.State = "user_wait"
-			} else if runErr != nil {
-				if errors.Is(runErr, context.DeadlineExceeded) && session.RunKind == "review" {
-					session.State = "user_wait"
-				} else if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
-					session.State = "auth_wait"
-				} else {
-					session.State = "failed"
-					session.Limitations = append(session.Limitations, runErr.Error())
-				}
-			}
+			applyRunResult(session, runErr, wasStopping)
 			if err = save(); err != nil {
 				problem("checkpoint_save_failed")
 				return
@@ -310,7 +239,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 						problem("invalid_investigation")
 						continue
 					}
-					cmd.Text = fmt.Sprintf("PR #%d のレビューの未確認項目を追加調査してください。対象: %s\n関連コードや差分を必要に応じて確認し、確認できた事実と根拠、問題の有無、引き続き未確認の点を区別してください。確認できないことを推測で確定しないでください。", session.Target.Number, session.Review.Unverified[*cmd.UnverifiedIndex])
+					cmd.Text = investigationPrompt(session, *cmd.UnverifiedIndex)
 				}
 				if problemText := implementCommandProblem(session, &cmd); problemText != "" {
 					problem(problemText)
@@ -320,11 +249,11 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					problem("pull_request_required")
 					continue
 				}
-				if (cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate" || cmd.Type == "implement") && (!idPattern.MatchString(cmd.ID) || !safeText(cmd.Text) || (cmd.APIKey != "" && strings.Contains(cmd.Text, cmd.APIKey))) {
+				if cmd.carriesMessage() && (!idPattern.MatchString(cmd.ID) || !safeText(cmd.Text) || (cmd.APIKey != "" && strings.Contains(cmd.Text, cmd.APIKey))) {
 					problem("invalid_message_no_secrets")
 					continue
 				}
-				if (cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate" || cmd.Type == "implement") && session.HasMessage(cmd.ID) {
+				if cmd.carriesMessage() && session.HasMessage(cmd.ID) {
 					send("session", session)
 					continue
 				}
@@ -361,7 +290,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					problem("history_limit_create_new_session")
 					continue
 				}
-				if cmd.Type == "message" || cmd.Type == "review" || cmd.Type == "investigate" || cmd.Type == "implement" {
+				if cmd.carriesMessage() {
 					if err = session.Add("user", cmd.Text, cmd.ID); err != nil {
 						problem(err.Error())
 						continue
@@ -419,38 +348,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 					cancelRun = nil
 					return
 				}
-				completion := done
-				go func() {
-					defer func() { input.Key = ""; input.GitHubToken = "" }()
-					started := time.Now()
-					logger.Info("run_started")
-					runErr := s.Runner.Run(runCtx, input, func(cp agent.Checkpoint) error {
-						ack := make(chan error, 1)
-						select {
-						case updates <- update{cp, ack}:
-						case <-runCtx.Done():
-							return runCtx.Err()
-						}
-						select {
-						case e := <-ack:
-							return e
-						case <-runCtx.Done():
-							return runCtx.Err()
-						}
-					})
-					status := "ok"
-					if errors.Is(runErr, context.Canceled) {
-						status = "canceled"
-					} else if errors.Is(runErr, context.DeadlineExceeded) {
-						status = "timeout"
-					} else if errors.Is(runErr, agent.ErrCIWaiting) || (runErr != nil && runErr.Error() == "review_run_budget_resume") {
-						status = "yielded"
-					} else if runErr != nil {
-						status = "error"
-					}
-					logger.Info("run_finished", "outcome", status, "duration_ms", time.Since(started).Milliseconds())
-					completion <- runErr
-				}()
+				s.startWorker(runCtx, input, logger, updates, done)
 			default:
 				problem("unknown_command")
 			}
@@ -566,4 +464,138 @@ func applyImplementCommand(session *domain.Session, cmd command) {
 		}
 		impl.Status, impl.Branch, impl.Title, impl.Body = "publishing", cmd.Branch, cmd.Title, cmd.Body
 	}
+}
+
+// applyCheckpoint copies a worker checkpoint into the durable session. A
+// final answer is added to the history and settles the session state.
+func applyCheckpoint(session *domain.Session, cp agent.Checkpoint) error {
+	session.Summary = cp.Summary
+	if cp.Target != nil {
+		session.Target = *cp.Target
+	}
+	if cp.RunKind != "" {
+		session.RunKind = cp.RunKind
+	}
+	if cp.ResetReview {
+		session.Review = nil
+		session.ReviewScope = cp.ReviewScope
+	}
+	if cp.ActivePullRequest > 0 {
+		session.ActivePullRequest = cp.ActivePullRequest
+	}
+	session.RepositoryOverview = cp.RepositoryOverview
+	session.OverviewPending = cp.OverviewPending
+	if cp.Review != nil {
+		session.Review = cp.Review
+		session.Target.Commit = cp.Review.Head
+	}
+	if cp.Implementation != nil {
+		session.Implementation = cp.Implementation
+	}
+	session.Sources = cp.Sources
+	session.Metrics = cp.Metrics
+	session.Limitations = cp.Limitations
+	if len(session.Limitations) > 20 {
+		session.Limitations = session.Limitations[len(session.Limitations)-20:]
+	}
+	for i := range session.Messages {
+		for _, id := range cp.Applied {
+			if session.Messages[i].ID == id {
+				session.Messages[i].Applied = true
+			}
+		}
+	}
+	if cp.Answer == "" {
+		return nil
+	}
+	if err := session.Add("assistant", cp.Answer, randomID()); err != nil {
+		return err
+	}
+	session.State = "done"
+	if session.RunKind == "implement" && session.Implementation != nil && session.Implementation.Status == "verification_blocked" {
+		session.State = "user_wait"
+	}
+	if session.RunKind == "investigation" && session.Review != nil && session.Review.PendingInvestigation > 0 {
+		if session.Review.Investigations == nil {
+			session.Review.Investigations = map[string]string{}
+		}
+		result := cp.Answer
+		if len(result) > 4096 {
+			result = domain.Clip(result, 4096) + "\n（以降はチャットの回答を参照してください）"
+		}
+		session.Review.Investigations[strconv.Itoa(session.Review.PendingInvestigation-1)] = result
+		session.Review.PendingInvestigation = 0
+	}
+	return nil
+}
+
+// applyRunResult sets the session state after a worker run returns.
+func applyRunResult(session *domain.Session, runErr error, wasStopping bool) {
+	if wasStopping {
+		session.State = "stopped"
+	} else if errors.Is(runErr, agent.ErrCIWaiting) {
+		session.State = "ci_wait"
+	} else if runErr != nil && runErr.Error() == "review_run_budget_resume" {
+		session.State = "user_wait"
+	} else if runErr != nil {
+		if errors.Is(runErr, context.DeadlineExceeded) && session.RunKind == "review" {
+			session.State = "user_wait"
+		} else if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+			session.State = "auth_wait"
+		} else {
+			session.State = "failed"
+			session.Limitations = append(session.Limitations, runErr.Error())
+		}
+	}
+}
+
+// runOutcome classifies a worker run's result for logs.
+func runOutcome(runErr error) string {
+	switch {
+	case errors.Is(runErr, context.Canceled):
+		return "canceled"
+	case errors.Is(runErr, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(runErr, agent.ErrCIWaiting) || (runErr != nil && runErr.Error() == "review_run_budget_resume"):
+		return "yielded"
+	case runErr != nil:
+		return "error"
+	}
+	return "ok"
+}
+
+// carriesMessage reports whether the command adds a user message to the history.
+func (c command) carriesMessage() bool {
+	return c.Type == "message" || c.Type == "review" || c.Type == "investigate" || c.Type == "implement"
+}
+
+// startWorker runs the agent in the background. Checkpoints are handed to the
+// socket's event loop, which alone mutates the durable session.
+func (s *Server) startWorker(runCtx context.Context, input agent.Input, logger *slog.Logger, updates chan<- update, completion chan<- error) {
+	go func() {
+		defer func() { input.Key = ""; input.GitHubToken = "" }()
+		started := time.Now()
+		logger.Info("run_started")
+		runErr := s.Runner.Run(runCtx, input, func(cp agent.Checkpoint) error {
+			ack := make(chan error, 1)
+			select {
+			case updates <- update{cp, ack}:
+			case <-runCtx.Done():
+				return runCtx.Err()
+			}
+			select {
+			case e := <-ack:
+				return e
+			case <-runCtx.Done():
+				return runCtx.Err()
+			}
+		})
+		logger.Info("run_finished", "outcome", runOutcome(runErr), "duration_ms", time.Since(started).Milliseconds())
+		completion <- runErr
+	}()
+}
+
+// investigationPrompt asks for a follow-up on one unverified review item.
+func investigationPrompt(session *domain.Session, index int) string {
+	return fmt.Sprintf("PR #%d のレビューの未確認項目を追加調査してください。対象: %s\n関連コードや差分を必要に応じて確認し、確認できた事実と根拠、問題の有無、引き続き未確認の点を区別してください。確認できないことを推測で確定しないでください。", session.Target.Number, session.Review.Unverified[index])
 }

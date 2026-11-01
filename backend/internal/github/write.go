@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"strings"
 
@@ -85,13 +84,10 @@ func (c *Client) sendLimit(ctx context.Context, token, method, path string, in, 
 		}
 		body = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, "https://api.github.com"+path, body)
+	req, err := newAPIRequest(ctx, token, method, path, body, "application/vnd.github+json")
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
