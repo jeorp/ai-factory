@@ -76,7 +76,7 @@ const errors: Record<string, string> = {
  implementation_not_ready: 'PRを作成できる変更がありません。', implementation_publish_incomplete: 'ブランチへの書き込みが途中です。「PRの作成を再試行」で完了させてください。',
  implementation_changes_expired: '変更内容の保存期限（1時間）が切れました。チャットでもう一度実装を依頼してください。',
  implementation_plan_failed: 'AIが有効な実装計画を作成できませんでした。依頼を具体的にして再試行してください。', implementation_edit_failed: 'AIの変更を元のファイルに適用できませんでした。保存済みの状態から再開するか、依頼を分けてください。',
- implementation_no_changes: '計画したファイルに変更が作成されませんでした。依頼を具体的にして再試行してください。',
+ implementation_no_changes: '計画したファイルに変更が作成されませんでした。依頼を具体的にして再試行してください。', implementation_amend_not_pending: '承認待ちの追加ファイルがありません。', invalid_implementation_amend: '追加ファイルへの回答を送れませんでした。',
  pull_request_not_found: '指定したPRが見つかりません。PR番号を確認してください。', pull_request_closed: '指定したPRはマージ・クローズ済みです。新しいPRとして依頼してください。', pull_request_not_ai_branch: 'AIファクトリーが作成したPR（ai-factory/で始まるブランチ）にだけ修正を追加できます。', pull_request_from_fork: 'フォークからのPRには修正を追加できません。',
  change_file_exists: '追加しようとしたファイルが既に存在します。計画を作り直してください。', change_file_missing: '変更・削除しようとしたファイルが見つかりません。計画を作り直してください。',
  change_file_size_limit: '1ファイル100 KiBを超えるファイルは変更できません。', change_contains_secret: '変更内容に認証情報のような文字列が含まれているため作成を中止しました。',
@@ -113,6 +113,7 @@ function syncKey() { const c = credentials(); keyValid.value = !!c.apiKey; }
 function send() { if (!canSend.value) return; try { const pull = mode.value === 'implement' ? Number.parseInt(fixPull.value, 10) : 0; work.send(mode.value, text.value.trim(), crypto.randomUUID(), undefined, pull > 0 ? { pullNumber: pull } : undefined); text.value = ''; } catch (e) { appError.value = errorMessage(e); } }
 function investigate(index: number) { try { work.send('investigate', '', crypto.randomUUID(), index); } catch (e) { appError.value = errorMessage(e); } }
 function approveImplementation() { try { work.send('implement_approve'); } catch (e) { appError.value = errorMessage(e); } }
+function amendImplementation(approve: boolean) { try { work.send('implement_amend', approve ? 'approve' : 'decline'); } catch (e) { appError.value = errorMessage(e); } }
 function publishImplementation(value: { branch: string; title: string; body: string }) { try { work.send('implement_publish', '', crypto.randomUUID(), undefined, value); } catch (e) { appError.value = errorMessage(e); } }
 function resume() { try { work.send('resume'); } catch (e) { appError.value = errorMessage(e); } }
 function stop() { try { work.send('stop'); } catch (e) { appError.value = errorMessage(e); } }
@@ -238,7 +239,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
        </details>
        <article v-else-if="entry.kind === 'message'" class="message" :class="entry.message.role"><div class="message-avatar"><Icon v-if="entry.message.role === 'assistant'" name="grid" :size="16" /><Icon v-else-if="entry.message.role === 'instruction'" name="branch" :size="16" /><span v-else>{{ login[0]?.toUpperCase() }}</span></div><div class="message-content"><div class="message-label">{{ entry.message.role === 'assistant' ? 'AI Factory' : entry.message.role === 'instruction' ? '追加指示' : 'あなた' }}<span v-if="entry.message.role === 'instruction'" class="instruction-state">{{ entry.message.applied ? '反映済み' : '受付済み・次の区切りで反映' }}</span></div><div class="message-text">{{ entry.message.text }}</div></div></article>
       </template>
- <ImplementationPanel v-if="current.implementation" :key="`${current.id}:impl`" :session-id="current.id" :repository="current.target.repository" :implementation="current.implementation" :running="running" :connected="work.connected" :can-run="work.connected && (config.aiProvider === 'demo' || keyValid)" @approve="approveImplementation" @publish="publishImplementation" />
+ <ImplementationPanel v-if="current.implementation" :key="`${current.id}:impl`" :session-id="current.id" :repository="current.target.repository" :implementation="current.implementation" :running="running" :connected="work.connected" :can-run="work.connected && (config.aiProvider === 'demo' || keyValid)" @approve="approveImplementation" @amend="amendImplementation" @publish="publishImplementation" />
       <SourceFiles v-if="!current.review" :key="current.id" :session="current" @open="openFile" @clear="closeFile" />
       <div v-if="running" class="progress-message"><span class="loading-dots">•••</span>{{ current.state === 'stopping' ? '停止を要求しています…' : work.progress || '処理を開始しています…' }}</div>
      </div>

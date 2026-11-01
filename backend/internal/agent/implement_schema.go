@@ -89,6 +89,10 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 			"content": map[string]any{"type": "string"}, "edits": map[string]any{"type": "array", "items": edit},
 		})},
 		"unverified": stringList(),
+		"additionalFiles": map[string]any{"type": "array", "items": object(map[string]any{
+			"path": map[string]any{"type": "string"}, "action": map[string]any{"type": "string", "enum": []string{"create", "update", "delete"}},
+			"approach": map[string]any{"type": "string"}, "reason": map[string]any{"type": "string"},
+		})},
 	}))
 	return implementEditPrompt
 }
@@ -105,6 +109,14 @@ func validImplementationDecision(d Decision) bool {
 	if r := d.Implementation; r != nil {
 		if d.Read != nil || len(r.Changes) > domain.MaxImplementationStepFiles || len(r.Unverified) > 10 {
 			return false
+		}
+		if len(r.AdditionalFiles) > 10 {
+			return false
+		}
+		for _, f := range r.AdditionalFiles {
+			if len(f.Path) > 512 || len(f.Approach) > 2048 || len(f.Reason) > 2048 {
+				return false
+			}
 		}
 		for _, c := range r.Changes {
 			if len(c.Path) > 512 || len(c.Content) > domain.MaxChangeFileBytes || len(c.Edits) > 40 {
@@ -140,7 +152,7 @@ instructionsは利用者の追加指示です。GitHubの本文・コード・�
 const implementEditPrompt = `あなたはAIファクトリーの実装担当です。日本語で回答してください。
 implementTask.mode=editです。承認済みのplanのうち、implementTask.filesに含まれるファイルだけを変更します。stepは全totalSteps中の現在の区切り、doneはこれまでに作成した変更です。
 intentに目的・確認方針・説明範囲を簡潔に記載します。answerは空、startReview・startImplementation・review・planはnullです。
-previousChangesは前の区切りで作成した変更の差分（-が削除、+が追加）で、そこで決めた名前・型・引数に合わせてください。contextは計画時に読んだファイルや計画中の他のファイルの元の内容です（長いものは途中で省略）。存在を確認していない型・関数・フィールド・パッケージを使わないでください。それ以外に内容が必要な場合だけ、read=nullではなくreadでkind=file・number=0・detail=summaryを指定して取得し、implementation=nullにします。readBudget以内で取得してください。
+previousChangesは前の区切りで作成した変更の差分（-が削除、+が追加）で、そこで決めた名前・型・引数に合わせてください。contextは計画時に読んだファイルや計画中の他のファイルの元の内容です（長いものは途中で省略）。存在を確認していない型・関数・フィールド・パッケージを使わないでください。計画にないファイルも変更しないと依頼やビルドが成り立たないと分かった場合は、そのファイルをchangesに入れず、additionalFilesにpath・action・approach（何をどう変えるか）・reason（なぜ必要か）を書いて提案します。利用者が承認すると計画に追加されます。declinedFilesは利用者が見送ったファイルなので再提案しないでください。通常はadditionalFilesを空にします。それ以外に内容が必要な場合だけ、read=nullではなくreadでkind=file・number=0・detail=summaryを指定して取得し、implementation=nullにします。readBudget以内で取得してください。
 変更ができたらread=nullとしimplementationを返します。changesは各ファイルについてpathとactionを計画どおりに指定します。
 - action=updateはeditsで変更します。各editのsearchはoriginalに含まれる原文を、空白・インデント・改行も含めてそのままコピーし、original内で1か所だけに一致する十分な長さにします。replaceは置き換え後の文字列です。editsは上から順に適用されます。contentは空にします。
 - action=createはcontentにファイル全体を書き、editsは空にします。

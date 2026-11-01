@@ -23,9 +23,10 @@ export interface Review {
 export interface PlannedFile { path: string; action: 'create' | 'update' | 'delete'; approach: string }
 export interface Implementation {
  request: string; baseBranch: string; baseCommit: string;
- status: 'planning' | 'plan_ready' | 'editing' | 'ready' | 'publishing' | 'published';
+ status: 'planning' | 'plan_ready' | 'editing' | 'amend_ready' | 'ready' | 'publishing' | 'published';
  plan?: { summary: string; files: PlannedFile[]; outOfScope: string[] | null; risks: string[] | null; tests: string[] | null };
  steps?: { files: string[] }[]; nextStep: number;
  changes: { path: string; action: PlannedFile['action']; bytes: number }[]; unverified: string[]; summary: string; version: number;
  branch?: string; title?: string; body?: string; commit?: string; refUpdated?: boolean; pullNumber?: number; pullUrl?: string; expectedHead?: string;
+ pendingFiles?: (PlannedFile & { reason: string })[]; declined?: string[];
 }

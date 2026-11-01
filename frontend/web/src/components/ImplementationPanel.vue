@@ -5,10 +5,10 @@ import { lineDiff, type DiffLine } from '../lib/lineDiff';
 import type { Implementation } from '../types';
 
 const props = defineProps<{ sessionId: string; repository: string; implementation: Implementation; running: boolean; canRun: boolean; connected: boolean }>();
-const emit = defineEmits<{ approve: []; publish: [{ branch: string; title: string; body: string }] }>();
+const emit = defineEmits<{ approve: []; amend: [boolean]; publish: [{ branch: string; title: string; body: string }] }>();
 const impl = computed(() => props.implementation);
 const labels = { create: '追加', update: '変更', delete: '削除' } as const;
-const statusLabels: Record<Implementation['status'], string> = { planning: '計画を作成中', plan_ready: '計画の承認待ち', editing: '変更を作成中', ready: 'PR作成の確認待ち', publishing: 'PRを作成中', published: 'PR作成済み' };
+const statusLabels: Record<Implementation['status'], string> = { planning: '計画を作成中', plan_ready: '計画の承認待ち', editing: '変更を作成中', amend_ready: '追加ファイルの承認待ち', ready: 'PR作成の確認待ち', publishing: 'PRを作成中', published: 'PR作成済み' };
 const branch = ref(''); const title = ref(''); const body = ref(''); const confirmed = ref(false);
 watch(() => [impl.value.status, impl.value.version, impl.value.branch, impl.value.title] as const, () => {
  branch.value = impl.value.branch || ''; title.value = impl.value.title || ''; body.value = (impl.value.body || '').slice(0, 12000); confirmed.value = false;
@@ -59,6 +59,16 @@ onUnmounted(() => { active = false; controller.abort(); });
    </div>
   </template>
 
+  <section v-if="impl.status === 'amend_ready' && impl.pendingFiles?.length" class="impl-amend" aria-label="計画にないファイルの追加">
+   <h3>計画にないファイルの追加</h3>
+   <p>作業の途中で、次のファイルも変更が必要だと分かりました。承認すると計画に加えて作業を続けます。見送ると、これらは変更せずに残りの作業を続けます。</p>
+   <ul class="impl-files"><li v-for="file in impl.pendingFiles" :key="file.path"><code>{{ file.path }}</code><span class="impl-action" :class="file.action">{{ labels[file.action] }}</span><p>{{ file.approach }}</p><p class="impl-reason">理由: {{ file.reason }}</p></li></ul>
+   <div class="impl-actions">
+    <button class="primary-button" :disabled="running || !canRun" @click="emit('amend', true)">追加して続ける</button>
+    <button class="plain-button" :disabled="running || !canRun" @click="emit('amend', false)">追加せずに続ける</button>
+   </div>
+  </section>
+
   <template v-if="impl.changes.length">
    <h3>変更内容 {{ impl.changes.length }} ファイル</h3>
    <div v-for="change in impl.changes" :key="change.path" class="diff-file">
@@ -97,5 +107,5 @@ onUnmounted(() => { active = false; controller.abort(); });
 .diff-file{border-top:1px solid #e2e8e4}.diff-toggle{display:flex;justify-content:space-between;gap:12px;width:100%;padding:11px 0;text-align:left;border:0;background:none;color:#315e31;cursor:pointer}.diff-toggle small{flex-shrink:0;color:#63766b}
 .patch-scroll{max-height:420px;overflow:auto;border:1px solid #d1d9e0;border-radius:6px;background:#f6f8fa}.patch-scroll pre{margin:0;min-width:max-content;font:12px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:4}.patch-scroll span{display:block;padding:0 12px;white-space:pre;min-height:1.7em}.patch-scroll i{font-style:normal;display:inline-block;width:1.4em;color:#8a9a90}.patch-scroll .add{background:#dafbe1;color:#116329}.patch-scroll .remove{background:#ffebe9;color:#82071e}.patch-scroll .skip{background:#ddf4ff;color:#0550ae}
 .impl-publish{display:grid;gap:10px;margin-top:14px}.impl-publish label{display:grid;gap:4px;font-size:13px}.impl-publish input,.impl-publish textarea{font:inherit;padding:8px;border:1px solid #cdd8d1;border-radius:6px}.impl-publish .consent{display:flex;gap:8px;align-items:flex-start}
-.impl-question{padding:10px;background:#fff8e6;border-radius:6px;font-size:13px}.impl-done{padding:10px;background:#e8f3ea;border-radius:6px}
+.impl-question{padding:10px;background:#fff8e6;border-radius:6px;font-size:13px}.impl-done{padding:10px;background:#e8f3ea;border-radius:6px}.impl-amend{margin-top:12px;padding:10px;background:#fff8e6;border-radius:6px}.impl-amend>p{font-size:13px}.impl-reason{color:#7a6a3c}
 </style>

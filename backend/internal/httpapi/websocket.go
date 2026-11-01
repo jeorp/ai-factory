@@ -299,7 +299,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				if send("session", session) != nil {
 					return
 				}
-			case "message", "resume", "review", "investigate", "implement", "implement_approve", "implement_publish":
+			case "message", "resume", "review", "investigate", "implement", "implement_approve", "implement_amend", "implement_publish":
 				if cancelRun != nil {
 					problem("run_in_progress")
 					continue
@@ -486,6 +486,13 @@ func implementCommandProblem(session *domain.Session, cmd *command) string {
 		if impl == nil || impl.Status != "plan_ready" || impl.Plan == nil {
 			return "implementation_plan_required"
 		}
+	case "implement_amend":
+		if impl == nil || impl.Status != "amend_ready" || len(impl.PendingFiles) == 0 || impl.Plan == nil {
+			return "implementation_amend_not_pending"
+		}
+		if cmd.Text != "approve" && cmd.Text != "decline" {
+			return "invalid_implementation_amend"
+		}
 	case "implement_publish":
 		if impl == nil || (impl.Status != "ready" && impl.Status != "publishing") || len(impl.Changes) == 0 {
 			return "implementation_not_ready"
@@ -518,6 +525,9 @@ func applyImplementCommand(session *domain.Session, cmd command) {
 		session.RunKind = "implement"
 		impl.Status, impl.NextStep = "editing", 0
 		impl.Changes, impl.Unverified = []domain.ChangeSummary{}, []string{}
+	case "implement_amend":
+		session.RunKind = "implement"
+		session.Implementation.ResolveAmendment(cmd.Text == "approve")
 	case "implement_publish":
 		impl := session.Implementation
 		session.RunKind = "implement"

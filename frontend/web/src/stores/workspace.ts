@@ -48,7 +48,7 @@ export const useWorkspace = defineStore('workspace', () => {
  function send(type: string, text = '', id = crypto.randomUUID(), unverifiedIndex?: number, extra: Record<string, string | number> = {}) {
   if (!connected.value || socket?.readyState !== WebSocket.OPEN) throw new Error('connection_required');
   // Publishing writes saved changes and never needs the AI key.
-  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...extra, ...(['message', 'resume', 'review', 'investigate', 'implement', 'implement_approve'].includes(type) ? credentials() : {}) }));
+  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...extra, ...(['message', 'resume', 'review', 'investigate', 'implement', 'implement_approve', 'implement_amend'].includes(type) ? credentials() : {}) }));
   error.value = '';
  }
  async function remove(id: string) {
