@@ -102,7 +102,7 @@ docker compose logs --no-color --since 10m api | python3 scripts/read-agent-debu
 
 長いpayloadはDockerのログ境界で日本語が壊れないよう、UTF-8を保った小さなレコードに分割します。`payload_id` と `chunk_index` / `chunk_count` で関連づけ、上記のスクリプトで元のpayloadに戻せます。取得期間の境界などでレコードが欠けるとスクリプトはエラーになるため、ログの取得期間を広げてください。実装のモデル呼び出しには `call`・`attempt`・`retry_count` も記録します。
 
-`agent_debug_edit_rejected` のpayloadには、ファイルごとの `planned_action` / `submitted_action`、原文ハッシュ、失敗した編集番号を記録します。行範囲編集では `line_edit` の期待文字列と `actual_start` / `actual_end`、前後2行の `source_context` を比較できます。検索置換では失敗時点の `current_source`（先行する置換を適用済み）、検索文字列と置換内容、一致件数を記録します。診断だけを追加し、編集の照合条件や再試行上限は変えません。
+`agent_debug_edit_rejected` のpayloadには、ファイルごとの `planned_action` / `submitted_action`、原文ハッシュ、失敗した編集番号を記録します。行範囲編集では `line_edit` の期待文字列と `actual_start` / `actual_end`、前後2行の `source_context` を比較できます。検索置換では失敗時点の `current_source`（先行する置換を適用済み）、検索文字列と置換内容、一致件数を記録します。編集の照合条件や再試行上限は変えません。編集失敗後のモデル入力には `implementTask.editFailure` として、対象パス・原文ハッシュ・実際の行数・失敗した行範囲の正しい境界行を渡します。空行や4096バイトを超える行など、確認文字列に使えない境界は省略し、切り詰めた文字列を正解として渡しません。この訂正情報は追加取得を挟んでも保持します。
 
 品質の判断を追うため、次のイベントも同じローカル限定フラグで出力します。
 

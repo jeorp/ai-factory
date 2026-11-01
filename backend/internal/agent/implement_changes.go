@@ -84,7 +84,7 @@ func applyProposals(step []string, impl *domain.Implementation, originals map[st
 					return nil, errors.New("update_format_conflict")
 				}
 				if p.SourceHash != domain.SourceHash(originals[p.Path]) {
-					return nil, errors.New("edit_source_mismatch")
+					return nil, &proposalEditError{path: p.Path, err: errors.New("edit_source_mismatch")}
 				}
 				var err error
 				if content, err = domain.ApplyLineEdits(originals[p.Path], p.LineEdits); err != nil {

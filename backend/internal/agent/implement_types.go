@@ -96,4 +96,5 @@ type implementTask struct {
 	RetryCount     int                        `json:"-"`
 	RepairFeedback string                     `json:"repairFeedback,omitempty"`
 	EditFormat     string                     `json:"editFormat,omitempty"`
+	EditFailure    *implementEditFailure      `json:"editFailure,omitempty"`
 }

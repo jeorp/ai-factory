@@ -78,7 +78,7 @@ func debugText(ctx context.Context, event, payload string) {
 	if trace == nil {
 		return
 	}
-	safe := redactDebug(payload, trace.secrets)
+	safe := strings.ToValidUTF8(redactDebug(payload, trace.secrets), "\uFFFD")
 	clipped := domain.Clip(safe, maxDebugPayloadBytes)
 	chunks := []string{}
 	remaining := clipped

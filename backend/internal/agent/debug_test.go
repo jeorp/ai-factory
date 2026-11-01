@@ -219,3 +219,13 @@ func TestDebugAttemptUsesServerMetadata(t *testing.T) {
 		}
 	}
 }
+
+func TestDebugInvalidUTF8StillMakesProgress(t *testing.T) {
+	var logs bytes.Buffer
+	payload := "\xff\xfe" + strings.Repeat("日本語\x80\n", 2000)
+	debugText(debugTestContext(&logs, true), "invalid_utf8", payload)
+	events := decodeDebugEvents(t, logs.Bytes())
+	if len(events) != 1 || events[0]["payload"] != strings.ToValidUTF8(payload, "\uFFFD") {
+		t.Fatal("invalid UTF-8 log could not be reconstructed")
+	}
+}
