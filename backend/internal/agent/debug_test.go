@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"ai-factory/backend/internal/domain"
 )
@@ -74,7 +76,12 @@ func TestDebugRedactsBeforeTruncation(t *testing.T) {
 		Truncated    bool
 		PayloadBytes int `json:"payload_bytes"`
 	}
-	if err := json.Unmarshal(logs.Bytes(), &event); err != nil {
+	parts := decodeDebugEvents(t, logs.Bytes())
+	if len(parts) != 1 {
+		t.Fatalf("expected one reassembled event, got %d", len(parts))
+	}
+	raw, _ := json.Marshal(parts[0])
+	if err := json.Unmarshal(raw, &event); err != nil {
 		t.Fatal(err)
 	}
 	if !event.Truncated || len(event.Payload) > maxDebugPayloadBytes || strings.Contains(event.Payload, "zzzz") {
@@ -145,5 +152,70 @@ func TestDebugSearchFailureUsesSourceAfterEarlierEdits(t *testing.T) {
 	json.Unmarshal([]byte(event.Payload), &detail)
 	if detail.EditIndex != 2 || !strings.Contains(detail.Current, "1|after") || strings.Contains(detail.Current, "before") {
 		t.Fatalf("wrong source snapshot: %+v", detail)
+	}
+}
+
+func decodeDebugEvents(t *testing.T, raw []byte) []map[string]any {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	out := []map[string]any{}
+	pending := map[float64]map[string]any{}
+	for {
+		var e map[string]any
+		err := decoder.Decode(&e)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := e["payload_id"].(float64)
+		if e["chunk_index"].(float64) == 1 {
+			pending[id] = e
+		} else {
+			pending[id]["payload"] = pending[id]["payload"].(string) + e["payload"].(string)
+		}
+		if e["chunk_index"] == e["chunk_count"] {
+			out = append(out, pending[id])
+			delete(pending, id)
+		}
+	}
+	if len(pending) > 0 {
+		t.Fatal("missing log chunks")
+	}
+	return out
+}
+
+func TestDebugChunksPreserveJapaneseAndEscapedText(t *testing.T) {
+	var logs bytes.Buffer
+	payload := strings.Repeat("日本語\n\x00\"\\", 4000)
+	debugText(debugTestContext(&logs, true), "utf8", payload)
+	for _, line := range bytes.Split(bytes.TrimSpace(logs.Bytes()), []byte("\n")) {
+		if !utf8.Valid(line) || len(line) >= 16*1024 {
+			t.Fatalf("unsafe Docker log frame size %d", len(line))
+		}
+	}
+	events := decodeDebugEvents(t, logs.Bytes())
+	if len(events) != 1 || events[0]["payload"] != payload {
+		t.Fatal("log payload was corrupted during chunking")
+	}
+}
+
+func TestDebugAttemptUsesServerMetadata(t *testing.T) {
+	var logs bytes.Buffer
+	ctx := withDebugAttrs(debugTestContext(&logs, true), "attempt", 3, "retry_count", 2)
+	r := &Runner{AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
+		return Decision{}, Usage{}, nil
+	})}
+	task := implementTask{Mode: "edit", Step: 1, Attempt: 3, RetryCount: 2}
+	raw, _ := json.Marshal(map[string]any{"implementTask": task})
+	if strings.Contains(string(raw), "attempt") {
+		t.Fatal("server retry metadata leaked into model input")
+	}
+	r.next(ctx, Input{}, string(raw))
+	for _, event := range decodeDebugEvents(t, logs.Bytes()) {
+		if event["attempt"] != float64(3) || event["retry_count"] != float64(2) {
+			t.Fatalf("incorrect retry metadata: %+v", event)
+		}
 	}
 }

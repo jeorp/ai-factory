@@ -95,10 +95,12 @@ WebSocket最初のフレームは `{type:"auth",token:"Firebase ID token"}`。�
 
 ```sh
 AGENT_DEBUG_LOG=1 docker compose up --build -d --wait --no-deps api
-docker compose logs --since 10m api > /tmp/ai-factory-debug.log
+docker compose logs --no-color --since 10m api | python3 scripts/read-agent-debug.py > /tmp/ai-factory-debug.jsonl
 ```
 
 `agent_debug_model_input` / `agent_debug_model_output` にモデルの入力と解析後の応答、`agent_debug_provider_request` / `agent_debug_provider_response` にプロバイダーへの本文と応答を記録します。`trace_id`・`session_id`、モデル呼び出しごとの `ai_call_id` で追跡できます。APIキー・GitHubトークンと認識できる認証情報はマスクし、認証ヘッダーは記録しません。ログには依頼文・取得コード・生成コードが含まれるため、共有前に内容を確認してください。各payloadは512 KiBまでで、切り詰めた場合は `truncated=true` と元のバイト数を記録します。
+
+長いpayloadはDockerのログ境界で日本語が壊れないよう、UTF-8を保った小さなレコードに分割します。`payload_id` と `chunk_index` / `chunk_count` で関連づけ、上記のスクリプトで元のpayloadに戻せます。取得期間の境界などでレコードが欠けるとスクリプトはエラーになるため、ログの取得期間を広げてください。実装のモデル呼び出しには `call`・`attempt`・`retry_count` も記録します。
 
 `agent_debug_edit_rejected` のpayloadには、ファイルごとの `planned_action` / `submitted_action`、原文ハッシュ、失敗した編集番号を記録します。行範囲編集では `line_edit` の期待文字列と `actual_start` / `actual_end`、前後2行の `source_context` を比較できます。検索置換では失敗時点の `current_source`（先行する置換を適用済み）、検索文字列と置換内容、一致件数を記録します。診断だけを追加し、編集の照合条件や再試行上限は変えません。
 

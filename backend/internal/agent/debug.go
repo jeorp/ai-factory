@@ -13,6 +13,10 @@ import (
 
 const maxDebugPayloadBytes = 512 * 1024
 
+// Worst-case JSON escaping expands a byte sixfold; keep each record below
+// Docker's 16 KiB frame boundary, including logger metadata.
+const debugChunkBytes = 2 * 1024
+
 type agentDebugKey struct{}
 type agentDebugTrace struct {
 	logger  *slog.Logger
@@ -20,6 +24,7 @@ type agentDebugTrace struct {
 }
 
 var debugCallSequence atomic.Uint64
+var debugPayloadSequence atomic.Uint64
 var debugPrivateKey = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
 
 func withAgentDebug(ctx context.Context, enabled bool, in Input) context.Context {
@@ -40,6 +45,16 @@ func debugTrace(ctx context.Context) *agentDebugTrace {
 		return nil
 	}
 	return trace
+}
+
+func withDebugAttrs(ctx context.Context, attrs ...any) context.Context {
+	trace := debugTrace(ctx)
+	if trace == nil {
+		return ctx
+	}
+	next := *trace
+	next.logger = trace.logger.With(attrs...)
+	return context.WithValue(ctx, agentDebugKey{}, &next)
 }
 
 func redactDebug(text string, secrets []string) string {
@@ -65,7 +80,20 @@ func debugText(ctx context.Context, event, payload string) {
 	}
 	safe := redactDebug(payload, trace.secrets)
 	clipped := domain.Clip(safe, maxDebugPayloadBytes)
-	trace.logger.DebugContext(ctx, "agent_debug_"+event, "payload", clipped, "payload_bytes", len(payload), "logged_bytes", len(clipped), "truncated", len(clipped) < len(safe))
+	chunks := []string{}
+	remaining := clipped
+	for len(remaining) > 0 {
+		part := domain.Clip(remaining, debugChunkBytes)
+		chunks = append(chunks, part)
+		remaining = remaining[len(part):]
+	}
+	if len(chunks) == 0 {
+		chunks = append(chunks, "")
+	}
+	id := debugPayloadSequence.Add(1)
+	for i, part := range chunks {
+		trace.logger.DebugContext(ctx, "agent_debug_"+event, "payload", part, "payload_id", id, "chunk_index", i+1, "chunk_count", len(chunks), "payload_bytes", len(payload), "logged_bytes", len(clipped), "truncated", len(clipped) < len(safe))
+	}
 }
 
 func debugJSON(ctx context.Context, event string, value any) {
@@ -87,7 +115,7 @@ func (r *Runner) next(ctx context.Context, in Input, input string) (Decision, Us
 			Task *implementTask `json:"implementTask"`
 		}
 		if json.Unmarshal([]byte(input), &body) == nil && body.Task != nil {
-			callTrace.logger = callTrace.logger.With("phase", body.Task.Mode, "step", body.Task.Step, "attempt", body.Task.Attempt)
+			callTrace.logger = callTrace.logger.With("phase", body.Task.Mode, "step", body.Task.Step)
 		}
 		ctx = context.WithValue(ctx, agentDebugKey{}, &callTrace)
 	}
