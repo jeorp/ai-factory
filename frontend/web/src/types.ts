@@ -1,7 +1,7 @@
 export interface Source { label: string; url: string }
 export interface Message { id: string; role: 'user' | 'assistant' | 'instruction'; text: string; at: string; applied: boolean }
 export interface Session {
-	tokenBudget?: number;
+ tokenBudget?: number;
  id: string; title: string; target: { repository: string; commit: string; kind: string; number: number }; model: string; effort?: string;
  runKind?: string; activePullRequest?: number; review?: Review; implementation?: Implementation;
  state: string; messages: Message[]; summary: string; sources: Source[]; limitations: string[];

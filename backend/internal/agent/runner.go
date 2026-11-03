@@ -155,7 +155,7 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 		}
 		callStart := time.Now()
 		logger.Info("model_call_started", "step", step+1, "input_bytes", len(input))
-		decision, usage, err := r.next(ctx, in, input)
+		decision, usage, err := r.next(ctx, in, input, "chat")
 		errorCode := implementationErrorCode(err)
 		if errorCode == "implementation_error" {
 			errorCode = "model_error"

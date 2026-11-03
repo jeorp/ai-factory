@@ -15,13 +15,13 @@ func TestTokenBudgetStopsNextCallAndSurvivesResume(t *testing.T) {
 	s := baseSession()
 	s.TokenBudget = 10
 	ctx := withTokenBudget(context.Background(), s)
-	_, usage, err := r.next(ctx, Input{Session: s}, `{"implementTask":{"mode":"edit"}}`)
+	_, usage, err := r.next(ctx, Input{Session: s}, `{"implementTask":{"mode":"edit"}}`, "edit")
 	if err != nil || usage.Phase != "edit" {
 		t.Fatalf("first: %+v %v", usage, err)
 	}
 	addUsage(&s.Metrics, usage)
 	for _, c := range []context.Context{ctx, withTokenBudget(context.Background(), s)} {
-		if _, _, err := r.next(c, Input{Session: s}, `{}`); err == nil || err.Error() != "ai_token_budget_exceeded" {
+		if _, _, err := r.next(c, Input{Session: s}, `{}`, "chat"); err == nil || err.Error() != "ai_token_budget_exceeded" {
 			t.Fatalf("budget bypassed: %v", err)
 		}
 	}
@@ -29,7 +29,7 @@ func TestTokenBudgetStopsNextCallAndSurvivesResume(t *testing.T) {
 		t.Fatalf("provider called %d times", calls)
 	}
 	s.TokenBudget = 20
-	if _, _, err := r.next(withTokenBudget(context.Background(), s), Input{Session: s}, `{}`); err != nil {
+	if _, _, err := r.next(withTokenBudget(context.Background(), s), Input{Session: s}, `{}`, "chat"); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -51,13 +51,14 @@ type ImplementResult struct {
 }
 
 const (
-	ImplementPlanCalls  = 12
-	ImplementPlanReads  = 10
-	ImplementStepCalls  = 5
-	ImplementStepReads  = 3
-	ImplementMaxCalls   = 100
-	ImplementOutputToks = 16384
-	ImplementRunTime    = 30 * time.Minute
+	ImplementPlanCalls       = 12
+	ImplementPlanReads       = 10
+	ImplementStepCalls       = 5
+	ImplementStepEditReserve = 3 // generation and corrections cannot be consumed by reads
+	ImplementStepReads       = ImplementStepCalls - ImplementStepEditReserve
+	ImplementMaxCalls        = 100
+	ImplementOutputToks      = 16384
+	ImplementRunTime         = 30 * time.Minute
 
 	// Context budgets keep the extra code well inside implementInputFits.
 	planEvidenceKept   = 5

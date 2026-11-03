@@ -90,7 +90,7 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 		log = log.With("verification_knowledge_version", knowledge.Version, "verification_languages", languages)
 	}
 	log.Info("implement_model_call_started", "input_bytes", len(body))
-	d, usage, err := run.r.next(withDebugAttrs(ctx, "call", run.calls, "attempt", max(1, task.Attempt), "retry_count", task.RetryCount), run.in, string(body))
+	d, usage, err := run.r.next(withDebugAttrs(ctx, "step", task.Step, "call", run.calls, "attempt", max(1, task.Attempt), "retry_count", task.RetryCount), run.in, string(body), task.Mode)
 	if usage.Phase != "" {
 		if run.lastRetryCounts == nil {
 			run.lastRetryCounts = map[string]int{}
@@ -115,7 +115,7 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 	}
 	addUsage(&run.cp.Metrics, usage)
 	if usage.Phase != "" && ctx.Err() == nil && run.emit != nil {
-		if saveErr := run.save(ctx, "AIの利用量を保存しました"); saveErr != nil {
+		if saveErr := run.save(ctx, run.cp.Progress); saveErr != nil {
 			return Decision{}, saveErr
 		}
 	}

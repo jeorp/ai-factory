@@ -12,11 +12,12 @@ const deleteId = defineModel<string>('deleteId', { required: true });
 defineEmits<{ remove: [id: string]; budget: [tokens: number] }>();
 const budget = ref(0);
 watch(() => [props.session.id,props.session.tokenBudget] as const,()=>{budget.value=props.session.tokenBudget || 0;},{immediate:true});
-const budgetValid = computed(()=>Number.isSafeInteger(budget.value) && budget.value>=0 && budget.value<=100000000);
 const phaseLabels: Record<string,string> = { chat:'チャット', overview:'README概要', plan:'計画', edit:'編集', verify:'静的検証', plan_retry:'計画の再試行', edit_retry:'編集の再試行', verify_retry:'検証の再試行', review_diff:'差分レビュー', review_cross:'全体照合', review_priority:'優先度評価' };
 
 const inputTokens = computed(() => props.session.metrics.inputTokens || 0);
 const outputTokens = computed(() => props.session.metrics.outputTokens || 0);
+const budgetNeedsIncrease = computed(() => budget.value > 0 && budget.value <= inputTokens.value + outputTokens.value);
+const budgetValid = computed(() => Number.isSafeInteger(budget.value) && budget.value >= 0 && budget.value <= 100000000 && !budgetNeedsIncrease.value);
 const cost = computed(() => estimateCost(props.provider, props.session.model, inputTokens.value, outputTokens.value));
 const sessionPricing = computed(() => pricing(props.provider, props.session.model));
 const inputLimit = computed(() => inputLimitBytes(props.session, props.reviewPolicy));
@@ -31,7 +32,7 @@ const inputLimit = computed(() => inputLimitBytes(props.session, props.reviewPol
    <dl class="metrics"><div><dt>入力トークン</dt><dd>{{ inputTokens.toLocaleString() }}</dd></div><div><dt>出力トークン</dt><dd>{{ outputTokens.toLocaleString() }}</dd></div><div><dt>合計トークン</dt><dd>{{ (inputTokens + outputTokens).toLocaleString() }}</dd></div><div><dt>概算コスト（USD）</dt><dd>{{ cost === undefined ? '算出できません' : formatCost(cost) }}</dd></div></dl>
    <p v-if="sessionPricing">標準料金での概算です。キャッシュ割引や無料枠などは反映していません。<br /><a :href="sessionPricing.url" target="_blank" rel="noopener noreferrer">料金表を確認 ↗</a></p><p v-else>このモデルの料金情報がないため、コストは算出できません。</p>
    <details v-if="session.metrics.phases"><summary>段階別の利用量</summary><dl class="metrics"><div v-for="(usage, phase) in session.metrics.phases" :key="phase"><dt>{{ phaseLabels[phase] || phase }}</dt><dd>{{ usage.calls }}回 · 入力{{ usage.inputTokens.toLocaleString() }} / 出力{{ usage.outputTokens.toLocaleString() }} · {{ (usage.durationMs/1000).toFixed(1) }}秒<template v-if="estimateCost(provider, session.model, usage.inputTokens, usage.outputTokens) !== undefined"> · {{ formatCost(estimateCost(provider, session.model, usage.inputTokens, usage.outputTokens)!) }}</template></dd></div></dl></details>
-   <form @submit.prevent="budgetValid && connected !== false && !['running','accepted','stopping'].includes(session.state) && $emit('budget', budget)"><label>セッション累計トークン上限<input v-model.number="budget" type="number" min="0" max="100000000" step="1" aria-label="セッション累計トークン上限" /></label><button class="plain-button" :disabled="!budgetValid || connected === false || ['running','accepted','stopping'].includes(session.state)">上限を保存</button><p>0は上限なし。報告された入力と出力の合計で判定し、到達後は次のAI呼び出しから停止します。最後の1応答分は超える場合があります。金額の上限ではありません。</p></form>
+   <form @submit.prevent="budgetValid && connected !== false && !['running','accepted','stopping'].includes(session.state) && $emit('budget', budget)"><label>セッション累計トークン上限<input v-model.number="budget" type="number" min="0" max="100000000" step="1" aria-label="セッション累計トークン上限" /></label><button class="plain-button" :disabled="!budgetValid || connected === false || ['running','accepted','stopping'].includes(session.state)">上限を保存</button><p v-if="budgetNeedsIncrease" role="alert">現在の累計（{{ (inputTokens + outputTokens).toLocaleString() }}トークン）を超える値にしてください。0は上限なしです。</p><p>0は上限なし。報告された入力と出力の合計で判定し、到達後は次のAI呼び出しから停止します。最後の1応答分は超える場合があります。金額の上限ではありません。</p></form>
   </div>
   <div class="context-block">
    <h3>コンテキストの利用状況</h3>

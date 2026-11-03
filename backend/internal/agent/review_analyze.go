@@ -61,7 +61,7 @@ func (run *reviewRun) analyze(ctx context.Context, task reviewTask) (Decision, e
 		run.modelCalls++
 		run.logger.Info("model_call_started", "step", run.modelCalls, "review_phase", task.Mode, "input_bytes", len(body), "estimated_input_tokens", reviewTokens(string(body)), "batch_files", len(task.Patches))
 		run.recordInputBytes(len(body))
-		d, usage, err := run.r.next(ctx, in, string(body))
+		d, usage, err := run.r.next(ctx, in, string(body), "review_"+task.Mode)
 		run.logger.Info("model_call_finished", "step", run.modelCalls, "review_phase", task.Mode, "outcome", outcome(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 		if err == nil {
 			run.markApplied()

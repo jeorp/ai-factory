@@ -48,13 +48,21 @@ func (r *Runner) initializeOverview(ctx context.Context, in *Input, emit func(Ch
 			truncated = true
 			input, _ = json.Marshal(map[string]any{"overviewTask": "READMEからリポジトリの目的、主要なファイルやディレクトリの配置・役割、技術構成だけを短くsummaryにまとめる。記載がない情報は省く。", "readme": domain.Clip(content, 1800), "truncated": true})
 		}
-		decision, usage, aiErr := r.next(ctx, *in, string(input))
+		decision, usage, aiErr := r.next(ctx, *in, string(input), "overview")
 		addUsage(&cp.Metrics, usage)
 		if len(input) > cp.Metrics.MaxInputBytes {
 			cp.Metrics.MaxInputBytes = len(input)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if aiErr != nil && aiErr.Error() == "ai_token_budget_exceeded" {
+			// Preserve the pending overview and fetched metrics so a higher
+			// session budget can retry initialization on the next run.
+			if err := emit(cp); err != nil {
+				return err
+			}
+			return aiErr
 		}
 		summary := strings.TrimSpace(decision.Summary)
 		if aiErr == nil && summary != "" && !echoes(summary, *in) {

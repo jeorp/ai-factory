@@ -149,25 +149,28 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 	invalidResponses := 0
 	transientErrors := 0
 	editFormat := ""
+	contextReduced := false
 	var editFailure *implementEditFailure
 	var pending []domain.PendingFile
 	var rejected []string
 	for call := 0; call < ImplementStepCalls; call++ {
 		// Reserve three non-read attempts for generation and corrections without
 		// increasing the five-call step limit. Reads cannot consume this reserve.
-		readBudget := min(ImplementStepReads-reads, max(0, ImplementStepCalls-call-max(0, 3-(call-reads))))
+		readBudget := min(ImplementStepReads-reads, max(0, ImplementStepCalls-call-max(0, ImplementStepEditReserve-(call-reads))))
 		final := readBudget == 0 || call == ImplementStepCalls-1
 		if final {
 			readBudget = 0
 		}
 		task := implementTask{Mode: "edit", Request: impl.Request, BaseBranch: impl.BaseBranch, Plan: impl.Plan, Step: impl.NextStep + 1, TotalSteps: len(impl.Steps), Files: editTaskFiles(files, editFormat), Done: impl.Changes, Declined: impl.Declined, ReadBudget: readBudget, FinalAnswer: final, Correction: correction, Attempt: call + 1, RetryCount: retries, RepairFeedback: impl.RepairFeedback, EditFormat: editFormat, EditFailure: editFailure}
+		if contextReduced {
+			task.Correction += "入力上限のため関連コードの一部を省略しました。"
+		}
 		d, err := run.call(ctx, map[string]any{"implementTask": task, "summary": domain.Clip(run.cp.Summary, 2048), "evidence": ev, "context": related, "previousChanges": previous})
 		// Shed the optional context before splitting the step.
 		// The request never reached the model, so shedding does not use up a
 		// call; it ends because ev, related and previous only shrink here and
 		// reads are bounded.
 		if err != nil && err.Error() == "ai_input_limit" && (len(ev) > 0 || len(related) > 0 || len(previous) > 0) {
-			run.retry("edit", call+1, &retries, err)
 			debugJSON(ctx, "context_reduced", map[string]any{"phase": "edit", "reason": "ai_input_limit", "step": impl.NextStep + 1, "evidence": ev, "related_context": related, "previous_changes": previous})
 			switch {
 			case len(ev) > 0:
@@ -177,7 +180,7 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 			default:
 				previous = previous[:len(previous)-1]
 			}
-			correction += "入力上限のため関連コードの一部を省略しました。"
+			contextReduced = true
 			call--
 			continue
 		}
