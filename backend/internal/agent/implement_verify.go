@@ -99,6 +99,12 @@ func (run *implementRun) verify(ctx context.Context) error {
 	// Include definitions, callers and tests outside the write plan. Reading a
 	// file does not authorize changing it. Criteria pin the end-to-end path.
 	candidates := append([]string{}, impl.ContextFiles...)
+	for _, f := range run.missingPlanFiles() {
+		candidates = append(candidates, f.Path)
+	}
+	for _, a := range impl.PlanAdjustments {
+		candidates = append(candidates, a.File.Path)
+	}
 	for _, c := range impl.Plan.AcceptanceCriteria {
 		candidates = append(candidates, c.Paths...)
 	}
@@ -134,15 +140,6 @@ func (run *implementRun) verify(ctx context.Context) error {
 		}
 	}
 	result := &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}}
-	changed := map[string]bool{}
-	for _, f := range files {
-		changed[f.Path] = true
-	}
-	for _, f := range impl.Plan.Files {
-		if !changed[f.Path] {
-			result.Unverified = append(result.Unverified, "計画にあるが変更されなかったファイル: "+f.Path)
-		}
-	}
 	// Preserve the full path set for the cross-batch review after parts are consumed.
 	verificationPaths := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -165,7 +162,7 @@ func (run *implementRun) verify(ctx context.Context) error {
 				return errors.New("implementation_verification_failed")
 			}
 			task := implementTask{Mode: "verify", Request: impl.Request, Plan: impl.Plan, Done: impl.Changes, Declined: impl.Declined, ReadBudget: implementVerifyReads - reads, FinalAnswer: reads >= implementVerifyReads || invalid >= 2, Step: len(summaries) + 1, Attempt: attempt, RetryCount: retries, Correction: correction}
-			payload := map[string]any{"implementTask": task, "stage": stage, "parts": batch, "evidence": ev, "priorVerification": result, "editUnverified": impl.Unverified}
+			payload := map[string]any{"implementTask": task, "stage": stage, "parts": batch, "evidence": ev, "priorVerification": result, "editUnverified": run.verificationEditUnverified(), "noChangeCandidates": run.missingPlanFiles(), "planAdjustments": impl.PlanAdjustments}
 			knowledgePaths := []string{}
 			if stage == "cross" {
 				knowledgePaths = append(knowledgePaths, verificationPaths...)
@@ -248,6 +245,10 @@ func (run *implementRun) verify(ctx context.Context) error {
 			}
 			result.Issues = appendUnique(result.Issues, d.Verification.Issues...)
 			result.Unverified = appendUnique(result.Unverified, d.Verification.Unverified...)
+			result.DeferredChecks = appendUnique(result.DeferredChecks, d.Verification.DeferredChecks...)
+			if stage == "cross" || len(summaries) == 0 {
+				result.UnchangedFiles = d.Verification.UnchangedFiles
+			}
 			if stage == "cross" || len(summaries) == 0 {
 				result.Criteria = d.Verification.Criteria
 			}
@@ -322,7 +323,7 @@ func (run *implementRun) verify(ctx context.Context) error {
 		result.Unverified = appendUnique(result.Unverified, err.Error())
 	}
 	run.validateCoverage(result, observed)
-	impl.Verification = result
+	run.reconcilePlan(result, observed)
 	debugJSON(ctx, "verification_coverage", map[string]any{"required_criteria": impl.Plan.AcceptanceCriteria, "observed_paths": observed, "verification": result, "generated_changes": impl.Changes, "can_publish": impl.CanPublish(), "repair_round": impl.RepairRound})
 	run.logger.Info("implement_verification_completed", "files", len(files), "batches", len(summaries), "issues", len(result.Issues), "unverified", len(result.Unverified))
 	if len(result.Issues) > 0 {

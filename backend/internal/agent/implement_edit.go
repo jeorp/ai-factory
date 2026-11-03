@@ -16,6 +16,7 @@ type stepDraft struct {
 	Unverified []string
 	Pending    []domain.PendingFile
 	Rejected   []string
+	Unchanged  []domain.UnchangedFile
 }
 
 func (run *implementRun) edit(ctx context.Context) error {
@@ -229,7 +230,10 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 			}
 			return nil, errors.New("implementation_edit_blocked")
 		}
-		if err == nil && (len(changes) > 0 || len(d.Implementation.AdditionalFiles) == 0) {
+		if err == nil {
+			err = validateNoChangeCandidates(step, impl, originals, d.Implementation)
+		}
+		if err == nil && (len(changes) > 0 || len(d.Implementation.AdditionalFiles) == 0 && len(d.Implementation.UnchangedFiles) == 0) {
 			err = domain.ValidateChangeSet(changes, approved)
 		}
 		if err != nil {
@@ -247,19 +251,23 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 		if err != nil {
 			return nil, err
 		}
-		if len(changes) == 0 && len(pending) == 0 {
+		if len(changes) == 0 && len(pending) == 0 && len(d.Implementation.UnchangedFiles) == 0 {
 			run.retry("edit", call+1, &retries, errors.New("change_set_empty"))
 			correction = "有効な変更も追加提案もありません: " + strings.Join(rejected, " / ") + "。変更を返すか、有効な追加ファイルを提案してください。"
 			continue
 		}
 		run.cp.Summary = domain.Clip(d.Summary, 2048)
-		return &stepDraft{Changes: changes, Unverified: d.Implementation.Unverified, Pending: pending, Rejected: rejected}, nil
+		return &stepDraft{Changes: changes, Unverified: d.Implementation.Unverified, Pending: pending, Rejected: rejected, Unchanged: d.Implementation.UnchangedFiles}, nil
 	}
 	return nil, errors.New("implementation_edit_failed")
 }
 
 func (run *implementRun) advanceStep(step []string, draft *stepDraft, covered map[string]bool) {
 	impl := run.impl
+	for _, f := range draft.Unchanged {
+		covered[f.Path] = true
+		impl.NoChangeCandidates = append(impl.NoChangeCandidates, f)
+	}
 	// Keep only unfinished files in the current step while an amendment is
 	// pending; completed files must not be edited twice on resume.
 	remaining := []string{}

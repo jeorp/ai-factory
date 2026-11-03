@@ -218,6 +218,19 @@ func (run *implementRun) plan(ctx context.Context) error {
 			}
 		}
 		impl.Plan = plan
+		// A new approved plan may require editing a previously unchanged file.
+		adjustments := []domain.PlanAdjustment{}
+		for _, a := range impl.PlanAdjustments {
+			replanned := false
+			for _, f := range plan.Files {
+				replanned = replanned || f.Path == a.File.Path
+			}
+			if !replanned {
+				adjustments = append(adjustments, a)
+			}
+		}
+		impl.PlanAdjustments = adjustments
+		impl.NoChangeCandidates = nil
 		impl.Steps = domain.PlanSteps(work)
 		debugJSON(ctx, "plan_accepted", map[string]any{"plan": plan, "steps": impl.Steps, "required_criteria": impl.RequiredCriteria})
 		impl.NextStep = 0

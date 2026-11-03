@@ -46,7 +46,8 @@ type ImplementResult struct {
 	Unverified []string         `json:"unverified"`
 	// AdditionalFiles are files outside the plan that the change also needs.
 	// They are added only after the user approves.
-	AdditionalFiles []domain.PendingFile `json:"additionalFiles"`
+	AdditionalFiles []domain.PendingFile   `json:"additionalFiles"`
+	UnchangedFiles  []domain.UnchangedFile `json:"unchangedFiles"`
 }
 
 const (

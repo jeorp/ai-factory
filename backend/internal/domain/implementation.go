@@ -9,42 +9,44 @@ import (
 // run (specification section 13). Changed file contents are never stored here;
 // they live in an expiring cache addressed by CacheID.
 type Implementation struct {
-	Request           string                      `json:"request"`
-	BaseBranch        string                      `json:"baseBranch"`
-	BaseCommit        string                      `json:"baseCommit"`
-	Status            string                      `json:"status"` // planning, plan_ready, editing, amend_ready, verifying, verification_blocked, ready, publishing, checking_ci, published
-	Plan              *ImplementationPlan         `json:"plan,omitempty"`
-	Steps             []ImplementationStep        `json:"steps,omitempty"`
-	NextStep          int                         `json:"nextStep"`
-	Changes           []ChangeSummary             `json:"changes"`
-	Unverified        []string                    `json:"unverified"`
-	Summary           string                      `json:"summary"`
-	Verification      *ImplementationVerification `json:"verification,omitempty"`
-	CI                *ImplementationCI           `json:"ci,omitempty"`
-	CIRepair          bool                        `json:"ciRepair,omitempty"`
-	RequiredCriteria  []AcceptanceCriterion       `json:"requiredCriteria,omitempty"`
-	Clarification     string                      `json:"clarification,omitempty"`
-	Revising          bool                        `json:"revising,omitempty"`
-	DraftSource       *ImplementationDraftSource  `json:"-"`
-	RepairRound       int                         `json:"repairRound,omitempty"`
-	RepairFeedback    string                      `json:"repairFeedback,omitempty"`
-	ChangeRevision    int                         `json:"changeRevision,omitempty"`
-	EditStartRevision int                         `json:"editStartRevision,omitempty"`
-	ContextFiles      []string                    `json:"contextFiles,omitempty"` // files read while planning, given to every step
-	PendingFiles      []PendingFile               `json:"pendingFiles,omitempty"` // files the AI asked to add mid-way, awaiting approval
-	Declined          []string                    `json:"declined,omitempty"`     // additions the user turned down; not proposed again
-	FixTarget         bool                        `json:"fixTarget,omitempty"`    // the user named PullNumber; never fall back to a new PR
-	CacheID           string                      `json:"-"`
-	Version           int                         `json:"version"`
-	Branch            string                      `json:"branch,omitempty"`
-	Title             string                      `json:"title,omitempty"`
-	Body              string                      `json:"body,omitempty"`
-	Commit            string                      `json:"commit,omitempty"`
-	RefBranch         string                      `json:"refBranch,omitempty"`
-	RefUpdated        bool                        `json:"refUpdated,omitempty"`
-	PullNumber        int                         `json:"pullNumber,omitempty"`
-	PullURL           string                      `json:"pullUrl,omitempty"`
-	ExpectedHead      string                      `json:"expectedHead,omitempty"`
+	Request            string                      `json:"request"`
+	BaseBranch         string                      `json:"baseBranch"`
+	BaseCommit         string                      `json:"baseCommit"`
+	Status             string                      `json:"status"` // planning, plan_ready, editing, amend_ready, verifying, verification_blocked, ready, publishing, checking_ci, published
+	Plan               *ImplementationPlan         `json:"plan,omitempty"`
+	NoChangeCandidates []UnchangedFile             `json:"noChangeCandidates,omitempty"`
+	PlanAdjustments    []PlanAdjustment            `json:"planAdjustments,omitempty"`
+	Steps              []ImplementationStep        `json:"steps,omitempty"`
+	NextStep           int                         `json:"nextStep"`
+	Changes            []ChangeSummary             `json:"changes"`
+	Unverified         []string                    `json:"unverified"`
+	Summary            string                      `json:"summary"`
+	Verification       *ImplementationVerification `json:"verification,omitempty"`
+	CI                 *ImplementationCI           `json:"ci,omitempty"`
+	CIRepair           bool                        `json:"ciRepair,omitempty"`
+	RequiredCriteria   []AcceptanceCriterion       `json:"requiredCriteria,omitempty"`
+	Clarification      string                      `json:"clarification,omitempty"`
+	Revising           bool                        `json:"revising,omitempty"`
+	DraftSource        *ImplementationDraftSource  `json:"-"`
+	RepairRound        int                         `json:"repairRound,omitempty"`
+	RepairFeedback     string                      `json:"repairFeedback,omitempty"`
+	ChangeRevision     int                         `json:"changeRevision,omitempty"`
+	EditStartRevision  int                         `json:"editStartRevision,omitempty"`
+	ContextFiles       []string                    `json:"contextFiles,omitempty"` // files read while planning, given to every step
+	PendingFiles       []PendingFile               `json:"pendingFiles,omitempty"` // files the AI asked to add mid-way, awaiting approval
+	Declined           []string                    `json:"declined,omitempty"`     // additions the user turned down; not proposed again
+	FixTarget          bool                        `json:"fixTarget,omitempty"`    // the user named PullNumber; never fall back to a new PR
+	CacheID            string                      `json:"-"`
+	Version            int                         `json:"version"`
+	Branch             string                      `json:"branch,omitempty"`
+	Title              string                      `json:"title,omitempty"`
+	Body               string                      `json:"body,omitempty"`
+	Commit             string                      `json:"commit,omitempty"`
+	RefBranch          string                      `json:"refBranch,omitempty"`
+	RefUpdated         bool                        `json:"refUpdated,omitempty"`
+	PullNumber         int                         `json:"pullNumber,omitempty"`
+	PullURL            string                      `json:"pullUrl,omitempty"`
+	ExpectedHead       string                      `json:"expectedHead,omitempty"`
 }
 
 // GitHub CI is execution evidence for one exact published commit. A Draft PR
@@ -70,6 +72,20 @@ type ImplementationVerification struct {
 	Criteria        []CriterionResult    `json:"criteria,omitempty"`
 	Repairs         []VerificationRepair `json:"repairs,omitempty"`
 	AdditionalFiles []PendingFile        `json:"additionalFiles,omitempty"`
+	UnchangedFiles  []UnchangedFile      `json:"unchangedFiles,omitempty"`
+	DeferredChecks  []string             `json:"deferredChecks,omitempty"`
+}
+
+// Candidates do not change approval. Only a completed static verification can
+// remove an unchanged update from the effective plan, preserving its history.
+type UnchangedFile struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+type PlanAdjustment struct {
+	File   PlannedFile `json:"file"`
+	Reason string      `json:"reason"`
 }
 
 type VerificationRepair struct {
@@ -278,6 +294,7 @@ func NextImplementation(prev *Implementation, request, cacheID string) *Implemen
 		next.ContextFiles = append([]string{}, prev.ContextFiles...)
 		next.Declined = append([]string{}, prev.Declined...)
 		next.Verification = prev.Verification
+		next.PlanAdjustments = append([]PlanAdjustment{}, prev.PlanAdjustments...)
 		next.DraftSource = &ImplementationDraftSource{CacheID: prev.CacheID, Version: prev.Version}
 		if prev.DraftSource != nil {
 			source := *prev.DraftSource
