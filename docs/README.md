@@ -8,6 +8,7 @@ AI Factory の日本語ドキュメントの案内です。初めて動かす場
 | --- | --- |
 | 自分のGitHubリポジトリやAIキーで動かす手順 | [開発・実接続ガイド](development.md) |
 | 認証、保存、PRレビュー、実装の仕組みと上限値 | [設計と制限](architecture.md) |
+| 現状のエージェントフロー、実装済み機能、改善案の優先順位 | [エージェントフローの現状と改善案](agent-workflow.md) |
 | Cloud Runへの配置手順と公開前に残る作業 | [Cloud Run配置](deployment.md) |
 | 実装の編集失敗・再試行で確認した問題と残課題 | [実装編集・照合・再試行の問題整理](implementation-edit-reliability.md) |
 | プロダクトの目的、合意済みの方針、未決事項 | [MVP仕様書](product/specification.md) |
@@ -20,6 +21,7 @@ docs/
 ├── README.md                     この一覧
 ├── development.md                起動・接続の手順、API / WebSocket、ログ、動作確認
 ├── architecture.md               設計と上限値（認証、チャット、保存、PRレビュー、実装）
+├── agent-workflow.md             エージェントフロー、実装済み機能と改善案
 ├── deployment.md                 Cloud Run配置
 ├── implementation-edit-reliability.md  実装編集の失敗分析と残課題
 ├── product/
