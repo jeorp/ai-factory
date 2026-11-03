@@ -49,8 +49,7 @@ func (r *Runner) initializeOverview(ctx context.Context, in *Input, emit func(Ch
 			input, _ = json.Marshal(map[string]any{"overviewTask": "READMEからリポジトリの目的、主要なファイルやディレクトリの配置・役割、技術構成だけを短くsummaryにまとめる。記載がない情報は省く。", "readme": domain.Clip(content, 1800), "truncated": true})
 		}
 		decision, usage, aiErr := r.next(ctx, *in, string(input))
-		cp.Metrics.InputTokens += usage.InputTokens
-		cp.Metrics.OutputTokens += usage.OutputTokens
+		addUsage(&cp.Metrics, usage)
 		if len(input) > cp.Metrics.MaxInputBytes {
 			cp.Metrics.MaxInputBytes = len(input)
 		}

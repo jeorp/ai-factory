@@ -160,6 +160,24 @@ func (sc *socketConn) handle(cmd command) bool {
 		return sc.stop()
 	case "set_effort":
 		return sc.setEffort(cmd)
+	case "set_budget":
+		if sc.cancelRun != nil {
+			sc.problem("run_in_progress")
+			return true
+		}
+		if cmd.TokenBudget < 0 || cmd.TokenBudget > 100000000 {
+			sc.problem("invalid_token_budget")
+			return true
+		}
+		sc.session.TokenBudget = cmd.TokenBudget
+		limits := []string{}
+		for _, limit := range sc.session.Limitations {
+			if limit != "ai_token_budget_exceeded" {
+				limits = append(limits, limit)
+			}
+		}
+		sc.session.Limitations = limits
+		return sc.save() == nil && sc.send("session", sc.session) == nil
 	case "instruction":
 		return sc.addInstruction(cmd)
 	case "message", "resume", "review", "investigate", "implement", "implement_approve", "implement_amend", "implement_publish", "implement_check_ci", "implement_fix_ci", "implement_verify":

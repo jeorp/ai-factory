@@ -78,6 +78,7 @@ type implementRun struct {
 	logger                     *slog.Logger
 	instructions               []domain.Message
 	calls                      int
+	lastRetryCounts            map[string]int
 	ciEvidence                 []evidence // pinned failure evidence, never evicted with optional reads
 	projectDocumentation       *projectDocumentation
 	projectDocumentationLoaded bool

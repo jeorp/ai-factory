@@ -175,7 +175,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
     <aside v-if="openedFile" ref="codePanel" class="code-panel" aria-label="コードパネル" tabindex="-1">
      <CodeViewer :key="fileKey(openedFile)" :file="openedFile" panel @close="closeFile" />
     </aside>
-    <SessionContextPanel v-else-if="showDetails" v-model:delete-id="deleteID" :session="current" :provider="aiProvider" :review-policy="reviewPolicy" @remove="removeSession" />
+    <SessionContextPanel v-else-if="showDetails" v-model:delete-id="deleteID" :session="current" :provider="aiProvider" :review-policy="reviewPolicy" :connected="work.connected" @remove="removeSession" @budget="tokens => sendToSession('set_budget', '', undefined, undefined, { tokenBudget: tokens })" />
    </div>
   </main>
  </div>

@@ -398,6 +398,9 @@ func (run *reviewRun) prioritizeBatch(ctx context.Context, attempted map[string]
 	run.modelCalls++
 	run.logger.Info("model_call_started", "step", run.modelCalls, "review_phase", "priority", "input_bytes", len(payload))
 	d, usage, err := run.r.next(ctx, in, string(payload))
+	if err != nil && err.Error() == "ai_token_budget_exceeded" {
+		return err
+	}
 	if err == nil && !validPriorityDecision(string(payload), d) {
 		err = errors.New("invalid_priority_result")
 	}

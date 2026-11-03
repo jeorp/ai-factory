@@ -61,6 +61,7 @@ type Input struct {
 
 // Run owns only transient evidence. Each emitted checkpoint must be durably saved before continuing.
 func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error) error {
+	ctx = withTokenBudget(ctx, in.Session)
 	ctx = withEffort(ctx, in.Session.Effort)
 	ctx = withAgentDebug(ctx, r.Debug, in)
 	if in.Session.OverviewPending {
@@ -166,7 +167,8 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 				logger.Info("model_response_validation_failed", "step", step+1, "reason", err.Error())
 			}
 		}
-		if addUsage(&cp.Metrics, usage) {
+		hasUsage := addUsage(&cp.Metrics, usage)
+		if hasUsage || usage.Phase != "" {
 			measure()
 			if emitErr := emit(cp); emitErr != nil {
 				return emitErr

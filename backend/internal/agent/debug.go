@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"ai-factory/backend/internal/domain"
 )
@@ -108,6 +110,10 @@ func debugJSON(ctx context.Context, event string, value any) {
 }
 
 func (r *Runner) next(ctx context.Context, in Input, input string) (Decision, Usage, error) {
+	budget, _ := ctx.Value(tokenBudgetKey{}).(*tokenBudget)
+	if budget != nil && budget.limit > 0 && budget.used >= budget.limit {
+		return Decision{}, Usage{}, errors.New("ai_token_budget_exceeded")
+	}
 	if trace := debugTrace(ctx); trace != nil {
 		callTrace := *trace
 		callTrace.logger = trace.logger.With("ai_call_id", debugCallSequence.Add(1))
@@ -120,7 +126,31 @@ func (r *Runner) next(ctx context.Context, in Input, input string) (Decision, Us
 		ctx = context.WithValue(ctx, agentDebugKey{}, &callTrace)
 	}
 	debugText(ctx, "model_input", input)
+	started := time.Now()
 	d, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, input)
+	usage.DurationMS = time.Since(started).Milliseconds()
+	usage.Phase = "chat"
+	var phase struct {
+		Implement *implementTask  `json:"implementTask"`
+		Review    *reviewTask     `json:"reviewTask"`
+		Overview  string          `json:"overviewTask"`
+		Priority  json.RawMessage `json:"priorityTask"`
+	}
+	if json.Unmarshal([]byte(input), &phase) == nil {
+		switch {
+		case phase.Implement != nil:
+			usage.Phase = phase.Implement.Mode
+		case phase.Review != nil:
+			usage.Phase = "review_" + phase.Review.Mode
+		case phase.Overview != "":
+			usage.Phase = "overview"
+		case phase.Priority != nil:
+			usage.Phase = "review_priority"
+		}
+	}
+	if budget != nil {
+		budget.used += usage.InputTokens + usage.OutputTokens
+	}
 	debugJSON(ctx, "model_output", d)
 	reason := ""
 	if err != nil {

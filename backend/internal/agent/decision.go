@@ -32,8 +32,10 @@ type Decision struct {
 	Verification        *domain.ImplementationVerification `json:"verification"`
 }
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	Phase        string `json:"-"`
+	DurationMS   int64  `json:"-"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
 }
 type Provider interface {
 	Next(context.Context, string, string, string) (Decision, Usage, error)
