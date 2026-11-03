@@ -72,6 +72,7 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 		props["answer"] = map[string]any{"type": "string", "enum": []string{""}}
 		props["verification"] = nullable(object(map[string]any{
 			"issues": stringList(), "unverified": stringList(),
+			"unchangedFiles": unchangedFilesSchema(),
 			"criteria": map[string]any{"type": "array", "items": object(map[string]any{
 				"id": map[string]any{"type": "string"}, "status": map[string]any{"type": "string", "enum": []string{"met", "unmet", "unverified"}}, "evidence": map[string]any{"type": "string"}, "paths": stringList(),
 			})},
@@ -116,10 +117,17 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 	}
 	props["implementation"] = nullable(object(map[string]any{
 		"changes":         changeItemsSchema(task.Files, edits, lineEdits),
+		"unchangedFiles":  unchangedFilesSchema(),
 		"unverified":      stringList(),
 		"additionalFiles": pendingFilesSchema(),
 	}))
 	return implementEditPrompt + implementProjectDocumentationRule
+}
+
+func unchangedFilesSchema() map[string]any {
+	return map[string]any{"type": "array", "items": object(map[string]any{
+		"path": map[string]any{"type": "string"}, "reason": map[string]any{"type": "string"},
+	})}
 }
 
 // changeItemsSchema binds every step path to its planned action. A shared

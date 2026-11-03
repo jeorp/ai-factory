@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -13,6 +14,95 @@ import (
 
 type implementationSearcher interface {
 	SearchFiles(context.Context, string, string, string, github.CodeSearch) (github.CodeSearchResult, error)
+}
+
+// A newly fetched code snippet can resolve a question, but never establishes
+// complete-file coverage. Deduplicate the code itself, excluding page metadata.
+func recordSearchEvidence(ev evidence, seen map[[32]byte]bool) []string {
+	if len(ev.codePaths) == 0 {
+		return nil
+	}
+	var result github.CodeSearchResult
+	if json.Unmarshal([]byte(ev.Content), &result) != nil {
+		return nil
+	}
+	fresh := []string{}
+	for _, matches := range [][]github.SearchMatch{result.Matches, result.GeneratedMatches} {
+		for _, match := range matches {
+			raw, _ := json.Marshal(match)
+			hash := sha256.Sum256(raw)
+			if !seen[hash] {
+				seen[hash] = true
+				if domain.ValidateChangePath(match.Path) == nil {
+					fresh = appendUnique(fresh, match.Path)
+				}
+			}
+		}
+	}
+	return fresh
+}
+
+// An uncertainty with an explicit source path needs evidence for that path.
+// Otherwise require evidence in the approved plan or acceptance criteria.
+func hasRelevantNewEvidence(unknown string, plan *domain.ImplementationPlan, fresh map[string]bool, repositoryPaths, verifiedReads []string) bool {
+	allowed := map[string]bool{}
+	known := append([]string{}, repositoryPaths...)
+	for _, f := range plan.Files {
+		allowed[f.Path] = true
+		known = append(known, f.Path)
+	}
+	for _, c := range plan.AcceptanceCriteria {
+		for _, p := range c.Paths {
+			allowed[p] = true
+			known = append(known, p)
+		}
+	}
+	for p := range fresh {
+		known = append(known, p)
+	}
+	// Preserve discovery through complete file reads when the final criterion
+	// result cites them as evidence. Snippets cannot establish this coverage.
+	for _, p := range verifiedReads {
+		allowed[p] = true
+		known = append(known, p)
+	}
+	explicit := map[string]bool{}
+	for _, p := range known {
+		if sourcePathMentioned(unknown, p) {
+			explicit[p] = true
+		}
+	}
+	if len(explicit) > 0 {
+		allowed = explicit
+	}
+	for p := range fresh {
+		if allowed[p] {
+			return true
+		}
+	}
+	return false
+}
+
+func sourcePathMentioned(text, path string) bool {
+	if path == "" {
+		return false
+	}
+	pathByte := func(c byte) bool {
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("_./-", rune(c))
+	}
+	for offset := 0; offset < len(text); {
+		index := strings.Index(text[offset:], path)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		end := index + len(path)
+		if (index == 0 || !pathByte(text[index-1])) && (end == len(text) || !pathByte(text[end])) {
+			return true
+		}
+		offset = end
+	}
+	return false
 }
 
 func (run *implementRun) search(ctx context.Context, query github.CodeSearch, ev *[]evidence) error {

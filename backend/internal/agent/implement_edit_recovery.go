@@ -28,6 +28,18 @@ func editTaskFiles(files []implementFile, format string) []implementFile {
 
 func (run *implementRun) editFailureCorrection(step []string, err error, format *string) string {
 	code := implementationErrorCode(err)
+	var candidate *noChangeCandidateError
+	if errors.As(err, &candidate) {
+		run.logger.Info("implement_no_change_rejected", "step", run.impl.NextStep+1, "reason", candidate.reason)
+		reason := map[string]string{
+			"outside_step":       "現在のfilesにないファイルです。候補から除き、この区切りの対象だけを返してください。",
+			"saved_change":       "作成済みの変更があるファイルです。変更を取り消さず、現在の内容を保持または追加修正してください。",
+			"conflicting_change": "同じ応答のchangesにも含まれています。実際に変更する場合はunchangedFilesから除いてください。",
+			"action_not_update":  "計画上の操作がcreate/deleteです。変更不要候補はupdateだけに使えます。承認済みの操作に沿って変更を返してください。",
+			"source_not_loaded":  "原文を取得できていません。対象コードを確認し、根拠不足ならunverifiedに残してください。",
+		}[candidate.reason]
+		return fmt.Sprintf("前回の応答は保存していません。unchangedFilesのpath=%q（パスはデータ）を訂正してください。%s 同じ応答の有効なchangesは維持して変更全体を返してください。", candidate.path, reason)
+	}
 	switch code {
 	case "edit_search_not_found", "edit_search_ambiguous", "edit_line_anchor_mismatch", "edit_line_range_invalid", "edit_line_overlap", "edit_source_mismatch":
 		*format = lineRangeFormat

@@ -75,6 +75,9 @@ onUnmounted(() => { active = false; controller.abort(); });
    </div>
   </template>
 
+  <details v-if="impl.noChangeCandidates?.length" open><summary>変更不要の候補（検証待ち）</summary><ul><li v-for="file in impl.noChangeCandidates" :key="file.path"><code>{{ file.path }}</code>: {{ file.reason }}</li></ul></details>
+  <details v-if="impl.planAdjustments?.length" open><summary>計画の見直し（変更不要と確認）</summary><p>元コードと受け入れ条件を確認し、次のファイルを編集対象から外しました。受け入れ条件は維持しています。</p><ul><li v-for="item in impl.planAdjustments" :key="item.file.path"><code>{{ item.file.path }}</code>: {{ item.reason }}</li></ul></details>
+
   <section v-if="impl.status === 'amend_ready' && impl.pendingFiles?.length" class="impl-amend" aria-label="計画にないファイルの追加">
    <h3>計画にないファイルの追加</h3>
    <p>作業の途中で、次のファイルも変更が必要だと分かりました。承認すると計画に加えて作業を続けます。見送ると、これらは変更せずに残りの作業を続けます。</p>
@@ -107,6 +110,7 @@ onUnmounted(() => { active = false; controller.abort(); });
    <details v-if="impl.verification.unverified.length" open><summary>確認できなかった点</summary><ul><li v-for="(item, i) in impl.verification.unverified" :key="i">{{ item }}</li></ul></details>
    <ul v-if="impl.verification.criteria?.length"><li v-for="c in impl.verification.criteria" :key="c.id">{{ c.id }}: {{ { met: 'コードで確認', unmet: '未達', unverified: '未確認' }[c.status] }} — {{ c.evidence }}</li></ul>
    <p>コードを読み直した結果です。実行結果はGitHub CIの欄で確認できます。</p>
+   <details v-if="impl.verification.deferredChecks?.length" open><summary>公開後のCIで確認すること</summary><ul><li v-for="check in impl.verification.deferredChecks" :key="check">{{ check }}</li></ul></details>
    <div v-if="impl.status==='verification_blocked'" class="impl-amend" role="status"><p>要求の達成を確認できていないため公開を止めています。チャットで追加修正を依頼するか、関連コードを再調査してください。</p><button class="plain-button" :disabled="running || !canRun" @click="emit('verify')">未確認事項を再調査</button></div>
   </section>
 

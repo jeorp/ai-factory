@@ -16,6 +16,7 @@ type stepDraft struct {
 	Unverified []string
 	Pending    []domain.PendingFile
 	Rejected   []string
+	Unchanged  []domain.UnchangedFile
 }
 
 func (run *implementRun) edit(ctx context.Context) error {
@@ -55,6 +56,9 @@ func (run *implementRun) edit(ctx context.Context) error {
 		}
 	}
 	if len(impl.Changes) == 0 {
+		if allPlanFilesHaveNoChangeCandidates(impl) {
+			return errors.New("implementation_no_change_candidates")
+		}
 		return errors.New("implementation_no_changes")
 	}
 	if impl.ChangeRevision == impl.EditStartRevision {
@@ -143,6 +147,7 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 	correction := ""
 	retries := 0
 	invalidResponses := 0
+	transientErrors := 0
 	editFormat := ""
 	var editFailure *implementEditFailure
 	var pending []domain.PendingFile
@@ -173,22 +178,31 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 		if err != nil && ctx.Err() == nil && (err.Error() == "ai_input_limit" || err.Error() == "gemini_timeout") && len(step) > 1 {
 			parts, ok := domain.SplitPlanStep(impl.Plan.Files, step)
 			debugJSON(ctx, "step_split", map[string]any{"step_paths": step, "replacement_steps": parts, "can_split": ok})
-			if !ok {
+			if !ok && err.Error() == "ai_input_limit" {
 				return nil, err
 			}
-			run.logger.Info("implement_step_split", "step", impl.NextStep+1, "files", len(step), "error_code", implementationErrorCode(err))
-			// Split the step and retry with fewer original files.
-			steps := append([]domain.ImplementationStep{}, impl.Steps[:impl.NextStep]...)
-			steps = append(steps, parts...)
-			impl.Steps = append(steps, impl.Steps[impl.NextStep+1:]...)
-			if err.Error() == "gemini_timeout" {
-				if saveErr := run.save(ctx, "AIの応答が時間上限に達したため、編集対象を分割して続行します"); saveErr != nil {
-					return nil, saveErr
+			if ok {
+				run.logger.Info("implement_step_split", "step", impl.NextStep+1, "files", len(step), "error_code", implementationErrorCode(err))
+				// Split the step and retry with fewer original files.
+				steps := append([]domain.ImplementationStep{}, impl.Steps[:impl.NextStep]...)
+				steps = append(steps, parts...)
+				impl.Steps = append(steps, impl.Steps[impl.NextStep+1:]...)
+				if err.Error() == "gemini_timeout" {
+					if saveErr := run.save(ctx, "AIの応答が時間上限に達したため、編集対象を分割して続行します"); saveErr != nil {
+						return nil, saveErr
+					}
 				}
+				return nil, nil
 			}
-			return nil, nil
 		}
 		if err != nil {
+			retry, retryErr := run.retryTransientModel(ctx, "edit", call+1, ImplementStepCalls, &transientErrors, &retries, err)
+			if retryErr != nil {
+				return nil, retryErr
+			}
+			if retry {
+				continue
+			}
 			message, retry, saveErr := run.retryInvalidResponse(ctx, "edit", call+1, &invalidResponses, &retries, err)
 			if saveErr != nil {
 				return nil, saveErr
@@ -204,6 +218,7 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 		// Keep edit feedback across additional reads; only a new rejected edit
 		// supersedes it. Reads do not apply or repair the rejected proposal.
 		invalidResponses = 0
+		transientErrors = 0
 		if d.Read != nil && !final {
 			reads++
 			if err := run.read(ctx, *d.Read, &ev, stepEvidenceKept); err != nil {
@@ -229,7 +244,10 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 			}
 			return nil, errors.New("implementation_edit_blocked")
 		}
-		if err == nil && (len(changes) > 0 || len(d.Implementation.AdditionalFiles) == 0) {
+		if err == nil {
+			err = validateNoChangeCandidates(step, impl, originals, d.Implementation)
+		}
+		if err == nil && (len(changes) > 0 || len(d.Implementation.AdditionalFiles) == 0 && len(d.Implementation.UnchangedFiles) == 0) {
 			err = domain.ValidateChangeSet(changes, approved)
 		}
 		if err != nil {
@@ -247,19 +265,23 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 		if err != nil {
 			return nil, err
 		}
-		if len(changes) == 0 && len(pending) == 0 {
+		if len(changes) == 0 && len(pending) == 0 && len(d.Implementation.UnchangedFiles) == 0 {
 			run.retry("edit", call+1, &retries, errors.New("change_set_empty"))
 			correction = "有効な変更も追加提案もありません: " + strings.Join(rejected, " / ") + "。変更を返すか、有効な追加ファイルを提案してください。"
 			continue
 		}
 		run.cp.Summary = domain.Clip(d.Summary, 2048)
-		return &stepDraft{Changes: changes, Unverified: d.Implementation.Unverified, Pending: pending, Rejected: rejected}, nil
+		return &stepDraft{Changes: changes, Unverified: d.Implementation.Unverified, Pending: pending, Rejected: rejected, Unchanged: d.Implementation.UnchangedFiles}, nil
 	}
 	return nil, errors.New("implementation_edit_failed")
 }
 
 func (run *implementRun) advanceStep(step []string, draft *stepDraft, covered map[string]bool) {
 	impl := run.impl
+	for _, f := range draft.Unchanged {
+		covered[f.Path] = true
+	}
+	impl.NoChangeCandidates = mergeNoChangeCandidates(impl.NoChangeCandidates, draft.Unchanged)
 	// Keep only unfinished files in the current step while an amendment is
 	// pending; completed files must not be edited twice on resume.
 	remaining := []string{}

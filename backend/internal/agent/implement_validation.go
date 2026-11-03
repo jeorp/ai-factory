@@ -76,6 +76,9 @@ func implementationDecisionIssue(d Decision) string {
 		}
 	}
 	if v := d.Verification; v != nil {
+		if !validUnchangedFiles(v.UnchangedFiles) || len(v.DeferredChecks) > 0 {
+			return "verification_shape"
+		}
 		if d.Read != nil || d.Implementation != nil || d.Plan != nil || d.StartImplementation != nil || d.StartReview != nil || d.Review != nil || strings.TrimSpace(d.Answer) != "" || len(v.Issues) > 10 || len(v.Unverified) > 10 {
 			return "verification_shape"
 		}
@@ -119,6 +122,9 @@ func implementationDecisionIssue(d Decision) string {
 		return "plan_action_conflict"
 	}
 	if r := d.Implementation; r != nil {
+		if !validUnchangedFiles(r.UnchangedFiles) {
+			return "edit_shape"
+		}
 		if d.Read != nil || len(r.Changes) > domain.MaxImplementationStepFiles || len(r.Unverified) > 10 {
 			return "edit_shape"
 		}
@@ -140,6 +146,20 @@ func implementationDecisionIssue(d Decision) string {
 		}
 	}
 	return ""
+}
+
+func validUnchangedFiles(files []domain.UnchangedFile) bool {
+	if len(files) > domain.MaxChangeFiles {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		if domain.ValidateChangePath(f.Path) != nil || seen[f.Path] || strings.TrimSpace(f.Reason) == "" || len(f.Reason) > 1024 {
+			return false
+		}
+		seen[f.Path] = true
+	}
+	return true
 }
 
 func validAdditionalFiles(files []domain.PendingFile) bool {

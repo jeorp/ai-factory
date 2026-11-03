@@ -36,6 +36,17 @@ describe('implementation recovery', () => {
 
 describe('implementation verification and CI results', () => {
  const renderImpl=(impl: Implementation)=>renderToString(createSSRApp(ImplementationPanel,{sessionId:'session',repository:'a/b',implementation:impl,sessionState:'done',running:false,canRun:true,connected:true}));
+ it('shows confirmed plan adjustments and pending CI separately from static gaps',async()=>{
+  const impl=implementation('verification_blocked');
+  impl.planAdjustments=[{file:{path:'src/docs.go',action:'update',approach:'Translate prompts'},reason:'No prompt definitions in this file'}];
+  impl.verification={issues:[],unverified:['出力言語がAPIまで渡るか未確認'],deferredChecks:['go test ./...']};
+  const html=await renderImpl(impl);
+  expect(html).toContain('計画の見直し（変更不要と確認）');
+  expect(html).toContain('No prompt definitions in this file');
+  expect(html).toContain('公開後のCIで確認すること');
+  expect(html).toContain('出力言語がAPIまで渡るか未確認');
+  expect(html).not.toContain('Draft PRを作成</button>');
+ });
  it('blocks publication and avoids a clean assessment when uncertainty remains',async()=>{
   const impl=implementation('verification_blocked');impl.verification={issues:[],unverified:['Localeの引き渡しを未確認']};
   const html=await renderImpl(impl);

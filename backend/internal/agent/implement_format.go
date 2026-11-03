@@ -41,6 +41,12 @@ func defaultBody(impl *domain.Implementation) string {
 	for _, f := range impl.Plan.Files {
 		b.WriteString(fmt.Sprintf("- `%s`（%s）: %s\n", f.Path, actionLabel(f.Action), f.Approach))
 	}
+	if len(impl.PlanAdjustments) > 0 {
+		b.WriteString("\n### 計画の見直し（変更不要と確認）\n\n")
+		for _, a := range impl.PlanAdjustments {
+			b.WriteString(fmt.Sprintf("- `%s`: %s\n", a.File.Path, strings.Join(strings.Fields(a.Reason), " ")))
+		}
+	}
 	b.WriteString("\n## 検証\n\nアプリ内ではコード・ビルド・テストを実行していません。このリポジトリのCIの結果を確認してください。\n")
 	if v := impl.Verification; v != nil {
 		b.WriteString("\n### AIによる整合性確認\n\n")
@@ -55,6 +61,9 @@ func defaultBody(impl *domain.Implementation) string {
 		}
 		for _, s := range v.Unverified {
 			b.WriteString("- 未確認: " + s + "\n")
+		}
+		for _, s := range v.DeferredChecks {
+			b.WriteString("- 公開後のCIで確認: " + s + "\n")
 		}
 	}
 	if len(impl.Plan.Tests) > 0 {

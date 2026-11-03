@@ -99,6 +99,12 @@ func (run *implementRun) verify(ctx context.Context) error {
 	// Include definitions, callers and tests outside the write plan. Reading a
 	// file does not authorize changing it. Criteria pin the end-to-end path.
 	candidates := append([]string{}, impl.ContextFiles...)
+	for _, f := range run.missingPlanFiles() {
+		candidates = append(candidates, f.Path)
+	}
+	for _, a := range impl.PlanAdjustments {
+		candidates = append(candidates, a.File.Path)
+	}
 	for _, c := range impl.Plan.AcceptanceCriteria {
 		candidates = append(candidates, c.Paths...)
 	}
@@ -133,16 +139,7 @@ func (run *implementRun) verify(ctx context.Context) error {
 			}
 		}
 	}
-	result := &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}}
-	changed := map[string]bool{}
-	for _, f := range files {
-		changed[f.Path] = true
-	}
-	for _, f := range impl.Plan.Files {
-		if !changed[f.Path] {
-			result.Unverified = append(result.Unverified, "計画にあるが変更されなかったファイル: "+f.Path)
-		}
-	}
+	result := &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}, DeferredChecks: appendUnique([]string{}, impl.Plan.Tests...)}
 	// Preserve the full path set for the cross-batch review after parts are consumed.
 	verificationPaths := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -153,19 +150,22 @@ func (run *implementRun) verify(ctx context.Context) error {
 	evidenceRevision := 0
 	readPaths := map[string]bool{}
 	knowledgeReadPaths := map[string]bool{}
+	searchEvidence := map[[32]byte]bool{}
 	ev := []evidence{}
 	check := func(stage string, batch []verificationPart) error {
 		correction := ""
 		retries := 0
 		invalid := 0
+		transientErrors := 0
 		unresolved := []string{}
 		investigatedAt := -1
+		newEvidencePaths := map[string]bool{}
 		for attempt := 1; attempt <= implementVerifyReads+5; attempt++ {
 			if invalid >= 3 {
 				return errors.New("implementation_verification_failed")
 			}
 			task := implementTask{Mode: "verify", Request: impl.Request, Plan: impl.Plan, Done: impl.Changes, Declined: impl.Declined, ReadBudget: implementVerifyReads - reads, FinalAnswer: reads >= implementVerifyReads || invalid >= 2, Step: len(summaries) + 1, Attempt: attempt, RetryCount: retries, Correction: correction}
-			payload := map[string]any{"implementTask": task, "stage": stage, "parts": batch, "evidence": ev, "priorVerification": result, "editUnverified": impl.Unverified}
+			payload := map[string]any{"implementTask": task, "stage": stage, "parts": batch, "evidence": ev, "priorVerification": result, "editUnverified": run.verificationEditUnverified(), "noChangeCandidates": run.missingPlanFiles(), "planAdjustments": impl.PlanAdjustments}
 			knowledgePaths := []string{}
 			if stage == "cross" {
 				knowledgePaths = append(knowledgePaths, verificationPaths...)
@@ -185,7 +185,14 @@ func (run *implementRun) verify(ctx context.Context) error {
 			}
 			d, err := run.call(ctx, payload)
 			if err != nil {
-				if implementationErrorCode(err) != "invalid_implementation_result" {
+				retry, retryErr := run.retryTransientModel(ctx, "verify", attempt, implementVerifyReads+5, &transientErrors, &retries, err)
+				if retryErr != nil {
+					return retryErr
+				}
+				if retry {
+					continue
+				}
+				if !invalidModelResponse(err) {
 					return err
 				}
 				invalid++
@@ -193,6 +200,7 @@ func (run *implementRun) verify(ctx context.Context) error {
 				correction = "verificationにissuesとunverifiedの配列を返してください。他の操作は行いません。"
 				continue
 			}
+			transientErrors = 0
 			if d.Read != nil || d.Search != nil {
 				if task.FinalAnswer || !validImplementationResponse(string(mustJSON(payload)), d) {
 					invalid++
@@ -203,6 +211,17 @@ func (run *implementRun) verify(ctx context.Context) error {
 				if d.Search != nil {
 					if err := run.search(ctx, *d.Search, &ev); err != nil {
 						return err
+					}
+					if len(ev) > 0 {
+						fresh := recordSearchEvidence(ev[len(ev)-1], searchEvidence)
+						if len(fresh) > 0 {
+							evidenceRevision++
+						}
+						if investigatedAt >= 0 {
+							for _, p := range fresh {
+								newEvidencePaths[p] = true
+							}
+						}
 					}
 				} else {
 					complete, err := run.readVerificationFile(ctx, *d.Read, &ev)
@@ -215,11 +234,14 @@ func (run *implementRun) verify(ctx context.Context) error {
 						if !readPaths[d.Read.Path] {
 							evidenceRevision++
 							readPaths[d.Read.Path] = true
+							if investigatedAt >= 0 {
+								newEvidencePaths[d.Read.Path] = true
+							}
 						}
 					}
 				}
 				// Guidance applies to every fetched code fragment, while observed
-				// and evidenceRevision still require a complete successful read.
+				// and complete-read tracking still require a successful full read.
 				for _, e := range ev {
 					for _, p := range e.codePaths {
 						knowledgeReadPaths[p] = true
@@ -243,11 +265,26 @@ func (run *implementRun) verify(ctx context.Context) error {
 				correction = "中心機能を含む未確認事項を残して完了しないでください。read/searchで根拠を追加取得してください: " + strings.Join(unresolved, " / ")
 				continue
 			}
-			if investigatedAt == evidenceRevision {
-				d.Verification.Unverified = appendUnique(d.Verification.Unverified, unresolved...)
+			verifiedReads := []string{}
+			for _, c := range d.Verification.Criteria {
+				if c.Status == "met" {
+					for _, p := range c.Paths {
+						if readPaths[p] && newEvidencePaths[p] {
+							verifiedReads = appendUnique(verifiedReads, p)
+						}
+					}
+				}
+			}
+			for _, unknown := range unresolved {
+				if investigatedAt == evidenceRevision || !hasRelevantNewEvidence(unknown, impl.Plan, newEvidencePaths, paths, verifiedReads) {
+					d.Verification.Unverified = appendUnique(d.Verification.Unverified, unknown)
+				}
 			}
 			result.Issues = appendUnique(result.Issues, d.Verification.Issues...)
 			result.Unverified = appendUnique(result.Unverified, d.Verification.Unverified...)
+			if stage == "cross" || len(summaries) == 0 {
+				result.UnchangedFiles = d.Verification.UnchangedFiles
+			}
 			if stage == "cross" || len(summaries) == 0 {
 				result.Criteria = d.Verification.Criteria
 			}
@@ -322,7 +359,7 @@ func (run *implementRun) verify(ctx context.Context) error {
 		result.Unverified = appendUnique(result.Unverified, err.Error())
 	}
 	run.validateCoverage(result, observed)
-	impl.Verification = result
+	run.reconcilePlan(result, observed)
 	debugJSON(ctx, "verification_coverage", map[string]any{"required_criteria": impl.Plan.AcceptanceCriteria, "observed_paths": observed, "verification": result, "generated_changes": impl.Changes, "can_publish": impl.CanPublish(), "repair_round": impl.RepairRound})
 	run.logger.Info("implement_verification_completed", "files", len(files), "batches", len(summaries), "issues", len(result.Issues), "unverified", len(result.Unverified))
 	if len(result.Issues) > 0 {
