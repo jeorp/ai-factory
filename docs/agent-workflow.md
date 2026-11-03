@@ -1,5 +1,7 @@
 # AI Factory エージェントフローの現状と改善案
 
+この文書はコミット`0a9d49d`時点のスナップショットです。その後の[改善の実装内容](agent-improvements.md)と、現在の[設計と制限](architecture.md)も参照してください。
+
 ## 現状の要約
 
 AI Factoryは、GitHubの調査、PRレビュー、実装からDraft PR作成までを、GoのRunnerと保存可能な状態遷移で進める。実装では計画承認と公開前の差分確認を挟み、AIの提案をサーバーが検証してからGitHubへ反映する。

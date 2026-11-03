@@ -10,7 +10,7 @@ AI Factory is a chat app for exploring GitHub repositories, reviewing pull reque
 | Pull request review | Reviews diffs in batches and shows findings with evidence and areas that remain unverified |
 | Implementation | Creates changes after plan approval and opens a draft pull request after diff review |
 
-The frontend uses Vue 3, TypeScript, Vue Router, and Pinia. The backend uses Go, with Firebase Auth for authentication and Firestore for storage. Docker Compose runs the API and Firebase emulators locally. You can choose OpenAI or the Gemini Developer API for live AI responses. In production, the Go API serves the built Vue app from the same Cloud Run service so WebSocket connections and authentication cookies share one origin.
+The frontend uses Vue 3, TypeScript, Vue Router, and Pinia. The backend uses Go, with Firebase Auth for authentication and Firestore for storage. Docker Compose runs the API and Firebase emulators locally. The server can offer OpenAI, Gemini Developer API, Claude API, and Claude through Vertex AI. Models are routed to their configured provider; see the development guide for credentials and setup. In production, the Go API serves the built Vue app from the same Cloud Run service so WebSocket connections and authentication cookies share one origin.
 
 ## Run locally
 
@@ -68,7 +68,7 @@ For an implementation request, the app presents a plan. After the user approves 
 
 ## Current limitations
 
-Selecting or editing review findings, posting them to GitHub, checking the head at posting time, and preventing duplicate posts are not implemented. The app also does not include billing or credit management, Vertex AI, or execution of target repository code.
+Selecting or editing review findings, posting them to GitHub, checking the head at posting time, and preventing duplicate posts are not implemented. The app also does not include billing or credit management, or execution of target repository code.
 
 ## Connect to live services
 

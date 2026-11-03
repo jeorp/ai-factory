@@ -110,6 +110,12 @@ HTTPは `{ "error": "code" }` でエラーを返す。個人APIはFirebase ID to
 
 変更後のファイル本文は `GET /api/v1/sessions/{id}/change?path=...` で元ファイルと一緒に返す。
 
+`POST /api/v1/sessions/{id}/changes/extend` は生成済み変更の保存期限を延長する。本文は不要で、成功時は `{expiresAt: ISO日時}` を返す。所有者・リポジトリ権限を確認し、期限切れは410。通常の認証と同一Originの制限を適用する。
+
+### 利用量の上限設定
+
+認証済みWebSocketで `{type:"set_budget",tokenBudget:100000}` を送ると、セッション累計の入力・出力トークン上限を保存する。0は無制限、最大100,000,000の整数。実行中は拒否し、変更後の`session`を返す。到達後の停止理由は`ai_token_budget_exceeded`。`metrics.phases`には段階別のcalls・inputTokens・outputTokens・durationMsを保存する。
+
 ### WebSocketの接続
 
 WebSocket最初のフレームは `{type:"auth",token:"Firebase ID token"}`。認証情報をURLに入れない。サーバーが認証・lease取得後、`session` を返す。
