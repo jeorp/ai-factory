@@ -40,6 +40,8 @@ type Runner struct {
 	GitHub Reader
 	Writer Writer
 	CIWait time.Duration // wait per batch, then yield ErrCIWaiting; zero performs one snapshot
+	// Optional per-runner wait dependency; tests avoid real backoff delays.
+	retryWait func(context.Context, time.Duration) error
 }
 type evidence struct {
 	Read    github.Read `json:"read"`

@@ -227,7 +227,7 @@ func TestImplementationLogsCodesAndRetriesWithoutResponseText(t *testing.T) {
 		}
 		return Decision{}, Usage{}, fmt.Errorf("untrusted secret-response sk-private-content: %w", errors.New("gemini_http_429"))
 	})
-	err := (&Runner{AI: ai, Writer: writer}).Run(context.Background(), Input{Session: session, Logger: slog.New(slog.NewJSONHandler(&logs, nil))}, func(Checkpoint) error { return nil })
+	err := (&Runner{AI: ai, Writer: writer, retryWait: skipRetryWait}).Run(context.Background(), Input{Session: session, Logger: slog.New(slog.NewJSONHandler(&logs, nil))}, func(Checkpoint) error { return nil })
 	text := logs.String()
 	if err == nil || !strings.Contains(text, `"phase":"verify"`) || !strings.Contains(text, `"error_code":"gemini_http_429"`) || !strings.Contains(text, `"retry_count":1`) || !strings.Contains(text, `"attempt":2`) || strings.Contains(text, "secret-response") || strings.Contains(text, "sk-private-content") {
 		t.Fatalf("unsafe or incomplete logs: %s err=%v", text, err)

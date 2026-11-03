@@ -23,7 +23,7 @@ func TestEditingTimeoutSplitsAndFinishesWithoutPublishing(t *testing.T) {
 	splitSaved := false
 	var last Checkpoint
 	var logs bytes.Buffer
-	r := &Runner{Writer: w, AI: implementProviderFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
+	r := &Runner{retryWait: skipRetryWait, Writer: w, AI: implementProviderFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
 		calls++
 		task := implementTaskOf(t, input)
 		if calls == 1 {
@@ -65,7 +65,7 @@ func TestEditingTimeoutStopsForAtomicOrSingleFileStep(t *testing.T) {
 		impl := &domain.Implementation{Status: "editing", BaseCommit: implBase, BaseBranch: "main", CacheID: "0123456789abcdef", Plan: &domain.ImplementationPlan{Summary: "update", Files: files, AcceptanceCriteria: testCriteria("src/a.go")}}
 		impl.Steps = domain.PlanSteps(files)
 		calls := 0
-		r := &Runner{Writer: w, AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
+		r := &Runner{retryWait: skipRetryWait, Writer: w, AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
 			calls++
 			return Decision{}, Usage{}, errors.New("gemini_timeout")
 		})}
@@ -85,7 +85,7 @@ func TestEditingTimeoutDoesNotContinueAfterCancelOrSaveFailure(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			calls := 0
-			r := &Runner{Writer: w, AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
+			r := &Runner{retryWait: skipRetryWait, Writer: w, AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
 				calls++
 				if stop == "cancel" {
 					cancel()

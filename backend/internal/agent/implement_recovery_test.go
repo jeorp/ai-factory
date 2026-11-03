@@ -5,10 +5,54 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-factory/backend/internal/domain"
 	"ai-factory/backend/internal/github"
 )
+
+func skipRetryWait(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+
+func TestRetryWaitKeepsBackoffScheduleAndCancellation(t *testing.T) {
+	w := newFakeWriter()
+	s := recoverySession(w, "verify")
+	var delays []time.Duration
+	calls := 0
+	r := &Runner{Writer: w, retryWait: func(ctx context.Context, delay time.Duration) error { delays = append(delays, delay); return ctx.Err() }, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
+		calls++
+		if calls < 3 {
+			return Decision{}, Usage{}, errors.New("gemini_http_503")
+		}
+		return recoveryDecision(t, input), Usage{}, nil
+	})}
+	if err := r.Run(context.Background(), Input{Session: s}, func(Checkpoint) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(delays) != 2 || delays[0] < time.Second || delays[0] >= 1250*time.Millisecond || delays[1] < 2*time.Second || delays[1] >= 2250*time.Millisecond {
+		t.Fatalf("wrong backoff schedule: %v", delays)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	if err := (&Runner{}).waitModelRetry(ctx, time.Hour); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("real timer ignored cancellation: %v", err)
+	}
+	ctx2, stop := context.WithCancel(context.Background())
+	r.retryWait = func(context.Context, time.Duration) error { stop(); return nil }
+	if err := r.waitModelRetry(ctx2, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("injected wait lost cancellation: %v", err)
+	}
+}
+
+func TestSourcePathEvidenceDoesNotUsePartialPathMatches(t *testing.T) {
+	for _, text := range []string{"src/a.go.old is unverified", "nested/src/a.go is unverified", "prefixsrc/a.go is unverified"} {
+		if sourcePathMentioned(text, "src/a.go") {
+			t.Fatalf("partial path matched: %s", text)
+		}
+	}
+	if !sourcePathMentioned("`src/a.go`の挙動を未確認", "src/a.go") {
+		t.Fatal("explicit source reference missed")
+	}
+}
 
 func recoverySession(w *fakeWriter, phase string) domain.Session {
 	s := verificationSession(w, []domain.FileChange{{Path: "src/a.go", Action: "update", Content: "package src\nfunc A() int { return 2 }\n"}})
@@ -45,7 +89,7 @@ func TestRecoverTransientModelErrorsInEveryImplementationPhase(t *testing.T) {
 				w := newFakeWriter()
 				s := recoverySession(w, phase)
 				calls := 0
-				r := &Runner{Writer: w, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
+				r := &Runner{retryWait: skipRetryWait, Writer: w, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
 					calls++
 					if calls == 1 {
 						return Decision{}, Usage{}, errors.New(code)
@@ -73,7 +117,7 @@ func TestRecoverInvalidVerificationJSONForEveryProvider(t *testing.T) {
 		w := newFakeWriter()
 		s := recoverySession(w, "verify")
 		calls := 0
-		r := &Runner{Writer: w, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
+		r := &Runner{retryWait: skipRetryWait, Writer: w, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
 			calls++
 			if calls <= 2 {
 				return Decision{}, Usage{}, errors.New(code)
@@ -123,7 +167,7 @@ func TestModelRecoveryStopsAtBoundaries(t *testing.T) {
 				}
 				return
 			}
-			r := &Runner{Writer: w, AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
+			r := &Runner{retryWait: skipRetryWait, Writer: w, AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
 				calls++
 				return Decision{}, Usage{}, errors.New(code)
 			})}
@@ -156,7 +200,7 @@ func TestModelRecoveryStopsAtBoundaries(t *testing.T) {
 }
 
 func TestSearchEvidenceCanResolveUncertaintyWithoutFakingCoverage(t *testing.T) {
-	for _, scenario := range []string{"fresh", "duplicate", "no-match", "partial-coverage"} {
+	for _, scenario := range []string{"fresh", "duplicate", "no-match", "partial-coverage", "unrelated", "explicit-path", "multiple-unknowns"} {
 		t.Run(scenario, func(t *testing.T) {
 			base := newFakeWriter()
 			base.files["src/caller.go"] = "package src\nvar X = A()\n"
@@ -171,9 +215,12 @@ func TestSearchEvidenceCanResolveUncertaintyWithoutFakingCoverage(t *testing.T) 
 				}
 			}
 			s := recoverySession(base, "verify")
+			if scenario == "explicit-path" {
+				s.Implementation.Plan.AcceptanceCriteria[0].Paths = append(s.Implementation.Plan.AcceptanceCriteria[0].Paths, "src/caller.go")
+			}
 			calls := 0
 			search := Decision{Search: &github.CodeSearch{Query: "X", Prefix: "src/caller.go"}}
-			r := &Runner{Writer: w, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
+			r := &Runner{retryWait: skipRetryWait, Writer: w, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
 				calls++
 				if scenario == "duplicate" && calls == 1 {
 					return search, Usage{}, nil
@@ -184,7 +231,16 @@ func TestSearchEvidenceCanResolveUncertaintyWithoutFakingCoverage(t *testing.T) 
 				}
 				if n == 1 {
 					v := passedVerification(implementTaskOf(t, input).Plan)
-					v.Unverified = []string{"caller behavior unknown"}
+					v.Unverified = []string{"src/caller.go: caller behavior unknown"}
+					if scenario == "unrelated" {
+						v.Unverified = []string{"required behavior unknown"}
+					}
+					if scenario == "explicit-path" {
+						v.Unverified = []string{"src/a.go: return behavior unknown"}
+					}
+					if scenario == "multiple-unknowns" {
+						v.Unverified = append(v.Unverified, "src/a.go: return behavior unknown")
+					}
 					return Decision{Verification: v}, Usage{}, nil
 				}
 				if n == 2 {

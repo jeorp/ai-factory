@@ -40,17 +40,37 @@ func (run *implementRun) retryTransientModel(ctx context.Context, phase string, 
 	}
 	*consecutive = *consecutive + 1
 	run.retry(phase, attempt, retries, err)
-	if err := run.save(ctx, fmt.Sprintf("AIとの一時的な通信エラーのため再試行します（%d/%d回）", *consecutive, limit)); err != nil {
+	message := fmt.Sprintf("AIとの一時的な通信エラーのため再試行します（%d/%d回）", *consecutive, limit)
+	if implementationErrorCode(err) == "gemini_timeout" {
+		message = "Geminiが時間切れになったため1回だけ再試行します。追加の応答待ちが発生します。全体の時間上限内で続行します。"
+	}
+	if err := run.save(ctx, message); err != nil {
 		return false, err
 	}
 	delay := time.Second*time.Duration(1<<(*consecutive-1)) + time.Duration(rand.IntN(250))*time.Millisecond
+	if err := run.r.waitModelRetry(ctx, delay); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *Runner) waitModelRetry(ctx context.Context, delay time.Duration) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if r.retryWait != nil {
+		if err := r.retryWait(ctx, delay); err != nil {
+			return err
+		}
+		return ctx.Err()
+	}
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return ctx.Err()
 	case <-timer.C:
-		return true, nil
+		return ctx.Err()
 	}
 }
 

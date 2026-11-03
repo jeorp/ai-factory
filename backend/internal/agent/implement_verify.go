@@ -159,6 +159,7 @@ func (run *implementRun) verify(ctx context.Context) error {
 		transientErrors := 0
 		unresolved := []string{}
 		investigatedAt := -1
+		newEvidencePaths := map[string]bool{}
 		for attempt := 1; attempt <= implementVerifyReads+5; attempt++ {
 			if invalid >= 3 {
 				return errors.New("implementation_verification_failed")
@@ -211,8 +212,16 @@ func (run *implementRun) verify(ctx context.Context) error {
 					if err := run.search(ctx, *d.Search, &ev); err != nil {
 						return err
 					}
-					if len(ev) > 0 && recordSearchEvidence(ev[len(ev)-1], searchEvidence) {
-						evidenceRevision++
+					if len(ev) > 0 {
+						fresh := recordSearchEvidence(ev[len(ev)-1], searchEvidence)
+						if len(fresh) > 0 {
+							evidenceRevision++
+						}
+						if investigatedAt >= 0 {
+							for _, p := range fresh {
+								newEvidencePaths[p] = true
+							}
+						}
 					}
 				} else {
 					complete, err := run.readVerificationFile(ctx, *d.Read, &ev)
@@ -225,11 +234,14 @@ func (run *implementRun) verify(ctx context.Context) error {
 						if !readPaths[d.Read.Path] {
 							evidenceRevision++
 							readPaths[d.Read.Path] = true
+							if investigatedAt >= 0 {
+								newEvidencePaths[d.Read.Path] = true
+							}
 						}
 					}
 				}
 				// Guidance applies to every fetched code fragment, while observed
-				// and evidenceRevision still require a complete successful read.
+				// and complete-read tracking still require a successful full read.
 				for _, e := range ev {
 					for _, p := range e.codePaths {
 						knowledgeReadPaths[p] = true
@@ -253,8 +265,20 @@ func (run *implementRun) verify(ctx context.Context) error {
 				correction = "中心機能を含む未確認事項を残して完了しないでください。read/searchで根拠を追加取得してください: " + strings.Join(unresolved, " / ")
 				continue
 			}
-			if investigatedAt == evidenceRevision {
-				d.Verification.Unverified = appendUnique(d.Verification.Unverified, unresolved...)
+			verifiedReads := []string{}
+			for _, c := range d.Verification.Criteria {
+				if c.Status == "met" {
+					for _, p := range c.Paths {
+						if readPaths[p] && newEvidencePaths[p] {
+							verifiedReads = appendUnique(verifiedReads, p)
+						}
+					}
+				}
+			}
+			for _, unknown := range unresolved {
+				if investigatedAt == evidenceRevision || !hasRelevantNewEvidence(unknown, impl.Plan, newEvidencePaths, paths, verifiedReads) {
+					d.Verification.Unverified = appendUnique(d.Verification.Unverified, unknown)
+				}
 			}
 			result.Issues = appendUnique(result.Issues, d.Verification.Issues...)
 			result.Unverified = appendUnique(result.Unverified, d.Verification.Unverified...)
