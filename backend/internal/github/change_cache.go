@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"ai-factory/backend/internal/domain"
@@ -74,7 +75,9 @@ func changeCacheKey(cacheID string, version int, p string) string {
 	return hashCacheValue(string(data))
 }
 
-// PutChange stores one generated file for an hour and verifies the write.
+const DraftTTL = 24 * time.Hour
+
+// PutChange keeps generated files longer than ordinary repository reads.
 func (c *Client) PutChange(ctx context.Context, cacheID string, version int, f domain.FileChange) error {
 	if c.Cache == nil || len(cacheID) < 16 {
 		return errors.New("change_store_unavailable")
@@ -87,11 +90,34 @@ func (c *Client) PutChange(ctx context.Context, cacheID string, version int, f d
 		return errors.New("change_file_size_limit")
 	}
 	key := changeCacheKey(cacheID, version, f.Path)
-	c.Cache.Put(ctx, key, string(raw))
+	if cache, ok := c.Cache.(interface {
+		PutWithTTL(context.Context, string, string, time.Duration)
+	}); ok {
+		cache.PutWithTTL(ctx, key, string(raw), DraftTTL)
+	} else {
+		c.Cache.Put(ctx, key, string(raw))
+	}
 	if got, ok := c.Cache.Get(ctx, key); !ok || got != string(raw) {
 		return errors.New("change_store_failed")
 	}
 	return nil
+}
+
+func (c *Client) ExtendChanges(ctx context.Context, cacheID string, version int, paths []string, until time.Time) error {
+	cache, ok := c.Cache.(interface {
+		Extend(context.Context, []string, time.Time) error
+	})
+	if !ok || len(cacheID) < 16 || len(paths) == 0 || len(paths) > domain.MaxChangeFiles {
+		return errors.New("change_store_unavailable")
+	}
+	keys := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if domain.ValidateChangePath(p) != nil {
+			return errors.New("invalid_change_path")
+		}
+		keys = append(keys, changeCacheKey(cacheID, version, p))
+	}
+	return cache.Extend(ctx, keys, until)
 }
 
 // GetChange returns a generated file, or ok=false when it expired.

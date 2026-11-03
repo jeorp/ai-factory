@@ -21,6 +21,13 @@ const branchValid = computed(() => /^ai-factory\/[a-z0-9][a-z0-9._-]{0,62}(\/[a-
 const verificationComplete = computed(() => !!impl.value.plan?.acceptanceCriteria?.length && !!impl.value.verification && !impl.value.verification.issues.length && !impl.value.verification.unverified.length && impl.value.plan.acceptanceCriteria.every(c => impl.value.verification?.criteria?.some(r => r.id===c.id && r.status==='met' && !!r.evidence.trim() && !!r.paths.length)));
 const canPublish = computed(() => (impl.value.status==='publishing' || verificationComplete.value) && props.connected && !props.running && confirmed.value && branchValid.value && !!title.value.trim() && title.value.length <= 256 && new TextEncoder().encode(body.value).length <= 12000 && (impl.value.status === 'ready' || impl.value.status === 'publishing'));
 const progress = computed(() => impl.value.steps?.length ? `${Math.min(impl.value.nextStep, impl.value.steps.length)} / ${impl.value.steps.length} 区切り` : '');
+const extending = ref(false); const retentionMessage=ref('');
+async function extendDraft() {
+ extending.value=true; retentionMessage.value='';
+ try { const r=await api<{expiresAt:string}>(`/sessions/${encodeURIComponent(props.sessionId)}/changes/extend`,{method:'POST'}); retentionMessage.value=`保存期限を${new Date(r.expiresAt).toLocaleString('ja-JP')}まで延長しました。`; }
+ catch { retentionMessage.value='保存期限を延長できませんでした。権限と保存期限を確認してください。'; }
+ finally { extending.value=false; }
+}
 
 type Change = { original: string; content: string; lines: DiffLine[] };
 const selected = ref(''); const diffs = ref<Record<string, Change>>({}); const pending = ref(''); const error = ref('');
@@ -37,7 +44,7 @@ async function open(path: string) {
   if (!active || impl.value.version !== version || impl.value.changeRevision !== revision) return;
   diffs.value[path] = { ...change, lines: lineDiff(change.original, change.content) };
  } catch (e) {
-  if (active && impl.value.version === version && impl.value.changeRevision === revision && selected.value === path) error.value = e instanceof Error && e.message === 'implementation_changes_expired' ? '変更内容の保存期限（1時間）が切れました。チャットでもう一度実装を依頼してください。' : '差分を取得できませんでした。権限や接続を確認してください。';
+  if (active && impl.value.version === version && impl.value.changeRevision === revision && selected.value === path) error.value = e instanceof Error && e.message === 'implementation_changes_expired' ? '変更内容の保存期限が切れました。チャットでもう一度実装を依頼してください。' : '差分を取得できませんでした。権限や接続を確認してください。';
  } finally { if (active && impl.value.version === version && impl.value.changeRevision === revision && pending.value === path) pending.value = ''; }
 }
 function safeLink(url?: string) { try { const u = new URL(url || ''); return u.protocol === 'https:' && u.hostname === 'github.com' ? u.href : '#'; } catch { return '#'; } }
@@ -90,6 +97,8 @@ onUnmounted(() => { active = false; controller.abort(); });
 
   <template v-if="impl.changes.length">
    <h3>変更内容 {{ impl.changes.length }} ファイル</h3>
+   <p>新しい変更内容は24時間保存します。期限内であれば、セッションの有効期限までを上限に保存期限を延長できます。</p>
+   <button class="plain-button" :disabled="extending || running" @click="extendDraft">保存期限を今から24時間延長</button><p v-if="retentionMessage" role="status">{{ retentionMessage }}</p>
    <div v-for="change in impl.changes" :key="change.path" class="diff-file">
     <button class="diff-toggle" type="button" :aria-expanded="selected === change.path" @click="open(change.path)"><span>{{ change.path }}</span><small>{{ labels[change.action] }} · {{ selected === change.path ? '閉じる' : '差分を見る' }}</small></button>
     <template v-if="selected === change.path">
