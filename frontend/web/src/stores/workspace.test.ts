@@ -29,6 +29,14 @@ describe('run progress after failure and reconnection', () => {
   vi.stubGlobal('WebSocket', Socket);
   vi.stubGlobal('location', { protocol: 'http:', host: '127.0.0.1:5175' });
  });
+ it('sends documentation scope with the temporary AI credentials', async () => {
+  const work = useWorkspace(); await work.open(session('done'));
+  Socket.instance.receive('session', session('done'));
+  work.send('documentation', 'ログイン機能', '00000000-0000-0000-0000-000000000000', undefined, { documentScope: 'feature' });
+  const payload = JSON.parse(Socket.instance.send.mock.calls.at(-1)![0]);
+  expect(payload).toMatchObject({ type: 'documentation', text: 'ログイン機能', documentScope: 'feature', apiKey: 'model-key', keyExpiresAt: 1 });
+  work.disconnect();
+ });
  it('clears stale running text and ignores late progress after a failed state', async () => {
   const work = useWorkspace();
   await work.open(session('failed'));

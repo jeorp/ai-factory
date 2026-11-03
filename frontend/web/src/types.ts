@@ -3,12 +3,17 @@ export interface Message { id: string; role: 'user' | 'assistant' | 'instruction
 export interface Session {
  tokenBudget?: number;
  id: string; title: string; target: { repository: string; commit: string; kind: string; number: number }; model: string; effort?: string;
- runKind?: string; activePullRequest?: number; review?: Review; implementation?: Implementation;
+ runKind?: string; activePullRequest?: number; review?: Review; implementation?: Implementation; documentation?: Documentation;
  state: string; messages: Message[]; summary: string; sources: Source[]; limitations: string[];
  metrics: { phases?: Record<string, { calls: number; inputTokens: number; outputTokens: number; durationMs: number }>; inputTokens: number; outputTokens: number; lastInputTokens?: number; lastOutputTokens?: number; hasLastUsage?: boolean; maxInputBytes: number; fetchedBytes: number; toolCalls: number; cacheHits: number; durationMs: number; heapPeakBytes: number };
  updatedAt: string; expiresAt: string;
 }
 export interface Repository { full_name: string; default_branch: string; private: boolean; html_url: string }
+export interface Documentation {
+ request: string; scope: 'feature' | 'repository'; repository: string; commit: string; status: 'researching' | 'ready';
+ result?: { title: string; summary: string; sections: { heading: string; body: string; paths: string[] }[]; unverified: string[] };
+ sources: Source[]; limitations: string[]; createdAt: string;
+}
 export interface Config { demo: boolean; aiProvider: 'demo' | 'openai' | 'gemini' | 'vertex' | 'anthropic'; models: string[]; modelEfforts?: Record<string, string[]>; modelEffortDefaults?: Record<string, string>; modelProviders?: Record<string, 'demo' | 'openai' | 'gemini' | 'vertex' | 'anthropic'>; installUrl: string; reviewPolicy?: { maxFiles: number; diffTokens: number; inputTokens: number; inputBytes: number; maxCalls: number; maxMinutes: number; runInputTokens: number; runOutputTokens: number } }
 export const states: Record<string, string> = { accepted: '受付済み', running: '実行中', ci_wait: 'CIの完了待ち', user_wait: '続行待ち', auth_wait: 'AI認証待ち', done: '完了', stopping: '停止中', stopped: '停止済み', failed: '失敗' };
 export const busy = (s?: Session | null) => !!s && ['running', 'accepted', 'stopping', 'ci_wait'].includes(s.state);

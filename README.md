@@ -9,6 +9,7 @@ AI Factory is a chat app for exploring GitHub repositories, reviewing pull reque
 | GitHub chat | Answers questions using repository, pull request, and issue information |
 | Pull request review | Reviews diffs in batches and shows findings with evidence and areas that remain unverified |
 | Implementation | Creates changes after plan approval and opens a draft pull request after diff review |
+| Implementation guides | Creates saved guides for a feature, screen, or the whole repository, with processing flows and links to the code |
 
 The frontend uses Vue 3, TypeScript, Vue Router, and Pinia. The backend uses Go, with Firebase Auth for authentication and Firestore for storage. Docker Compose runs the API and Firebase emulators locally. The server can offer OpenAI, Gemini Developer API, Claude API, and Claude through Vertex AI. Models are routed to their configured provider; see the development guide for credentials and setup. In production, the Go API serves the built Vue app from the same Cloud Run service so WebSocket connections and authentication cookies share one origin.
 
@@ -51,6 +52,14 @@ To stop, press `Ctrl+C` in the web terminal and run `docker compose down` from t
 - WebSocket supports questions, follow-up instructions, stopping, and progress updates. A disconnect interrupts the run; after reconnecting, you can restore the conversation and resume manually.
 - The model receives recent conversation turns and a summary. Retrieved results are kept separate from saved history, and duplicate reads within a run are suppressed. The UI shows read counts, byte counts, input and output tokens, elapsed time, and observed process heap usage.
 - Active AI API keys and Vertex AI access tokens stay in memory for at most one hour and are discarded when the session ends, the user logs out, or the page closes. If the user opts to save a key, a separate copy remains in the browser's IndexedDB until explicitly deleted; it is stored without encryption and survives logout. Firestore sessions are separated by user, connection leases prevent duplicate runs, and sessions expire after 30 days. Users can also delete sessions.
+
+### Implementation guides
+
+Open **実装の資料** (implementation guide) in a repository session. Choose **機能・画面** (feature or screen), enter what you want to understand, and select **資料を作成** (create guide). You can also choose **リポジトリ全体** (whole repository).
+
+The agent reads code at the session's fixed commit and creates a guide covering the purpose, entry points, processing flow, data and state, change impacts, and suggested reading order. Each section links to retrieved code, and the guide keeps unverified areas visible. Guides are saved with the conversation and can be copied or downloaded as Markdown. The fixed demo produces an explicitly labeled sample, without inspecting real code.
+
+Research is limited to 10 minutes per run, 24 AI calls across retries and resumptions, 20 reads, and 15 file/directory requests. Three of the AI calls are reserved for final generation and corrections. Transient errors and invalid responses can retry within the same call budget; an exhausted guide must be recreated. Intermediate research, including per-file notes, is checkpointed so an interrupted guide can resume while it remains the session's active workflow. Stored evidence is capped at 64 KiB, with omitted excerpts reported in the guide. The guide describes static code inspection; it does not execute repository code or tests.
 
 ### Pull request review
 

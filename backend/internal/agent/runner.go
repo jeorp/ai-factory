@@ -26,6 +26,7 @@ type Checkpoint struct {
 	OverviewPending    bool
 	Review             *domain.Review
 	Implementation     *domain.Implementation
+	Documentation      *domain.Documentation
 	Progress           string
 	Summary            string
 	Answer             string
@@ -82,6 +83,9 @@ func (r *Runner) Run(ctx context.Context, in Input, emit func(Checkpoint) error)
 	}
 	if in.Session.RunKind == "implement" {
 		return r.runImplementation(ctx, in, emit)
+	}
+	if in.Session.RunKind == "documentation" {
+		return r.runDocumentation(ctx, in, emit)
 	}
 	reviewCtx := ctx
 	ctx, cancelChat := context.WithTimeout(ctx, 3*time.Minute)

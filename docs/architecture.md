@@ -117,6 +117,16 @@ Go、JavaScript/TypeScript、Pythonには埋め込みの検証観点を渡す。
 
 CI修正では失敗した全ジョブのログから失敗行と周辺行を渡し、計画の `failureRefs` に `ジョブID:L行番号` を対応させる。失敗情報は後続の取得で押し出さない。ログの不足、取得失敗、実行中のチェックがあればCI修正を止める。403はChecks/Actionsの読み取り権限、インストール先の権限更新、再ログインを案内する。
 
+## 実装理解の資料
+
+WebSocketの `documentation` コマンドで、`documentScope=feature`（機能・画面）または `repository`（全体）の資料を作成する。featureでは対象の入力を必須とし、全体資料は入力なしでも開始できる。通常チャットからの自動振り分けは行わず、画面上の「実装の資料」から開始する。
+
+資料ごとに作成開始時のリポジトリとコミットを固定し、ルート一覧、関連するコード、テストを読み取り専用で調査する。AIは構造化した見出し・本文・参照パス・未確認事項を返す。サーバーは取得できたパスだけを参照リンクとして採用し、画面は本文をHTMLとして解釈しない。資料の目的、処理の流れ、データ・状態、変更時の注意点、読む順番をまとめ、Markdownへのコピー・保存に対応する。
+
+調査は1実行最大10分・AIは再試行と再開を通じて合計24判断・20取得・15ファイル／ディレクトリ要求、1回の入力は96 KiB。出力は24,000バイト、8節まで。AI枠の最後の3回を最終生成と訂正に確保し、24回を使い切った資料は再開せず新規作成を案内する。呼び出し前に回数を予約して保存する。一時エラーは最大2回（Geminiのタイムアウトは1回）、形式不正は訂正文を1フィールドに置き最大2回まで再試行し、いずれも同じ24回の予算を消費する。最終生成中の指示は残り枠があれば反映し、残りがなければ完成した資料を保存して未反映であることを記す。時間切れは認証待ちではなく続行待ちとして表示する。読み取り枠を使い切った場合は最終資料の作成だけを許可する。取得結果は各12 KiBまでの抜粋とファイルごとの要点を保存し、取得結果全体をJSONエスケープ込みで64 KiBに制限する。保存前に古い本文から省略し、要点を優先して残す。これらの調査用本文はFirestoreに保存するがブラウザーへのセッションJSONには含めず、完成時に取り除く。入力上限による本文省略、取得失敗、未取得の参照は資料の制限に残す。
+
+セッションの `Documentation` に最新の資料を保存する。資料作成が現在のワークフローである間は、停止・切断・一時エラー後に `resume` で保存済みの調査から再開できる。別の対象で新規作成すると前の資料を置き換える。保存期限と削除はセッションと共通であり、未完了の調査用本文にも同じ期限が適用される。
+
 ## 保存と削除
 
 `users/{uid}/sessions/{id}` に会話、要点、参照元、固定対象、各ワークフローの状態、利用量、`ExpiresAt` を保存する。接続leaseは `users/{uid}/locks/connection` に置く。UIDは検証したトークンから採用し、ブラウザーからのFirestore直接読み書きは拒否する。
@@ -140,6 +150,8 @@ CI修正では失敗した全ジョブのログから失敗行と周辺行を渡
 | 通常チャットの入力 | コンテキストJSON 24 KiB、APIリクエスト40 KiB |
 | レビュー1実行 | 15分、AI100呼び出し、実利用入力50万・出力6.4万トークン |
 | レビュー計画・入力 | 先頭200ファイル、1バッチ10ファイル・差分約2万トークン、入力全体約3万トークン・256 KiB |
+| 資料作成 | 1実行10分、再試行・再開を通じAI24判断（最後の3回は最終生成・訂正用）、20取得・15ファイル要求 |
+| 資料の入力・保存 | 入力JSON 96 KiB、保存する取得結果全体64 KiB、出力24,000バイト・8節 |
 | 実装1実行 | 30分、AI100呼び出し、回答枠16,384トークン／呼び出し |
 | 実装の変更セット | 20ファイル、1ファイル100 KiB、変更後本文の合計200 KiB |
 | 実装の入力 | 約6万トークン、256 KiB |
@@ -159,6 +171,7 @@ GeminiとClaudeのリクエストでは回答枠に思考用の8,192トークン
 | コマンド・中断・保存 | [websocket_conn.go](../backend/internal/httpapi/websocket_conn.go)、[firestore.go](../backend/internal/store/firestore.go) |
 | チャットの取得予算 | [chat_budget.go](../backend/internal/agent/chat_budget.go)、[session.go](../backend/internal/domain/session.go) |
 | レビューの予算・分割 | [review_budget.go](../backend/internal/agent/review_budget.go)、[review.go](../backend/internal/agent/review.go) |
+| 実装理解の資料 | [documentation.go](../backend/internal/agent/documentation.go)、[documentation_retry.go](../backend/internal/agent/documentation_retry.go)、[documentation_memory.go](../backend/internal/agent/documentation_memory.go) |
 | 実装計画・編集・検証 | [implement_plan.go](../backend/internal/agent/implement_plan.go)、[implement_edit.go](../backend/internal/agent/implement_edit.go)、[implement_verify.go](../backend/internal/agent/implement_verify.go) |
 | 変更不要の照合・公開条件 | [implement_reconcile.go](../backend/internal/agent/implement_reconcile.go)、[implementation.go](../backend/internal/domain/implementation.go) |
 | 書き込み・パス制約 | [write.go](../backend/internal/github/write.go)、[change.go](../backend/internal/domain/change.go) |

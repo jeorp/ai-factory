@@ -1,5 +1,7 @@
 // User-facing messages for error and limitation codes sent by the API.
 export const errorMessages: Record<string, string> = {
+	 documentation_call_limit: 'AIの呼び出し上限に達しました。対象を絞って資料を作り直してください。',
+ documentation_request_required: '資料にまとめたい機能・画面を入力してください。', invalid_documentation_scope: '資料の範囲を選び直してください。', invalid_documentation_result: '資料を適切な形式で作成できませんでした。保存済みの調査から再開してください。',
  effort_not_allowed: 'このモデルでは選択したエフォートを使えません。対応する値を選んでください。',
  effort_change_in_progress: '実行中はエフォートを変更できません。完了または停止後に変更してください。',
  run_in_progress: '実行中です。完了または停止してから操作してください。',

@@ -12,7 +12,7 @@ const deleteId = defineModel<string>('deleteId', { required: true });
 defineEmits<{ remove: [id: string]; budget: [tokens: number] }>();
 const budget = ref(0);
 watch(() => [props.session.id,props.session.tokenBudget] as const,()=>{budget.value=props.session.tokenBudget || 0;},{immediate:true});
-const phaseLabels: Record<string,string> = { chat:'チャット', overview:'README概要', plan:'計画', edit:'編集', verify:'静的検証', plan_retry:'計画の再試行', edit_retry:'編集の再試行', verify_retry:'検証の再試行', review_diff:'差分レビュー', review_cross:'全体照合', review_priority:'優先度評価' };
+const phaseLabels: Record<string,string> = { documentation:'資料作成', chat:'チャット', overview:'README概要', plan:'計画', edit:'編集', verify:'静的検証', plan_retry:'計画の再試行', edit_retry:'編集の再試行', verify_retry:'検証の再試行', review_diff:'差分レビュー', review_cross:'全体照合', review_priority:'優先度評価' };
 
 const inputTokens = computed(() => props.session.metrics.inputTokens || 0);
 const outputTokens = computed(() => props.session.metrics.outputTokens || 0);
@@ -39,7 +39,7 @@ const inputLimit = computed(() => inputLimitBytes(props.session, props.reviewPol
    <div class="meter-label"><span>最大入力データ量</span><strong>{{ (session.metrics.maxInputBytes / 1024).toFixed(1) }}<small> / {{ inputLimit / 1024 }} KiB</small></strong></div>
    <div class="meter"><span :style="{ width: Math.min(100, session.metrics.maxInputBytes / inputLimit * 100) + '%' }"></span></div>
    <dl class="metrics"><div><dt>GitHub取得回数</dt><dd>{{ session.metrics.toolCalls }} 回</dd></div><div><dt>取得サイズ</dt><dd>{{ (session.metrics.fetchedBytes / 1024).toFixed(1) }} KiB</dd></div><div><dt>重複取得の抑制</dt><dd>{{ session.metrics.cacheHits }} 回</dd></div><div><dt>直近の処理時間</dt><dd>{{ (session.metrics.durationMs / 1000).toFixed(1) }} 秒</dd></div><div><dt>プロセスのヒープ観測最大</dt><dd>{{ (session.metrics.heapPeakBytes / 1048576).toFixed(1) }} MiB</dd></div></dl>
-   <p>{{ session.runKind === 'review' ? 'PRは最大200ファイルを計画し、関連する差分を最大10ファイルまとめて自動で確認します。中断した場合は保存した区切りから再開できます。' : '1質問あたり最大6回・5ファイル。取得結果は一時保持し、履歴全体はAIに渡しません。' }}</p>
+   <p>{{ session.runKind === 'review' ? 'PRは最大200ファイルを計画し、関連する差分を最大10ファイルまとめて自動で確認します。中断した場合は保存した区切りから再開できます。' : session.runKind === 'documentation' ? '資料作成は最大10分・AI24回・20取得・15ファイル。調査の途中経過を保存し、停止・切断後に再開できます。' : '1質問あたり最大6回・5ファイル。取得結果は一時保持し、履歴全体はAIに渡しません。' }}</p>
    <p v-if="session.runKind === 'review'">入力は差分約{{ reviewPolicy.diffTokens.toLocaleString() }}・全体約{{ reviewPolicy.inputTokens.toLocaleString() }}トークンを目安に調整します（共通トークナイザーによる推定）。1回の継続実行は最大{{ reviewPolicy.maxMinutes }}分・AI{{ reviewPolicy.maxCalls }}回・入力{{ reviewPolicy.runInputTokens.toLocaleString() }}／出力{{ reviewPolicy.runOutputTokens.toLocaleString() }}トークン。停止・切断・上限到達まで自動で続けます。</p>
   </div>
   <div class="context-block"><h3>参照元<span class="source-count">{{ session.sources?.length || 0 }}</span></h3><p v-if="!session.sources?.length">取得した情報の参照元が表示されます。</p><a v-for="source in session.sources" :key="source.url" class="source-link" :href="safeGitHubLink(source.url)" target="_blank" rel="noopener noreferrer"><Icon name="link" :size="13" /><span>{{ source.label }}</span><Icon name="external" :size="12" /></a></div>

@@ -119,6 +119,7 @@ type Session struct {
 	ActivePullRequest  int                 `json:"activePullRequest"`
 	Review             *Review             `json:"review,omitempty"`
 	Implementation     *Implementation     `json:"implementation,omitempty"`
+	Documentation      *Documentation      `json:"documentation,omitempty"`
 	State              string              `json:"state"`
 	Messages           []Message           `json:"messages"`
 	Summary            string              `json:"summary"`

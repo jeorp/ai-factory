@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"time"
 )
 
@@ -24,15 +23,8 @@ func (run *implementRun) retryTransientModel(ctx context.Context, phase string, 
 	if ctx.Err() != nil {
 		return false, ctx.Err()
 	}
-	limit := 2
-	switch implementationErrorCode(err) {
-	case "gemini_timeout":
-		limit = 1
-	case "gemini_unavailable", "openai_unavailable", "claude_unavailable",
-		"gemini_http_429", "gemini_http_500", "gemini_http_502", "gemini_http_503",
-		"openai_http_429", "openai_http_500", "openai_http_502", "openai_http_503",
-		"anthropic_rate_limited", "claude_http_429", "claude_http_500", "claude_http_502", "claude_http_503", "claude_http_529":
-	default:
+	limit := transientModelRetryLimit(err)
+	if limit == 0 {
 		return false, nil
 	}
 	if *consecutive >= limit || attempt >= maxAttempts || run.calls >= ImplementMaxCalls {
@@ -47,8 +39,7 @@ func (run *implementRun) retryTransientModel(ctx context.Context, phase string, 
 	if err := run.save(ctx, message); err != nil {
 		return false, err
 	}
-	delay := time.Second*time.Duration(1<<(*consecutive-1)) + time.Duration(rand.IntN(250))*time.Millisecond
-	if err := run.r.waitModelRetry(ctx, delay); err != nil {
+	if err := run.r.waitModelRetry(ctx, modelRetryDelay(*consecutive)); err != nil {
 		return false, err
 	}
 	return true, nil

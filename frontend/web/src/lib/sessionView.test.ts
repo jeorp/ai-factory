@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { canResume, defaultReviewPolicy, inputLimitBytes } from './sessionView';
-import type { Review, Session } from '../types';
+import type { Documentation, Review, Session } from '../types';
 
 const session = (patch: Partial<Session>): Session => ({ state: 'done', messages: [], target: { kind: 'repository' }, ...patch }) as Session;
 
@@ -21,5 +21,13 @@ describe('session view helpers', () => {
   expect(inputLimitBytes(session({ runKind: 'review' }), defaultReviewPolicy)).toBe(262144);
   expect(inputLimitBytes(session({}), defaultReviewPolicy)).toBe(24576);
   expect(inputLimitBytes(undefined, defaultReviewPolicy)).toBe(24576);
+ });
+ it('hides the general resume action for exhausted documentation, while preserving other workflows', () => {
+  const documentation = { limitations: ['documentation_call_limit'] } as Documentation;
+  const s = session({ state: 'failed', runKind: 'documentation', messages: [{} as Session['messages'][number]], documentation });
+  expect(canResume(s)).toBe(false);
+  expect(canResume({ ...s, runKind: 'chat' })).toBe(true);
+  documentation.limitations = [];
+  expect(canResume(s)).toBe(true);
  });
 });

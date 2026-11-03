@@ -33,6 +33,7 @@ export const useWorkspace = defineStore('workspace', () => {
     session.implementation.verification.unverified ||= [];
    }
   }
+  if (session.documentation) { session.documentation.sources ||= []; session.documentation.limitations ||= []; if (session.documentation.result) { session.documentation.result.sections ||= []; session.documentation.result.unverified ||= []; for (const section of session.documentation.result.sections) section.paths ||= []; } }
   if (session.review) { session.review.steps ||= []; session.review.findings ||= []; session.review.unverified ||= []; for (const step of session.review.steps) step.files ||= []; }
   return session;
  }
@@ -70,7 +71,7 @@ export const useWorkspace = defineStore('workspace', () => {
   clearTimeout(ciRetry);
   // Publishing writes saved changes and never needs the AI key.
   const withoutAIResume = type === 'resume' && current.value?.runKind === 'implement' && ['publishing', 'checking_ci'].includes(current.value.implementation?.status || '');
-  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...extra, ...(!withoutAIResume && ['message', 'resume', 'review', 'investigate', 'implement', 'implement_approve', 'implement_amend', 'implement_fix_ci', 'implement_verify'].includes(type) ? credentials() : {}) }));
+  socket.send(JSON.stringify({ type, text, id, unverifiedIndex, ...extra, ...(!withoutAIResume && ['message', 'resume', 'review', 'investigate', 'documentation', 'implement', 'implement_approve', 'implement_amend', 'implement_fix_ci', 'implement_verify'].includes(type) ? credentials() : {}) }));
   error.value = '';
  }
  async function remove(id: string) {

@@ -30,6 +30,7 @@ type command struct {
 	PullNumber      int    `json:"pullNumber"`
 	Title           string `json:"title"`
 	Body            string `json:"body"`
+	DocumentScope   string `json:"documentScope"`
 }
 type update struct {
 	Checkpoint agent.Checkpoint
@@ -242,6 +243,9 @@ func applyCheckpoint(session *domain.Session, cp agent.Checkpoint) error {
 	if cp.Implementation != nil {
 		session.Implementation = cp.Implementation
 	}
+	if cp.Documentation != nil {
+		session.Documentation = cp.Documentation
+	}
 	session.Sources = cp.Sources
 	session.Metrics = cp.Metrics
 	session.Limitations = cp.Limitations
@@ -294,7 +298,7 @@ func applyRunResult(session *domain.Session, runErr error, wasStopping bool) {
 	} else if runErr != nil && runErr.Error() == "review_run_budget_resume" {
 		session.State = "user_wait"
 	} else if runErr != nil {
-		if errors.Is(runErr, context.DeadlineExceeded) && session.RunKind == "review" {
+		if errors.Is(runErr, context.DeadlineExceeded) && (session.RunKind == "review" || session.RunKind == "documentation") {
 			session.State = "user_wait"
 		} else if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 			session.State = "auth_wait"
@@ -322,7 +326,7 @@ func runOutcome(runErr error) string {
 
 // carriesMessage reports whether the command adds a user message to the history.
 func (c command) carriesMessage() bool {
-	return c.Type == "message" || c.Type == "review" || c.Type == "investigate" || c.Type == "implement"
+	return c.Type == "message" || c.Type == "review" || c.Type == "investigate" || c.Type == "implement" || c.Type == "documentation"
 }
 
 // startWorker runs the agent in the background. Checkpoints are handed to the

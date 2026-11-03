@@ -180,7 +180,7 @@ func (sc *socketConn) handle(cmd command) bool {
 		return sc.save() == nil && sc.send("session", sc.session) == nil
 	case "instruction":
 		return sc.addInstruction(cmd)
-	case "message", "resume", "review", "investigate", "implement", "implement_approve", "implement_amend", "implement_publish", "implement_check_ci", "implement_fix_ci", "implement_verify":
+	case "message", "resume", "review", "investigate", "documentation", "implement", "implement_approve", "implement_amend", "implement_publish", "implement_check_ci", "implement_fix_ci", "implement_verify":
 		return sc.startRun(cmd)
 	default:
 		sc.problem("unknown_command")
@@ -275,6 +275,10 @@ func (sc *socketConn) startRun(cmd command) bool {
 		sc.problem(problemText)
 		return true
 	}
+	if problemText := documentationCommandProblem(&cmd); problemText != "" {
+		sc.problem(problemText)
+		return true
+	}
 	if cmd.Type == "review" && session.Target.Kind != "pull" {
 		sc.problem("pull_request_required")
 		return true
@@ -295,6 +299,9 @@ func (sc *socketConn) startRun(cmd command) bool {
 		return true
 	}
 	runDuration := agent.ReviewRunDuration
+	if cmd.Type == "documentation" || (cmd.Type == "resume" && session.RunKind == "documentation") {
+		runDuration = agent.DocumentationRunTime
+	}
 	if strings.HasPrefix(cmd.Type, "implement") || (cmd.Type == "resume" && session.RunKind == "implement") {
 		runDuration = agent.ImplementRunTime
 	}
@@ -343,6 +350,7 @@ func (sc *socketConn) startRun(cmd command) bool {
 		session.RunKind = "review"
 	}
 	applyImplementCommand(session, cmd)
+	applyDocumentationCommand(session, cmd)
 	session.State = "accepted"
 	if sc.save() != nil {
 		return false

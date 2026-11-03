@@ -1,4 +1,5 @@
 import type { Config, Session } from '../types';
+import { documentationAtCallLimit } from './documentation';
 
 export type ComposerMode = 'message' | 'implement' | 'instruction';
 
@@ -7,13 +8,14 @@ export const defaultReviewPolicy: ReviewPolicy = { maxFiles: 10, diffTokens: 200
 const chatInputLimitBytes = 24576;
 
 export function inputLimitBytes(session: Session | null | undefined, policy: ReviewPolicy) {
- return session?.runKind === 'review' ? policy.inputBytes : chatInputLimitBytes;
+ return session?.runKind === 'review' ? policy.inputBytes : session?.runKind === 'documentation' ? 98304 : chatInputLimitBytes;
 }
 
 const resumableStates = ['auth_wait', 'failed', 'stopped', 'user_wait'];
 
 /** Whether the session has saved progress the user can continue from. */
 export function canResume(session: Session) {
+ if (session.runKind === 'documentation' && documentationAtCallLimit(session.documentation)) return false;
  if (resumableStates.includes(session.state) && (session.messages.length || session.runKind === 'review' || session.runKind === 'implement')) return true;
  return session.state === 'done' && session.target?.kind === 'pull' && !!session.review?.phase && session.review.phase !== 'done';
 }

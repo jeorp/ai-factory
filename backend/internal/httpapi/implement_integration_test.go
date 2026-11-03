@@ -23,10 +23,11 @@ import (
 )
 
 type implementationRecoveryAI struct {
-	calls          atomic.Int32
-	invalid        atomic.Bool
-	rejected       atomic.Int32
-	verifyComplete atomic.Bool
+	calls                atomic.Int32
+	invalid              atomic.Bool
+	rejected             atomic.Int32
+	verifyComplete       atomic.Bool
+	documentationFailure atomic.Bool
 }
 
 func (p *implementationRecoveryAI) Next(ctx context.Context, key, model, input string) (agent.Decision, agent.Usage, error) {
@@ -36,8 +37,13 @@ func (p *implementationRecoveryAI) Next(ctx context.Context, key, model, input s
 			Mode string                     `json:"mode"`
 			Plan *domain.ImplementationPlan `json:"plan"`
 		} `json:"implementTask"`
+		Documentation json.RawMessage                `json:"documentationTask"`
+		Evidence      []domain.DocumentationEvidence `json:"evidence"`
 	}
 	_ = json.Unmarshal([]byte(input), &body)
+	if len(body.Documentation) > 0 && len(body.Evidence) >= 2 && p.documentationFailure.Load() {
+		return agent.Decision{}, agent.Usage{}, errors.New("documentation_test_interrupted")
+	}
 	if body.Task != nil && body.Task.Mode == "verify" && p.verifyComplete.Load() {
 		v := &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}}
 		for _, c := range body.Task.Plan.AcceptanceCriteria {
@@ -342,5 +348,43 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 	stored, err = storage.Get(ctx, uid, session.ID)
 	if err != nil || stored.Implementation == nil || stored.Implementation.Status != "published" || stored.Implementation.CacheID == "" || stored.Implementation.Verification == nil {
 		t.Fatalf("not persisted: %+v %v", stored, err)
+	}
+
+	// Documentation uses the same socket, but never changes the saved implementation.
+	// A provider interruption must preserve research in Firestore while hiding raw code from JSON.
+	ai.documentationFailure.Store(true)
+	interrupted := sendWhenIdle(command{Type: "documentation", ID: randomID(), Text: "ログイン機能", DocumentScope: "feature"}, func(s domain.Session) bool { return s.State == "failed" })
+	wait(func(domain.Session) bool { return false }, "documentation_test_interrupted")
+	stored, err = storage.Get(ctx, uid, session.ID)
+	if err != nil || stored.Documentation == nil || len(stored.Documentation.Evidence) != 2 || len(interrupted.Documentation.Evidence) != 0 {
+		t.Fatalf("research was lost or exposed: %+v %v", stored, err)
+	}
+	readsBeforeResume := stored.Metrics.ToolCalls
+	ai.documentationFailure.Store(false)
+	guide := sendWhenIdle(command{Type: "resume"}, func(s domain.Session) bool {
+		return s.State == "done" && s.Documentation != nil && s.Documentation.Status == "ready"
+	})
+	if guide.Documentation.Scope != "feature" || len(guide.Documentation.Result.Sections) != 6 || guide.Metrics.ToolCalls != readsBeforeResume || guide.Implementation.Status != "published" {
+		t.Fatalf("documentation resume failed: %+v", guide.Documentation)
+	}
+	stored, err = storage.Get(ctx, uid, session.ID)
+	if err != nil || stored.Documentation == nil || stored.Documentation.Result == nil || len(stored.Documentation.Evidence) != 0 {
+		t.Fatalf("guide not durable: %v", err)
+	}
+
+	whole := sendWhenIdle(command{Type: "documentation", ID: randomID(), DocumentScope: "repository"}, func(s domain.Session) bool {
+		return s.State == "done" && s.Documentation != nil && s.Documentation.Scope == "repository" && s.Documentation.Status == "ready"
+	})
+	if whole.Documentation.Commit != whole.Target.Commit || len(whole.Documentation.Result.Sections) != 6 {
+		t.Fatal("repository guide did not use the fixed target")
+	}
+	listed, err := storage.List(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, listedSession := range listed {
+		if listedSession.ID == session.ID && listedSession.Documentation != nil {
+			t.Fatal("session list exposes full document")
+		}
 	}
 }
