@@ -37,7 +37,7 @@ jobs:
       go-version-file: backend/go.mod
       cache-dependency-path: backend/go.sum
    - run: docker compose up --build -d --wait firebase-emulator
-   - run: go test -race ./internal/httpapi -run TestEmulator -v
+   - run: go test -race ./internal/httpapi ./internal/github -run TestEmulator -v
      working-directory: backend
      env:
       RUN_EMULATOR_TESTS: "1"
