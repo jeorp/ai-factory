@@ -10,16 +10,20 @@ import (
 // select the workflow's tools and instructions.
 func decisionInstructions(schema map[string]any, input string) string {
 	var context struct {
-		ReviewTask   json.RawMessage `json:"reviewTask"`
-		PriorityTask []priorityItem  `json:"priorityTask"`
-		Implement    *implementTask  `json:"implementTask"`
-		ChatBudget   *chatBudget     `json:"chatBudget"`
-		Target       struct {
+		ReviewTask    json.RawMessage    `json:"reviewTask"`
+		PriorityTask  []priorityItem     `json:"priorityTask"`
+		Implement     *implementTask     `json:"implementTask"`
+		ChatBudget    *chatBudget        `json:"chatBudget"`
+		Documentation *documentationTask `json:"documentationTask"`
+		Target        struct {
 			Number int `json:"number"`
 		} `json:"target"`
 	}
 	if json.Unmarshal([]byte(input), &context) != nil {
 		return systemPrompt
+	}
+	if context.Documentation != nil && (context.Documentation.Scope == "feature" || context.Documentation.Scope == "repository") {
+		return documentationInstructions(schema, *context.Documentation)
 	}
 	if context.Implement != nil && (context.Implement.Mode == "plan" || context.Implement.Mode == "edit" || context.Implement.Mode == "verify") {
 		return implementInstructions(schema, *context.Implement)

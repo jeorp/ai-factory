@@ -13,6 +13,9 @@ import (
 type Demo struct{}
 
 func (Demo) Next(ctx context.Context, key, model, input string) (Decision, Usage, error) {
+	if documentationWorkflow(input) {
+		return demoDocumentation(input), Usage{}, nil
+	}
 	if strings.Contains(input, `"overviewTask":`) {
 		return Decision{Summary: "固定デモ: Go APIとVue 3によるGitHub読み取りチャット。"}, Usage{}, nil
 	}

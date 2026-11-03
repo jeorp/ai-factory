@@ -16,15 +16,16 @@ type IntentPlan struct {
 }
 
 type Decision struct {
-	IntentIssue string               `json:"-"`
-	Intent      IntentPlan           `json:"intent"`
-	Answer      string               `json:"answer"`
-	Summary     string               `json:"summary"`
-	Read        *github.Read         `json:"read"`
-	Search      *github.CodeSearch   `json:"search"`
-	Review      *domain.ReviewResult `json:"review"`
-	StartReview *ReviewRequest       `json:"startReview"`
-	Priorities  []PriorityAssessment `json:"priorities,omitempty"`
+	IntentIssue string                      `json:"-"`
+	Intent      IntentPlan                  `json:"intent"`
+	Answer      string                      `json:"answer"`
+	Summary     string                      `json:"summary"`
+	Read        *github.Read                `json:"read"`
+	Document    *domain.DocumentationResult `json:"document,omitempty"`
+	Search      *github.CodeSearch          `json:"search"`
+	Review      *domain.ReviewResult        `json:"review"`
+	StartReview *ReviewRequest              `json:"startReview"`
+	Priorities  []PriorityAssessment        `json:"priorities,omitempty"`
 	// Implementation workflow (specification section 13).
 	StartImplementation *ImplementRequest                  `json:"startImplementation"`
 	Plan                *domain.ImplementationPlan         `json:"plan"`
@@ -88,7 +89,7 @@ func decisionOutputTokens(input string) int {
 	if implementWorkflow(input) {
 		return ImplementOutputToks
 	}
-	if reviewWorkflow(input) {
+	if reviewWorkflow(input) || documentationWorkflow(input) {
 		return 8192
 	}
 	return 4096

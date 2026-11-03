@@ -19,6 +19,7 @@ import ReviewResults from './components/ReviewResults.vue';
 import ChatMessage from './components/ChatMessage.vue';
 import SourceFiles from './components/SourceFiles.vue';
 import ImplementationPanel from './components/ImplementationPanel.vue';
+import DocumentationPanel from './components/DocumentationPanel.vue';
 import SessionComposer from './components/SessionComposer.vue';
 import SessionContextPanel from './components/SessionContextPanel.vue';
 
@@ -35,6 +36,7 @@ const reviewPolicy = computed(() => config.value.reviewPolicy || defaultReviewPo
 const login = ref(''); const loading = ref(true); const actionPending = ref(false); const appError = ref('');
 const showNew = ref(false); const showDetails = ref(window.matchMedia('(min-width: 1100px)').matches); const deleteID = ref('');
 const transcript = ref<HTMLElement>();
+const showDocumentation = ref(false);
 
 // New session form.
 const repositories = ref<Repository[]>([]); const repositoryChoice = ref(''); const manualTarget = ref(''); const model = ref('');
@@ -79,6 +81,8 @@ async function action(fn: () => Promise<void>) {
  actionPending.value = true; appError.value = '';
  try { await fn(); } catch (e) { appError.value = errorMessage(e); } finally { actionPending.value = false; }
 }
+function generateDocumentation(value: { text: string; scope: 'feature' | 'repository' }) { try { appError.value = ''; work.send('documentation', value.text, crypto.randomUUID(), undefined, { documentScope: value.scope }); } catch (e) { appError.value = errorMessage(e); } }
+async function openDocumentation() { showDocumentation.value = true; await nextTick(); document.querySelector('.documentation-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 function dismissError() { appError.value = ''; work.error = ''; }
 
 async function loadWorkspace() { const me = await api<{ login: string }>('/me'); login.value = me.login; await work.refresh(); await refreshRepositories(); }
@@ -133,6 +137,7 @@ onMounted(async () => {
 });
 onUnmounted(() => { clearInterval(keyTimer); window.removeEventListener('pagehide', pagehide); window.removeEventListener('keydown', escapeFile); clearKey(); work.disconnect(true); });
 watch(() => current.value?.messages.length, async () => { await nextTick(); transcript.value?.scrollTo({ top: transcript.value.scrollHeight, behavior: 'smooth' }); });
+watch(() => current.value?.documentation?.status, async (status, previous) => { if (status === 'ready' && previous === 'researching') { await nextTick(); document.querySelector('.documentation-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
 // A run that fails on a rejected key drops the key so the card asks for a new one.
 watch(() => [current.value?.id, current.value?.state] as const, ([id, state], [previousId, previous]) => {
  const rejected = ['gemini_key_invalid', 'openai_http_401', 'claude_token_invalid', 'claude_token_expired', 'anthropic_key_invalid'].includes(current.value?.limitations?.at(-1) || '');
@@ -140,7 +145,7 @@ watch(() => [current.value?.id, current.value?.state] as const, ([id, state], [p
   keys.discard(); appError.value = 'APIキーが無効です。保存済みのキーを削除するか、新しいキーを入力してください。';
  }
 });
-watch(() => current.value?.id, () => { text.value = ''; keys.resetForm(); });
+watch(() => current.value?.id, () => { showDocumentation.value = false; text.value = ''; keys.resetForm(); });
 watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; fileOpener = undefined; });
 </script>
 
@@ -157,7 +162,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
 
    <div v-else class="conversation-layout" :class="{ 'details-hidden': !showDetails && !openedFile, 'code-open': !!openedFile }">
     <section class="conversation">
-     <div class="conversation-header"><div><span class="section-caption">GITHUB SESSION</span><h2><Icon name="folder" :size="19" />{{ current.target.repository }}</h2></div><div><span class="session-state" :class="{ pulse: running }">{{ states[current.state] }}</span><button class="plain-button" @click="end">終了</button></div></div>
+     <div class="conversation-header"><div><span class="section-caption">GITHUB SESSION</span><h2><Icon name="folder" :size="19" />{{ current.target.repository }}</h2></div><div><button class="plain-button documentation-action" aria-label="実装の資料を開く" @click="openDocumentation"><Icon name="document" :size="14" /><span>実装の資料</span></button><span class="session-state" :class="{ pulse: running }">{{ states[current.state] }}</span><button class="plain-button" @click="end">終了</button></div></div>
      <ApiKeyCard v-if="aiProvider !== 'demo' && !keys.valid" :provider="aiProvider" :keys="keys" />
      <div ref="transcript" class="transcript" role="log" aria-label="会話履歴" aria-live="polite">
       <div v-if="!current.messages.length && !current.review" class="chat-empty"><span class="assistant-mark"><Icon name="grid" :size="24" /></span><h2>何から読み解きましょう？</h2><p>PRを取得したあと、「このPRをレビューして」と続けて依頼できます。</p><div class="suggestions"><button v-for="hint in hints" :key="hint" @click="text = hint">{{ hint }}<Icon name="chevron" :size="14" /></button></div></div>
@@ -166,6 +171,7 @@ watch([() => current.value?.id, showNew], () => { openedFile.value = undefined; 
        <ChatMessage v-else-if="entry.kind === 'message'" :message="entry.message" :login="login" :repository="current.target.repository" />
       </template>
       <ImplementationPanel v-if="current.implementation" :key="`${current.id}:impl`" :session-id="current.id" :repository="current.target.repository" :implementation="current.implementation" :session-state="current.state" :running="running" :connected="work.connected" :can-run="canRun" @approve="sendToSession('implement_approve')" @resume="sendToSession('resume')" @amend="amendImplementation" @publish="publishImplementation" @check-ci="sendToSession('implement_check_ci')" @fix-ci="sendToSession('implement_fix_ci')" @verify="sendToSession('implement_verify')" />
+      <DocumentationPanel v-if="showDocumentation || current.documentation" :key="`${current.id}:documentation`" :session-id="current.id" :documentation="current.documentation" :running="running" :active="current.runKind === 'documentation'" :session-state="current.state" :can-run="canRun" @generate="generateDocumentation" @resume="sendToSession('resume')" />
       <SourceFiles v-if="!current.review" :key="current.id" :session="current" @open="openFile" @clear="closeFile" />
       <div v-if="running && current.implementation?.status !== 'checking_ci'" class="progress-message"><span class="loading-dots">•••</span>{{ current.state === 'stopping' ? '停止を要求しています…' : work.progress || '処理を開始しています…' }}</div>
      </div>

@@ -64,6 +64,9 @@ func aiResponseLimit(input string) int {
 }
 
 func aiInputLimit(input string) int {
+	if documentationWorkflow(input) {
+		return DocumentationInputBytes
+	}
 	if reviewWorkflow(input) || implementWorkflow(input) {
 		return ReviewInputBytes
 	}
@@ -71,6 +74,9 @@ func aiInputLimit(input string) int {
 }
 
 func aiRequestLimit(input string) int {
+	if documentationWorkflow(input) {
+		return 192 * 1024
+	}
 	if reviewWorkflow(input) || implementWorkflow(input) {
 		return ReviewRequestBytes
 	}

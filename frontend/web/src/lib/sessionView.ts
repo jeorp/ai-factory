@@ -7,7 +7,7 @@ export const defaultReviewPolicy: ReviewPolicy = { maxFiles: 10, diffTokens: 200
 const chatInputLimitBytes = 24576;
 
 export function inputLimitBytes(session: Session | null | undefined, policy: ReviewPolicy) {
- return session?.runKind === 'review' ? policy.inputBytes : chatInputLimitBytes;
+ return session?.runKind === 'review' ? policy.inputBytes : session?.runKind === 'documentation' ? 98304 : chatInputLimitBytes;
 }
 
 const resumableStates = ['auth_wait', 'failed', 'stopped', 'user_wait'];
