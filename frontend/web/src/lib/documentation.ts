@@ -1,11 +1,14 @@
 import type { Documentation } from '../types';
 import { isFilePath } from './sourceFiles';
+import { errorMessages } from './errorMessages';
+
+export const documentationAtCallLimit = (doc?: Documentation) => doc?.limitations?.includes('documentation_call_limit') || false;
 
 export function documentationFileURL(doc: Documentation, path: string) {
  if (!/^[\w.-]+\/[\w.-]+$/.test(doc.repository) || doc.repository.includes('..') || !/^[a-f0-9]{40}$/i.test(doc.commit) || !isFilePath(path)) return '#';
  return `https://github.com/${doc.repository}/blob/${doc.commit}/${path.split('/').map(encodeURIComponent).join('/')}`;
 }
-export function documentationLimitations(doc: Documentation) { return [...new Set([...(doc.result?.unverified || []), ...(doc.limitations || [])])]; }
+export function documentationLimitations(doc: Documentation) { return [...new Set([...(doc.result?.unverified || []), ...(doc.limitations || [])].map(text => errorMessages[text] || text))]; }
 const oneLine = (text: string) => text.replace(/[\r\n]/g, ' ');
 export function documentationMarkdown(doc: Documentation) {
  const result = doc.result;

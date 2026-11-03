@@ -59,7 +59,7 @@ Open **実装の資料** (implementation guide) in a repository session. Choose 
 
 The agent reads code at the session's fixed commit and creates a guide covering the purpose, entry points, processing flow, data and state, change impacts, and suggested reading order. Each section links to retrieved code, and the guide keeps unverified areas visible. Guides are saved with the conversation and can be copied or downloaded as Markdown. The fixed demo produces an explicitly labeled sample, without inspecting real code.
 
-Research is limited to 10 minutes, 24 AI calls, 20 reads, and 15 file/directory requests. Intermediate research is checkpointed so an interrupted guide can resume while it remains the session's active workflow. The guide describes static code inspection; it does not execute repository code or tests.
+Research is limited to 10 minutes per run, 24 AI calls across retries and resumptions, 20 reads, and 15 file/directory requests. Three of the AI calls are reserved for final generation and corrections. Transient errors and invalid responses can retry within the same call budget; an exhausted guide must be recreated. Intermediate research, including per-file notes, is checkpointed so an interrupted guide can resume while it remains the session's active workflow. Stored evidence is capped at 64 KiB, with omitted excerpts reported in the guide. The guide describes static code inspection; it does not execute repository code or tests.
 
 ### Pull request review
 

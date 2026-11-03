@@ -25,4 +25,9 @@ describe('implementation guide export', () => {
   expect(markdown).not.toContain('../secret');
   expect(documentationMarkdown({ ...d, result: undefined })).toBe('');
  });
+ it('uses a readable call-limit explanation in Markdown', () => {
+  const d = doc(); d.limitations.push('documentation_call_limit');
+  expect(documentationMarkdown(d)).toContain('対象を絞って資料を作り直してください。');
+  expect(documentationMarkdown(d)).not.toContain('documentation_call_limit');
+ });
 });

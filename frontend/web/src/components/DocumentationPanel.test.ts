@@ -37,4 +37,12 @@ describe('implementation guide panel', () => {
   const html = await render(doc('researching'), { sessionState: 'auth_wait', canRun: false });
   expect(html).toMatch(/<button[^>]*disabled[^>]*>保存済みの調査から再開/);
  });
+ it('explains the call limit and offers recreation without an exhausted resume button', async () => {
+  const guide = doc('researching'); guide.limitations.push('documentation_call_limit');
+  const html = await render(guide, { sessionState: 'failed' });
+  expect(html).toContain('資料作成の上限に達しました');
+  expect(html).toContain('対象を絞って資料を作り直してください。');
+  expect(html).not.toContain('保存済みの調査から再開');
+  expect(html).toContain('理解したい機能・画面');
+ });
 });

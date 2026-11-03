@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { Documentation } from '../types';
-import { documentationFileURL, documentationLimitations, documentationMarkdown } from '../lib/documentation';
+import { documentationAtCallLimit, documentationFileURL, documentationLimitations, documentationMarkdown } from '../lib/documentation';
 import Icon from './Icon.vue';
 
 const props = defineProps<{ documentation?: Documentation; running: boolean; canRun: boolean; sessionState: string; active: boolean; sessionId: string }>();
@@ -13,8 +13,9 @@ watch(() => `${props.documentation?.scope || ''}\0${props.documentation?.request
 const result = computed(() => props.documentation?.result);
 const limits = computed(() => props.documentation ? documentationLimitations(props.documentation) : []);
 const researching = computed(() => props.documentation?.status === 'researching');
+const callLimit = computed(() => !props.running && documentationAtCallLimit(props.documentation));
 const generating = computed(() => researching.value && props.running && props.active);
-const canResume = computed(() => researching.value && props.active && !props.running && ['failed', 'stopped', 'auth_wait', 'user_wait'].includes(props.sessionState));
+const canResume = computed(() => researching.value && !callLimit.value && props.active && !props.running && ['failed', 'stopped', 'auth_wait', 'user_wait'].includes(props.sessionState));
 function generate() {
  if (props.running || !props.canRun || (scope.value === 'feature' && !request.value.trim())) return;
  notice.value = ''; emit('generate', { text: request.value.trim(), scope: scope.value });
@@ -44,7 +45,7 @@ function download() {
     <p v-if="!canRun && !running" class="documentation-help">接続とAIのAPIキーを確認すると作成できます。</p>
    </form>
   </details>
-  <div v-if="researching" class="documentation-research" role="status"><strong>{{ generating ? '関連コードを調べています' : '資料作成は途中です' }}</strong><p>{{ generating ? '処理の入口と呼び出し先を確認し、資料にまとめます。' : '取得済みの調査は保存されています。' }}</p><button v-if="canResume" class="plain-button" :disabled="!canRun" @click="emit('resume')">保存済みの調査から再開</button><p v-else-if="!active && !running">同じ対象で再度作成すると、調査を最初からやり直します。</p></div>
+  <div v-if="researching" class="documentation-research" role="status"><strong>{{ callLimit ? '資料作成の上限に達しました' : generating ? '関連コードを調べています' : '資料作成は途中です' }}</strong><p>{{ callLimit ? 'AIの呼び出し上限に達しました。対象を絞って資料を作り直してください。' : generating ? '処理の入口と呼び出し先を確認し、資料にまとめます。' : '取得済みの調査は保存されています。' }}</p><button v-if="canResume" class="plain-button" :disabled="!canRun" @click="emit('resume')">保存済みの調査から再開</button><p v-else-if="!active && !running">同じ対象で再度作成すると、調査を最初からやり直します。</p></div>
   <article v-if="result && documentation" class="documentation-result">
    <div class="documentation-meta"><span>{{ documentation.scope === 'feature' ? '機能・画面の実装ガイド' : 'リポジトリ全体の実装ガイド' }}</span><code>{{ documentation.commit.slice(0, 12) }}</code></div>
    <h3>{{ result.title }}</h3><p class="documentation-lead">{{ result.summary }}</p>

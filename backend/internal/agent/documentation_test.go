@@ -155,7 +155,7 @@ func TestDocumentationBudgetBoundsRepeatedReads(t *testing.T) {
 		return "listing", domain.Source{}, 7, nil
 	})}
 	err := r.Run(context.Background(), Input{Session: s}, func(Checkpoint) error { return nil })
-	if err != nil || calls != DocumentationMaxCalls || reads != 1 {
+	if err != nil || calls != DocumentationMaxCalls-DocumentationFinalReserve+1 || reads != 1 {
 		t.Fatalf("unbounded work: %v calls=%d reads=%d", err, calls, reads)
 	}
 }

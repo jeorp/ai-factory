@@ -14,11 +14,12 @@ import (
 )
 
 const (
-	DocumentationInputBytes = 96 * 1024
-	DocumentationMaxCalls   = 24
-	DocumentationMaxReads   = 20
-	DocumentationMaxFiles   = 15
-	DocumentationRunTime    = 10 * time.Minute
+	DocumentationInputBytes   = 96 * 1024
+	DocumentationMaxCalls     = 24
+	DocumentationFinalReserve = 3
+	DocumentationMaxReads     = 20
+	DocumentationMaxFiles     = 15
+	DocumentationRunTime      = 10 * time.Minute
 )
 
 func cloneDocumentation(d *domain.Documentation) *domain.Documentation {
@@ -52,9 +53,37 @@ func (r *Runner) runDocumentation(ctx context.Context, in Input, emit func(Check
 			instructions = append(instructions, m)
 		}
 	}
+	addLimit := func(text string) {
+		for _, old := range doc.Limitations {
+			if old == text {
+				return
+			}
+		}
+		doc.Limitations = append(doc.Limitations, text)
+		if len(doc.Limitations) > 30 {
+			doc.Limitations = doc.Limitations[1:]
+		}
+	}
 	checkpoint := func(progress string) error {
+		if boundDocumentationEvidence(doc) {
+			addLimit("保存上限のため、一部の取得本文を省略しました。ファイルごとの要点と未確認事項を参照してください。")
+		}
 		cp.Progress = progress
 		cp.Documentation = cloneDocumentation(doc)
+		// The final reservation may be interrupted before another checkpoint. Keep
+		// its saved snapshot terminal, without marking a successfully finished guide.
+		if doc.Status == "researching" && doc.Calls >= DocumentationMaxCalls {
+			found := false
+			for _, limit := range cp.Documentation.Limitations {
+				if limit == "documentation_call_limit" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				cp.Documentation.Limitations = append(cp.Documentation.Limitations, "documentation_call_limit")
+			}
+		}
 		cp.Metrics.DurationMS = time.Since(start).Milliseconds()
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
@@ -63,15 +92,25 @@ func (r *Runner) runDocumentation(ctx context.Context, in Input, emit func(Check
 		}
 		return emit(cp)
 	}
-	addLimit := func(text string) {
-		for _, old := range doc.Limitations {
-			if old == text {
-				return
-			}
+	stopAtCallLimit := func() error {
+		addLimit("documentation_call_limit")
+		if err := checkpoint("AIの呼び出し上限に達しました。対象を絞って資料を作り直してください。"); err != nil {
+			return err
 		}
-		if len(doc.Limitations) < 30 {
-			doc.Limitations = append(doc.Limitations, text)
+		return errors.New("documentation_call_limit")
+	}
+	if doc.Calls >= DocumentationMaxCalls {
+		return stopAtCallLimit()
+	}
+	var recovery documentationRecovery
+	retryResult := func(err error) (bool, error) {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
 		}
+		if doc.Calls >= DocumentationMaxCalls {
+			return false, stopAtCallLimit()
+		}
+		return r.recoverDocumentation(ctx, &recovery, err, checkpoint)
 	}
 	read := func(a github.Read) error {
 		if err := checkpoint("関連コードを確認しています: " + a.Path); err != nil {
@@ -117,6 +156,9 @@ func (r *Runner) runDocumentation(ctx context.Context, in Input, emit func(Check
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if doc.Calls >= DocumentationMaxCalls {
+			return stopAtCallLimit()
+		}
 		for {
 			select {
 			case instruction, ok := <-in.Instructions:
@@ -141,7 +183,8 @@ func (r *Runner) runDocumentation(ctx context.Context, in Input, emit func(Check
 			}
 		}
 		task := documentationTask{Scope: doc.Scope, Request: doc.Request, RemainingReads: max(0, DocumentationMaxReads-len(doc.Evidence)), RemainingFiles: max(0, DocumentationMaxFiles-files)}
-		task.FinalAnswerOnly = task.RemainingReads == 0 || task.RemainingFiles == 0 || doc.Calls >= DocumentationMaxCalls-1
+		task.Correction = recovery.correction
+		task.FinalAnswerOnly = task.RemainingReads == 0 || task.RemainingFiles == 0 || doc.Calls >= DocumentationMaxCalls-DocumentationFinalReserve
 		if task.FinalAnswerOnly {
 			addLimit("調査上限に達したため、取得済みの範囲で作成しました。")
 		}
@@ -155,10 +198,11 @@ func (r *Runner) runDocumentation(ctx context.Context, in Input, emit func(Check
 		if len(input) > cp.Metrics.MaxInputBytes {
 			cp.Metrics.MaxInputBytes = len(input)
 		}
+		// Persist the reservation before calling the provider; reconnecting cannot refund it.
+		doc.Calls++
 		if err := checkpoint("実装を理解するための資料をまとめています"); err != nil {
 			return err
 		}
-		doc.Calls = min(doc.Calls+1, DocumentationMaxCalls)
 		d, usage, err := r.next(ctx, in, input, "documentation")
 		addUsage(&cp.Metrics, usage)
 		if err != nil && err.Error() == "ai_token_budget_exceeded" {
@@ -168,10 +212,14 @@ func (r *Runner) runDocumentation(ctx context.Context, in Input, emit func(Check
 			return ctx.Err()
 		}
 		if err != nil {
-			if saveErr := checkpoint("資料作成を中断しました。保存済みの調査から再開できます"); saveErr != nil {
+			if saveErr := checkpoint("資料作成の途中経過を保存しています"); saveErr != nil {
 				return saveErr
 			}
-			return err
+			retry, resultErr := retryResult(err)
+			if retry {
+				continue
+			}
+			return resultErr
 		}
 		if err := checkpoint("調査の途中経過を保存しています"); err != nil {
 			return err
@@ -181,12 +229,20 @@ func (r *Runner) runDocumentation(ctx context.Context, in Input, emit func(Check
 			return errors.New("credential_echo_blocked")
 		}
 		if d.StartImplementation != nil || d.StartReview != nil || d.Review != nil || d.Search != nil || d.Plan != nil || d.Implementation != nil || d.Verification != nil || d.Answer != "" || (d.Read != nil && d.Document != nil) {
-			return errors.New("invalid_documentation_result")
+			retry, resultErr := retryResult(errors.New("invalid_documentation_result"))
+			if retry {
+				continue
+			}
+			return resultErr
 		}
 		if d.Read != nil {
 			a := *d.Read
 			if task.FinalAnswerOnly {
-				return errors.New("invalid_documentation_result")
+				retry, resultErr := retryResult(errors.New("invalid_documentation_result"))
+				if retry {
+					continue
+				}
+				return resultErr
 			}
 			if (a.Kind != "repository" && a.Kind != "file") || (a.Kind == "repository" && a.Path != "") || a.Number != 0 || a.Validate() != nil || (a.Kind == "file" && task.RemainingFiles == 0) {
 				addLimit("実行しなかった取得要求: " + domain.Clip(a.Path, 512))
@@ -195,6 +251,7 @@ func (r *Runner) runDocumentation(ctx context.Context, in Input, emit func(Check
 				}
 				continue
 			}
+			// repository detail does not change the root listing; Kind/Path define this read.
 			duplicate := false
 			for _, e := range doc.Evidence {
 				if e.Kind == a.Kind && e.Path == a.Path {
@@ -210,26 +267,41 @@ func (r *Runner) runDocumentation(ctx context.Context, in Input, emit func(Check
 				}
 				continue
 			}
-			if strings.TrimSpace(d.Summary) != "" {
-				doc.Notes = domain.Clip(d.Summary, 2048)
-			}
+			rememberDocumentationSummary(doc, d.Summary)
+			recovery = documentationRecovery{}
 			if err := read(a); err != nil {
 				return err
 			}
 			continue
 		}
-		// An instruction received during generation must be reflected before publishing the result.
-		select {
-		case instruction, ok := <-in.Instructions:
-			if ok {
-				instructions = append(instructions, instruction)
+		if !validDocumentationResult(d.Document) {
+			retry, resultErr := retryResult(errors.New("invalid_documentation_result"))
+			if retry {
 				continue
 			}
-			in.Instructions = nil
-		default:
+			return resultErr
 		}
-		if !validDocumentationResult(d.Document) {
-			return errors.New("invalid_documentation_result")
+		rememberDocumentationSummary(doc, d.Summary)
+		// Keep a valid final document if late instructions arrive after the last paid call.
+		before := len(instructions)
+		for {
+			select {
+			case instruction, ok := <-in.Instructions:
+				if !ok {
+					in.Instructions = nil
+					continue
+				}
+				instructions = append(instructions, instruction)
+			default:
+				goto finalDrained
+			}
+		}
+	finalDrained:
+		if len(instructions) > before {
+			if doc.Calls < DocumentationMaxCalls {
+				continue
+			}
+			addLimit("生成中に届いた指示は反映できませんでした。対象と指示を指定して資料を作り直してください。")
 		}
 		known := map[string]bool{}
 		for _, e := range doc.Evidence {
@@ -264,6 +336,11 @@ func buildDocumentationContext(doc *domain.Documentation, task documentationTask
 	evidence := append([]domain.DocumentationEvidence{}, doc.Evidence...)
 	// Keep all path metadata; omit old excerpts explicitly when JSON escaping exceeds the input cap.
 	omitted := []string{}
+	for _, e := range evidence {
+		if e.Content == "" && !e.Failed {
+			omitted = append(omitted, e.Path)
+		}
+	}
 	payload := map[string]any{"documentationTask": task, "target": domain.Target{Repository: doc.Repository, Commit: doc.Commit}, "notes": doc.Notes, "instructions": domain.LatestInstructions(instructions, 4096), "evidence": evidence, "limitations": doc.Limitations, "omittedExcerpts": omitted}
 	body, _ := json.Marshal(payload)
 	for i := 0; len(body) > DocumentationInputBytes && i < len(evidence); i++ {

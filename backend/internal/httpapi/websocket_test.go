@@ -22,6 +22,7 @@ func TestApplyRunResultSetsSessionState(t *testing.T) {
 		{"ci wait", "implement", fmt.Errorf("wrapped: %w", agent.ErrCIWaiting), false, "ci_wait"},
 		{"review budget", "review", errors.New("review_run_budget_resume"), false, "user_wait"},
 		{"review timeout", "review", context.DeadlineExceeded, false, "user_wait"},
+		{"documentation timeout", "documentation", context.DeadlineExceeded, false, "user_wait"},
 		{"chat timeout", "chat", context.DeadlineExceeded, false, "auth_wait"},
 		{"canceled", "chat", context.Canceled, false, "auth_wait"},
 		{"failed", "chat", errors.New("boom"), false, "failed"},

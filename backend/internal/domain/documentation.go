@@ -23,6 +23,7 @@ type DocumentationEvidence struct {
 	Kind    string `json:"kind"`
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	Summary string `json:"summary,omitempty"`
 	Failed  bool   `json:"failed"`
 }
 

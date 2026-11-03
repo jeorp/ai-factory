@@ -298,7 +298,7 @@ func applyRunResult(session *domain.Session, runErr error, wasStopping bool) {
 	} else if runErr != nil && runErr.Error() == "review_run_budget_resume" {
 		session.State = "user_wait"
 	} else if runErr != nil {
-		if errors.Is(runErr, context.DeadlineExceeded) && session.RunKind == "review" {
+		if errors.Is(runErr, context.DeadlineExceeded) && (session.RunKind == "review" || session.RunKind == "documentation") {
 			session.State = "user_wait"
 		} else if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 			session.State = "auth_wait"
