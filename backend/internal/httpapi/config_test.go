@@ -3,7 +3,28 @@ package httpapi
 import (
 	"reflect"
 	"testing"
+	"time"
 )
+
+func TestGeminiRequestTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+	}{{"", 180 * time.Second}, {"240s", 4 * time.Minute}, {"1s", time.Second}, {"10m", 10 * time.Minute}, {"0", 0}, {"-1s", 0}, {"11m", 0}, {"180", 0}} {
+		t.Run(tc.value, func(t *testing.T) {
+			setLocalGeminiEnv(t)
+			t.Setenv("GEMINI_REQUEST_TIMEOUT", tc.value)
+			c, err := LoadConfig()
+			if tc.want == 0 {
+				if err == nil {
+					t.Fatal("invalid timeout accepted")
+				}
+			} else if err != nil || c.GeminiRequestTimeout != tc.want {
+				t.Fatalf("timeout=%v err=%v", c.GeminiRequestTimeout, err)
+			}
+		})
+	}
+}
 
 func setLocalGeminiEnv(t *testing.T) {
 	t.Setenv("APP_ENV", "local")

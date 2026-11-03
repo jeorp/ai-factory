@@ -110,7 +110,7 @@ func (r *Runner) runImplementation(ctx context.Context, in Input, emit func(Chec
 	limits := []string{}
 	for _, limit := range run.cp.Limitations {
 		switch limit {
-		case "invalid_implementation_result", "implementation_edit_failed", "implementation_edit_blocked", "implementation_ci_forbidden", "implementation_ci_unavailable", "implementation_plan_failed", "implementation_verification_failed":
+		case "gemini_timeout", "invalid_implementation_result", "implementation_edit_failed", "implementation_edit_blocked", "implementation_ci_forbidden", "implementation_ci_unavailable", "implementation_plan_failed", "implementation_verification_failed":
 		default:
 			limits = append(limits, limit)
 		}

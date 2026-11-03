@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,6 +18,19 @@ import (
 type Gemini struct {
 	HTTP     *http.Client
 	Endpoint string
+}
+
+// Keep provider URLs and credentials out of errors while distinguishing a
+// request timeout from an expired/canceled run (which must never be retried).
+func geminiTransportError(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return errors.New("gemini_timeout")
+	}
+	return errors.New("gemini_unavailable")
 }
 
 func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, Usage, error) {
@@ -51,14 +65,17 @@ func (p *Gemini) Next(ctx context.Context, key, model, input string) (Decision, 
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.HTTP.Do(req)
 	if err != nil {
-		return Decision{}, Usage{}, errors.New("gemini_unavailable")
+		return Decision{}, Usage{}, geminiTransportError(ctx, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return Decision{}, Usage{}, geminiError(resp)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(aiResponseLimit(input))+1))
-	if err != nil || len(raw) > aiResponseLimit(input) {
+	if err != nil {
+		return Decision{}, Usage{}, geminiTransportError(ctx, err)
+	}
+	if len(raw) > aiResponseLimit(input) {
 		return Decision{}, Usage{}, errors.New("gemini_response_limit")
 	}
 	debugText(ctx, "provider_response", string(raw))

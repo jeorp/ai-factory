@@ -52,7 +52,9 @@ func main() {
 		case "openai":
 			providers[name] = &agent.OpenAI{HTTP: client}
 		case "gemini":
-			providers[name] = &agent.Gemini{HTTP: client}
+			geminiClient := *client
+			geminiClient.Timeout = c.GeminiRequestTimeout
+			providers[name] = &agent.Gemini{HTTP: &geminiClient}
 		case "vertex":
 			// The SDK's own client has no overall timeout; the run deadline bounds streamed answers.
 			providers[name] = &agent.Claude{Vertex: true, Project: c.VertexProject, Region: c.VertexRegion}

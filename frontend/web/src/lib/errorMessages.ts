@@ -30,6 +30,7 @@ export const errorMessages: Record<string, string> = {
  claude_invalid_review_action: 'Claudeがレビュー開始の指示を適切な形式で返せませんでした。再試行してください。',
  gemini_output_limit: 'Geminiの応答を処理できませんでした。サーバーを最新版に更新して再試行してください。',
  gemini_answer_too_long: 'Geminiの回答または要約がアプリの長さ制限を超えました。質問の範囲を絞って再試行してください。',
+ gemini_timeout: 'Geminiの応答待ちが時間上限に達しました。保存済みの状態から再開するか、依頼の範囲を絞ってください。',
  gemini_incomplete: 'Geminiの応答が途中で終了しました。再試行してください。',
  gemini_invalid_intent: 'Geminiが質問の意図や調査方針を適切な形式で返せませんでした。再試行してください。',
  gemini_invalid_review: 'Geminiがレビュー結果を適切な形式で返せませんでした。再試行してください。',

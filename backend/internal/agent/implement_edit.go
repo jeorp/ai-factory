@@ -122,7 +122,7 @@ func (run *implementRun) loadStepFiles(ctx context.Context, step []string) ([]im
 	return files, originals, nil
 }
 
-// A nil draft means input limits split the step without saving any generated
+// A nil draft means input limits or a timeout split the step without saving any generated
 // files. The caller reloads inputs for the replacement step.
 func (run *implementRun) generateStep(ctx context.Context, step []string, files []implementFile, originals map[string]string) (*stepDraft, error) {
 	impl := run.impl
@@ -170,17 +170,22 @@ func (run *implementRun) generateStep(ctx context.Context, step []string, files 
 			call--
 			continue
 		}
-		if err != nil && err.Error() == "ai_input_limit" && len(step) > 1 {
+		if err != nil && ctx.Err() == nil && (err.Error() == "ai_input_limit" || err.Error() == "gemini_timeout") && len(step) > 1 {
 			parts, ok := domain.SplitPlanStep(impl.Plan.Files, step)
 			debugJSON(ctx, "step_split", map[string]any{"step_paths": step, "replacement_steps": parts, "can_split": ok})
 			if !ok {
 				return nil, err
 			}
-			run.logger.Info("implement_step_split", "step", impl.NextStep+1, "files", len(step), "error_code", "ai_input_limit")
+			run.logger.Info("implement_step_split", "step", impl.NextStep+1, "files", len(step), "error_code", implementationErrorCode(err))
 			// Split the step and retry with fewer original files.
 			steps := append([]domain.ImplementationStep{}, impl.Steps[:impl.NextStep]...)
 			steps = append(steps, parts...)
 			impl.Steps = append(steps, impl.Steps[impl.NextStep+1:]...)
+			if err.Error() == "gemini_timeout" {
+				if saveErr := run.save(ctx, "AIの応答が時間上限に達したため、編集対象を分割して続行します"); saveErr != nil {
+					return nil, saveErr
+				}
+			}
 			return nil, nil
 		}
 		if err != nil {

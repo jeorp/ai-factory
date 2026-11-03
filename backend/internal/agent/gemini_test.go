@@ -3,13 +3,58 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-factory/backend/internal/domain"
 )
+
+type failingGeminiBody struct{ err error }
+
+func (b failingGeminiBody) Read([]byte) (int, error) { return 0, b.err }
+func (b failingGeminiBody) Close() error             { return nil }
+
+func TestGeminiTransportFailureClassification(t *testing.T) {
+	for _, body := range []bool{false, true} {
+		for _, mode := range []string{"timeout", "canceled", "deadline", "network"} {
+			t.Run(fmt.Sprintf("body=%t/%s", body, mode), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				want := "gemini_timeout"
+				transportErr := error(context.DeadlineExceeded)
+				if mode == "network" {
+					transportErr = errors.New("private transport detail")
+					want = "gemini_unavailable"
+				}
+				if mode == "canceled" {
+					cancel()
+					want = "context canceled"
+				}
+				if mode == "deadline" {
+					var stop context.CancelFunc
+					ctx, stop = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+					defer stop()
+					want = "context deadline exceeded"
+				}
+				p := Gemini{Endpoint: "https://example.test", HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					if body {
+						return &http.Response{StatusCode: 200, Header: make(http.Header), Body: failingGeminiBody{transportErr}}, nil
+					}
+					return nil, transportErr
+				})}}
+				_, _, err := p.Next(ctx, "secret", "model", "input")
+				if err == nil || err.Error() != want {
+					t.Fatalf("got %v want %s", err, want)
+				}
+			})
+		}
+	}
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

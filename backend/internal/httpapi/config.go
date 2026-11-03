@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"ai-factory/backend/internal/agent"
 )
@@ -20,6 +21,7 @@ type Config struct {
 	CookieKey                                              []byte
 	Models                                                 []string
 	AIProvider                                             string
+	GeminiRequestTimeout                                   time.Duration
 	VertexProject, VertexRegion                            string
 	// ModelProviders maps each offered model to the provider that serves it.
 	ModelProviders map[string]string
@@ -46,6 +48,14 @@ func splitModels(value string) []string {
 
 func LoadConfig() (Config, error) {
 	c := Config{Local: os.Getenv("APP_ENV") == "local", Demo: os.Getenv("PROVIDER") == "demo", Project: os.Getenv("GCP_PROJECT_ID"), Origin: os.Getenv("WEB_ORIGIN"), Port: os.Getenv("PORT"), ClientID: os.Getenv("GITHUB_CLIENT_ID"), ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"), AppSlug: os.Getenv("GITHUB_APP_SLUG"), Models: []string{"gpt-5-mini"}}
+	c.GeminiRequestTimeout = 180 * time.Second
+	if value := os.Getenv("GEMINI_REQUEST_TIMEOUT"); value != "" {
+		timeout, err := time.ParseDuration(value)
+		if err != nil || timeout < time.Second || timeout > 10*time.Minute {
+			return c, errors.New("GEMINI_REQUEST_TIMEOUT must be a duration between 1s and 10m")
+		}
+		c.GeminiRequestTimeout = timeout
+	}
 	if os.Getenv("AGENT_DEBUG_LOG") == "1" {
 		if !c.Local || os.Getenv("K_SERVICE") != "" {
 			return c, errors.New("AGENT_DEBUG_LOG is only allowed in local development")

@@ -52,6 +52,12 @@
 - Geminiは思考トークンを `maxOutputTokens` に含めるため、回答枠に8192トークンの余裕を加えている。思考トークンも出力として課金される。
 - 料金表示（`frontend/web/src/lib/pricing.ts`）は2026-10-31時点の200kトークン以下の単価。未登録のモデルは料金を推定しない。
 
+### Geminiのタイムアウトと編集の分割
+
+GeminiのHTTPリクエストは既定で180秒まで待つ。`.env` の `GEMINI_REQUEST_TIMEOUT=180s` で変更できる（`1s`〜`10m`、Goのduration形式）。これはFlashの実装処理向けの初期値で、Googleが保証する応答時間ではない。GitHubとOpenAIのHTTP上限は60秒のまま、実装全体の上限は30分。変更後は `docker compose up --build -d --wait api` で反映する。
+
+Geminiの通信タイムアウトは `gemini_timeout` として記録する。編集時に複数ファイルをまとめた処理が時間切れになった場合は、依存関係を保って分割し、分割状態を保存して自動続行する。相互依存のあるファイル群は分割しない。分割できない区切りや1ファイルでの時間切れは停止し、画面から再開できる。計画・検証の時間切れと利用者による停止・実行全体の時間切れには、この自動分割を適用しない。
+
 ### Vertex AI経由のClaude
 
 `.env` に `AI_PROVIDER=vertex`（Geminiと併用する場合は `AI_PROVIDER=gemini,vertex`）、`VERTEX_PROJECT_ID=<GCPプロジェクトID>` を設定し、Composeを再ビルドして起動する。`VERTEX_REGION` の既定は `global`、`CLAUDE_MODELS`（カンマ区切り、先頭が既定）の既定は `claude-haiku-5-5,claude-sonnet-5-5`。
