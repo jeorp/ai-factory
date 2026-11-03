@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -13,6 +14,30 @@ import (
 
 type implementationSearcher interface {
 	SearchFiles(context.Context, string, string, string, github.CodeSearch) (github.CodeSearchResult, error)
+}
+
+// A newly fetched code snippet can resolve a question, but never establishes
+// complete-file coverage. Deduplicate the code itself, excluding page metadata.
+func recordSearchEvidence(ev evidence, seen map[[32]byte]bool) bool {
+	if len(ev.codePaths) == 0 {
+		return false
+	}
+	var result github.CodeSearchResult
+	if json.Unmarshal([]byte(ev.Content), &result) != nil {
+		return false
+	}
+	fresh := false
+	for _, matches := range [][]github.SearchMatch{result.Matches, result.GeneratedMatches} {
+		for _, match := range matches {
+			raw, _ := json.Marshal(match)
+			hash := sha256.Sum256(raw)
+			if !seen[hash] {
+				fresh = true
+				seen[hash] = true
+			}
+		}
+	}
+	return fresh
 }
 
 func (run *implementRun) search(ctx context.Context, query github.CodeSearch, ev *[]evidence) error {

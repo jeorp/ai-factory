@@ -94,6 +94,7 @@ func (run *implementRun) plan(ctx context.Context) error {
 	correction := ""
 	retries := 0
 	invalidResponses := 0
+	transientErrors := 0
 	gapReviewed := false
 	for call := 0; call < ImplementPlanCalls; call++ {
 		final := reads >= ImplementPlanReads || call == ImplementPlanCalls-1
@@ -113,6 +114,13 @@ func (run *implementRun) plan(ctx context.Context) error {
 			continue
 		}
 		if err != nil {
+			retry, retryErr := run.retryTransientModel(ctx, "plan", call+1, ImplementPlanCalls, &transientErrors, &retries, err)
+			if retryErr != nil {
+				return retryErr
+			}
+			if retry {
+				continue
+			}
 			message, retry, saveErr := run.retryInvalidResponse(ctx, "plan", call+1, &invalidResponses, &retries, err)
 			if saveErr != nil {
 				return saveErr
@@ -127,6 +135,7 @@ func (run *implementRun) plan(ctx context.Context) error {
 		}
 		correction = ""
 		invalidResponses = 0
+		transientErrors = 0
 		if d.Search != nil && !final {
 			reads++
 			if err := run.search(ctx, *d.Search, &ev); err != nil {

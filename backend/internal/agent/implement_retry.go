@@ -4,9 +4,55 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
+	"time"
 )
 
 const maxInvalidImplementationResponses = 3
+
+func invalidModelResponse(err error) bool {
+	switch implementationErrorCode(err) {
+	case "invalid_implementation_result", "gemini_invalid_output", "openai_invalid_output", "claude_invalid_output":
+		return true
+	}
+	return false
+}
+
+// Retry only side-effect-free model requests. GitHub writes, authorization,
+// exhausted budgets and user cancellation never enter this recovery path.
+func (run *implementRun) retryTransientModel(ctx context.Context, phase string, attempt, maxAttempts int, consecutive, retries *int, err error) (bool, error) {
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	limit := 2
+	switch implementationErrorCode(err) {
+	case "gemini_timeout":
+		limit = 1
+	case "gemini_unavailable", "openai_unavailable", "claude_unavailable",
+		"gemini_http_429", "gemini_http_500", "gemini_http_502", "gemini_http_503",
+		"openai_http_429", "openai_http_500", "openai_http_502", "openai_http_503",
+		"anthropic_rate_limited", "claude_http_429", "claude_http_500", "claude_http_502", "claude_http_503", "claude_http_529":
+	default:
+		return false, nil
+	}
+	if *consecutive >= limit || attempt >= maxAttempts || run.calls >= ImplementMaxCalls {
+		return false, nil
+	}
+	*consecutive = *consecutive + 1
+	run.retry(phase, attempt, retries, err)
+	if err := run.save(ctx, fmt.Sprintf("AIとの一時的な通信エラーのため再試行します（%d/%d回）", *consecutive, limit)); err != nil {
+		return false, err
+	}
+	delay := time.Second*time.Duration(1<<(*consecutive-1)) + time.Duration(rand.IntN(250))*time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-timer.C:
+		return true, nil
+	}
+}
 
 func implementationResultReason(err error) string {
 	var invalid *implementationResultError
@@ -22,9 +68,7 @@ func implementationResultReason(err error) string {
 // Invalid responses have no side effects. Retry with a correction, inside both
 // the phase's call budget and a smaller consecutive-invalid-response budget.
 func (run *implementRun) retryInvalidResponse(ctx context.Context, phase string, attempt int, invalids, retries *int, err error) (string, bool, error) {
-	switch implementationErrorCode(err) {
-	case "invalid_implementation_result", "gemini_invalid_output", "openai_invalid_output", "claude_invalid_output":
-	default:
+	if !invalidModelResponse(err) {
 		return "", false, nil
 	}
 	*invalids = *invalids + 1

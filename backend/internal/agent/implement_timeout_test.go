@@ -70,7 +70,7 @@ func TestEditingTimeoutStopsForAtomicOrSingleFileStep(t *testing.T) {
 			return Decision{}, Usage{}, errors.New("gemini_timeout")
 		})}
 		err := runImplementationFixture(r, impl, func(Checkpoint) error { return nil })
-		if err == nil || err.Error() != "gemini_timeout" || calls != 1 || len(w.cache) != 0 {
+		if err == nil || err.Error() != "gemini_timeout" || calls != 2 || len(w.cache) != 0 {
 			t.Fatalf("cycle=%t calls=%d err=%v", cycle, calls, err)
 		}
 	}

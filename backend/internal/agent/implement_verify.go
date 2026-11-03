@@ -150,11 +150,13 @@ func (run *implementRun) verify(ctx context.Context) error {
 	evidenceRevision := 0
 	readPaths := map[string]bool{}
 	knowledgeReadPaths := map[string]bool{}
+	searchEvidence := map[[32]byte]bool{}
 	ev := []evidence{}
 	check := func(stage string, batch []verificationPart) error {
 		correction := ""
 		retries := 0
 		invalid := 0
+		transientErrors := 0
 		unresolved := []string{}
 		investigatedAt := -1
 		for attempt := 1; attempt <= implementVerifyReads+5; attempt++ {
@@ -182,7 +184,14 @@ func (run *implementRun) verify(ctx context.Context) error {
 			}
 			d, err := run.call(ctx, payload)
 			if err != nil {
-				if implementationErrorCode(err) != "invalid_implementation_result" {
+				retry, retryErr := run.retryTransientModel(ctx, "verify", attempt, implementVerifyReads+5, &transientErrors, &retries, err)
+				if retryErr != nil {
+					return retryErr
+				}
+				if retry {
+					continue
+				}
+				if !invalidModelResponse(err) {
 					return err
 				}
 				invalid++
@@ -190,6 +199,7 @@ func (run *implementRun) verify(ctx context.Context) error {
 				correction = "verificationにissuesとunverifiedの配列を返してください。他の操作は行いません。"
 				continue
 			}
+			transientErrors = 0
 			if d.Read != nil || d.Search != nil {
 				if task.FinalAnswer || !validImplementationResponse(string(mustJSON(payload)), d) {
 					invalid++
@@ -200,6 +210,9 @@ func (run *implementRun) verify(ctx context.Context) error {
 				if d.Search != nil {
 					if err := run.search(ctx, *d.Search, &ev); err != nil {
 						return err
+					}
+					if len(ev) > 0 && recordSearchEvidence(ev[len(ev)-1], searchEvidence) {
+						evidenceRevision++
 					}
 				} else {
 					complete, err := run.readVerificationFile(ctx, *d.Read, &ev)
