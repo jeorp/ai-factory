@@ -23,8 +23,8 @@ export interface Review {
 export interface PlannedFile { path: string; action: 'create' | 'update' | 'delete'; approach: string; dependsOn?: string[] }
 export interface AcceptanceCriterion { id: string; requirement: string; paths: string[]; checks: string[]; failureRefs?: string[] }
 export interface Implementation {
-	noChangeCandidates?: { path: string; reason: string }[];
-	planAdjustments?: { file: PlannedFile; reason: string }[];
+ noChangeCandidates?: { path: string; reason: string }[];
+ planAdjustments?: { file: PlannedFile; reason: string }[];
  request: string; baseBranch: string; baseCommit: string;
  status: 'planning' | 'plan_ready' | 'editing' | 'verifying' | 'verification_blocked' | 'amend_ready' | 'ready' | 'publishing' | 'checking_ci' | 'published';
  plan?: { summary: string; files: PlannedFile[]; outOfScope: string[] | null; risks: string[] | null; tests: string[] | null; acceptanceCriteria?: AcceptanceCriterion[] };

@@ -73,7 +73,7 @@ type ImplementationVerification struct {
 	Repairs         []VerificationRepair `json:"repairs,omitempty"`
 	AdditionalFiles []PendingFile        `json:"additionalFiles,omitempty"`
 	UnchangedFiles  []UnchangedFile      `json:"unchangedFiles,omitempty"`
-	DeferredChecks  []string             `json:"deferredChecks,omitempty"`
+	DeferredChecks  []string             `json:"deferredChecks,omitempty"` // server-owned, copied from the approved plan's Tests
 }
 
 // Candidates do not change approval. Only a completed static verification can

@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { errorMessage, limitationMessage } from './errorMessages';
 
 describe('error messages', () => {
+ it('distinguishes provisional no-change candidates from verified completion', () => {
+  const text=errorMessage('implementation_no_change_candidates');
+  expect(text).toContain('全ファイルを変更不要');expect(text).toContain('検証は未実施');
+  expect(text).not.toContain('依頼を具体的に');
+ });
  it('translates known codes from strings and errors', () => {
   expect(errorMessage('login_required')).toContain('ログインし直して');
   expect(errorMessage(new Error('session_busy'))).toContain('別の接続');

@@ -1,33 +1,80 @@
 package agent
 
-import (
-	"errors"
-
-	"ai-factory/backend/internal/domain"
-)
+import "ai-factory/backend/internal/domain"
 
 const missingPlanFilePrefix = "計画にあるが変更されなかったファイル: "
+
+type noChangeCandidateError struct{ path, reason string }
+
+func (e *noChangeCandidateError) Error() string { return "invalid_no_change_candidate" }
 
 // An editor can suggest a smaller scope, but cannot complete a requirement or
 // discard a saved draft, create or delete by declaring it unnecessary.
 func validateNoChangeCandidates(step []string, impl *domain.Implementation, originals map[string]string, result *ImplementResult) error {
 	allowed := map[string]bool{}
+	changed := map[string]bool{}
+	proposed := map[string]bool{}
 	for _, p := range step {
 		allowed[p] = true
 	}
 	for _, c := range impl.Changes {
-		delete(allowed, c.Path)
+		changed[c.Path] = true
 	}
 	for _, c := range result.Changes {
-		delete(allowed, c.Path)
+		proposed[c.Path] = true
 	}
 	for _, f := range result.UnchangedFiles {
 		_, loaded := originals[f.Path]
-		if !allowed[f.Path] || !loaded || impl.PlannedAction(f.Path) != "update" {
-			return errors.New("invalid_no_change_candidate")
+		reason := ""
+		switch {
+		case !allowed[f.Path]:
+			reason = "outside_step"
+		case changed[f.Path]:
+			reason = "saved_change"
+		case proposed[f.Path]:
+			reason = "conflicting_change"
+		case impl.PlannedAction(f.Path) != "update":
+			reason = "action_not_update"
+		case !loaded:
+			reason = "source_not_loaded"
+		}
+		if reason != "" {
+			return &noChangeCandidateError{path: f.Path, reason: reason}
 		}
 	}
 	return nil
+}
+
+func mergeNoChangeCandidates(existing, incoming []domain.UnchangedFile) []domain.UnchangedFile {
+	indices := map[string]int{}
+	out := []domain.UnchangedFile{}
+	for _, list := range [][]domain.UnchangedFile{existing, incoming} {
+		for _, f := range list {
+			if index, ok := indices[f.Path]; ok {
+				out[index] = f
+			} else {
+				indices[f.Path] = len(out)
+				out = append(out, f)
+			}
+		}
+	}
+	return out
+}
+
+func allPlanFilesHaveNoChangeCandidates(impl *domain.Implementation) bool {
+	if impl.Plan == nil || len(impl.Plan.Files) == 0 {
+		return false
+	}
+	paths := map[string]bool{}
+	for _, f := range impl.NoChangeCandidates {
+		paths[f.Path] = true
+	}
+	for _, f := range impl.Plan.Files {
+		if f.Action != "update" || !paths[f.Path] {
+			return false
+		}
+	}
+	return true
 }
 
 func (run *implementRun) missingPlanFiles() []domain.UnchangedFile {

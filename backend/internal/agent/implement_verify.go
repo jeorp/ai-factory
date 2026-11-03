@@ -139,7 +139,7 @@ func (run *implementRun) verify(ctx context.Context) error {
 			}
 		}
 	}
-	result := &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}}
+	result := &domain.ImplementationVerification{Issues: []string{}, Unverified: []string{}, DeferredChecks: appendUnique([]string{}, impl.Plan.Tests...)}
 	// Preserve the full path set for the cross-batch review after parts are consumed.
 	verificationPaths := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -258,7 +258,6 @@ func (run *implementRun) verify(ctx context.Context) error {
 			}
 			result.Issues = appendUnique(result.Issues, d.Verification.Issues...)
 			result.Unverified = appendUnique(result.Unverified, d.Verification.Unverified...)
-			result.DeferredChecks = appendUnique(result.DeferredChecks, d.Verification.DeferredChecks...)
 			if stage == "cross" || len(summaries) == 0 {
 				result.UnchangedFiles = d.Verification.UnchangedFiles
 			}

@@ -42,6 +42,7 @@ export const errorMessages: Record<string, string> = {
  implementation_not_ready: 'PRを作成できる変更がありません。', implementation_publish_incomplete: 'ブランチへの書き込みが途中です。「PRの作成を再試行」で完了させてください。',
  implementation_changes_expired: '変更内容の保存期限（1時間）が切れました。チャットでもう一度実装を依頼してください。',
  implementation_plan_failed: 'AIが有効な実装計画を作成できませんでした。依頼を具体的にして再試行してください。', implementation_edit_failed: 'AIの変更を元のファイルに適用できませんでした。保存済みの状態から再開するか、依頼を分けてください。', implementation_edit_blocked: 'AIが変更を作成できない理由を保存しました。実装パネルの未確認事項を確認し、不足している情報を追加してください。',
+ implementation_no_change_candidates: '編集担当が全ファイルを変更不要と判断しました。検証は未実施です。実装パネルの理由を確認し、必要なら計画を見直してください。',
  implementation_no_changes: '計画したファイルに変更が作成されませんでした。依頼を具体的にして再試行してください。', implementation_verification_failed: '変更全体の整合性確認を完了できませんでした。保存済みの状態から再開してください。', implementation_amend_not_pending: '承認待ちの追加ファイルがありません。', invalid_implementation_amend: '追加ファイルへの回答を送れませんでした。',
  pull_request_not_found: '指定したPRが見つかりません。PR番号を確認してください。', pull_request_closed: '指定したPRはマージ・クローズ済みです。新しいPRとして依頼してください。', pull_request_not_ai_branch: 'AIファクトリーが作成したPR（ai-factory/で始まるブランチ）にだけ修正を追加できます。', pull_request_from_fork: 'フォークからのPRには修正を追加できません。',
  change_file_exists: '追加しようとしたファイルが既に存在します。計画を作り直してください。', change_file_missing: '変更・削除しようとしたファイルが見つかりません。計画を作り直してください。',

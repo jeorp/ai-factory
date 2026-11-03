@@ -16,6 +16,7 @@ func noChangeFixture(w *fakeWriter) domain.Session {
 	s.Implementation.Plan.AcceptanceCriteria[0].Paths = append(s.Implementation.Plan.AcceptanceCriteria[0].Paths, "src/old.go")
 	s.Implementation.Steps = []domain.ImplementationStep{{Files: []string{"src/a.go", "src/old.go"}}}
 	s.Implementation.Unverified = []string{missingPlanFilePrefix + "src/old.go"}
+	s.Implementation.Plan.Tests = []string{"go test ./..."}
 	return s
 }
 
@@ -40,7 +41,6 @@ func TestReconcilePlanRequiresIndependentCodeAndCriteriaVerification(t *testing.
 				}
 				v := passedVerification(task.Plan)
 				v.UnchangedFiles = []domain.UnchangedFile{{Path: "src/old.go", Reason: "File contains only a package declaration, no prompts to translate."}}
-				v.DeferredChecks = []string{"go test ./..."}
 				switch scenario {
 				case "no-confirmation":
 					v.UnchangedFiles = nil
@@ -178,7 +178,7 @@ func TestAllUnchangedFilesDoNotCreateAnEmptyPullRequest(t *testing.T) {
 		return Decision{Implementation: &ImplementResult{UnchangedFiles: []domain.UnchangedFile{{Path: "src/a.go", Reason: "already satisfied"}, {Path: "src/old.go", Reason: "no prompts"}}}}, Usage{}, nil
 	})}
 	err := r.Run(context.Background(), Input{Session: s}, func(Checkpoint) error { return nil })
-	if err == nil || err.Error() != "implementation_no_changes" || len(w.published) != 0 {
+	if err == nil || err.Error() != "implementation_no_change_candidates" || len(w.published) != 0 {
 		t.Fatalf("empty PR allowed: %v", err)
 	}
 }

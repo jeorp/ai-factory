@@ -72,7 +72,7 @@ func implementInstructions(schema map[string]any, task implementTask) string {
 		props["answer"] = map[string]any{"type": "string", "enum": []string{""}}
 		props["verification"] = nullable(object(map[string]any{
 			"issues": stringList(), "unverified": stringList(),
-			"unchangedFiles": unchangedFilesSchema(), "deferredChecks": stringList(),
+			"unchangedFiles": unchangedFilesSchema(),
 			"criteria": map[string]any{"type": "array", "items": object(map[string]any{
 				"id": map[string]any{"type": "string"}, "status": map[string]any{"type": "string", "enum": []string{"met", "unmet", "unverified"}}, "evidence": map[string]any{"type": "string"}, "paths": stringList(),
 			})},

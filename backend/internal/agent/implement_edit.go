@@ -56,6 +56,9 @@ func (run *implementRun) edit(ctx context.Context) error {
 		}
 	}
 	if len(impl.Changes) == 0 {
+		if allPlanFilesHaveNoChangeCandidates(impl) {
+			return errors.New("implementation_no_change_candidates")
+		}
 		return errors.New("implementation_no_changes")
 	}
 	if impl.ChangeRevision == impl.EditStartRevision {
@@ -277,8 +280,8 @@ func (run *implementRun) advanceStep(step []string, draft *stepDraft, covered ma
 	impl := run.impl
 	for _, f := range draft.Unchanged {
 		covered[f.Path] = true
-		impl.NoChangeCandidates = append(impl.NoChangeCandidates, f)
 	}
+	impl.NoChangeCandidates = mergeNoChangeCandidates(impl.NoChangeCandidates, draft.Unchanged)
 	// Keep only unfinished files in the current step while an amendment is
 	// pending; completed files must not be edited twice on resume.
 	remaining := []string{}

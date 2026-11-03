@@ -44,7 +44,7 @@ func defaultBody(impl *domain.Implementation) string {
 	if len(impl.PlanAdjustments) > 0 {
 		b.WriteString("\n### 計画の見直し（変更不要と確認）\n\n")
 		for _, a := range impl.PlanAdjustments {
-			b.WriteString(fmt.Sprintf("- `%s`: %s\n", a.File.Path, a.Reason))
+			b.WriteString(fmt.Sprintf("- `%s`: %s\n", a.File.Path, strings.Join(strings.Fields(a.Reason), " ")))
 		}
 	}
 	b.WriteString("\n## 検証\n\nアプリ内ではコード・ビルド・テストを実行していません。このリポジトリのCIの結果を確認してください。\n")

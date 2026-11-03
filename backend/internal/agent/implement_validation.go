@@ -76,13 +76,8 @@ func implementationDecisionIssue(d Decision) string {
 		}
 	}
 	if v := d.Verification; v != nil {
-		if !validUnchangedFiles(v.UnchangedFiles) || len(v.DeferredChecks) > 10 {
+		if !validUnchangedFiles(v.UnchangedFiles) || len(v.DeferredChecks) > 0 {
 			return "verification_shape"
-		}
-		for _, check := range v.DeferredChecks {
-			if strings.TrimSpace(check) == "" || len(check) > 1024 {
-				return "verification_text_limit"
-			}
 		}
 		if d.Read != nil || d.Implementation != nil || d.Plan != nil || d.StartImplementation != nil || d.StartReview != nil || d.Review != nil || strings.TrimSpace(d.Answer) != "" || len(v.Issues) > 10 || len(v.Unverified) > 10 {
 			return "verification_shape"
