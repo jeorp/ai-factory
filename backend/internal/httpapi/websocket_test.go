@@ -57,3 +57,13 @@ func TestRunOutcome(t *testing.T) {
 		t.Errorf("runOutcome(ErrCIWaiting) = %q", got)
 	}
 }
+
+func TestRepeatedBudgetStopsKeepOneLimitation(t *testing.T) {
+	s := &domain.Session{Limitations: []string{"existing limitation"}}
+	for attempt := 0; attempt < 3; attempt++ {
+		applyRunResult(s, errors.New("ai_token_budget_exceeded"), false)
+		if s.State != "user_wait" || len(s.Limitations) != 2 || s.Limitations[0] != "existing limitation" || s.Limitations[1] != "ai_token_budget_exceeded" {
+			t.Fatalf("repeated budget stop changed limitations: %+v", s)
+		}
+	}
+}

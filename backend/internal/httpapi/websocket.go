@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 )
 
 type command struct {
+	TokenBudget     int    `json:"tokenBudget"`
 	Effort          string `json:"effort"`
 	Type            string `json:"type"`
 	ID              string `json:"id"`
@@ -282,6 +284,11 @@ func applyCheckpoint(session *domain.Session, cp agent.Checkpoint) error {
 func applyRunResult(session *domain.Session, runErr error, wasStopping bool) {
 	if wasStopping {
 		session.State = "stopped"
+	} else if runErr != nil && runErr.Error() == "ai_token_budget_exceeded" {
+		session.State = "user_wait"
+		if !slices.Contains(session.Limitations, "ai_token_budget_exceeded") {
+			session.Limitations = append(session.Limitations, "ai_token_budget_exceeded")
+		}
 	} else if errors.Is(runErr, agent.ErrCIWaiting) {
 		session.State = "ci_wait"
 	} else if runErr != nil && runErr.Error() == "review_run_budget_resume" {

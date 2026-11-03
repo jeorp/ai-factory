@@ -28,7 +28,8 @@ function keydown(event: KeyboardEvent) {
  <div class="composer-area">
   <div v-if="reconnecting" class="connection-notice">再接続中です。保存した会話を復元しています。</div>
   <div v-if="session.state === 'failed'" class="connection-notice" role="alert">{{ errorMessage(session.limitations.at(-1) || 'run_failed') }}</div>
-  <div v-if="session.state === 'user_wait'" class="connection-notice" role="status">今回の実行時間または利用量の上限に達したため一時停止しました。途中結果は保存済みです。<template v-if="session.review">{{ processedFileCount(session.review) }} / {{ session.review.totalFiles }} ファイルを処理済みです。</template>「保存済みの状態から再開」で残りを続行できます。</div>
+  <div v-if="session.state === 'user_wait' && session.limitations.at(-1) === 'ai_token_budget_exceeded'" class="connection-notice" role="status">セッションのトークン上限に達しました。セッション情報で上限を変更してから、保存済みの状態を再開してください。</div>
+  <div v-else-if="session.state === 'user_wait'" class="connection-notice" role="status">今回の実行時間または利用量の上限に達したため一時停止しました。途中結果は保存済みです。<template v-if="session.review">{{ processedFileCount(session.review) }} / {{ session.review.totalFiles }} ファイルを処理済みです。</template>「保存済みの状態から再開」で残りを続行できます。</div>
   <div v-if="resumable" class="resume-row"><span>{{ session.state === 'done' ? '中断したレビューを保存した区切りから続行できます。' : '保存した区切りから続行できます。' }}</span><button class="plain-button" :disabled="running || !canRun" @click="$emit('resume')"><Icon name="refresh" :size="13" />保存済みの状態から再開</button></div>
   <div class="composer">
    <textarea v-model="text" :placeholder="placeholders[mode]" aria-label="メッセージ" rows="2" maxlength="4096" @keydown="keydown" />

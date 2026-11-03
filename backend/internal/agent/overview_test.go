@@ -92,3 +92,39 @@ func TestOverviewReusedAcrossSessions(t *testing.T) {
 		t.Fatalf("repeated work: reads=%d overview calls=%d", gh.reads, overviewCalls)
 	}
 }
+
+func TestOverviewBudgetStopRemainsPendingUntilResume(t *testing.T) {
+	s := baseSession()
+	s.OverviewPending = true
+	s.TokenBudget = 10
+	s.Metrics.InputTokens = 10
+	calls := 0
+	r := Runner{GitHub: &overviewTestCache{}, AI: providerFunc(func(_ context.Context, _, _, input string) (Decision, Usage, error) {
+		calls++
+		if strings.Contains(input, `"overviewTask"`) {
+			return Decision{Summary: "backend: API"}, Usage{InputTokens: 2}, nil
+		}
+		return Decision{Answer: "done"}, Usage{OutputTokens: 1}, nil
+	})}
+	emit := func(cp Checkpoint) error {
+		s.RepositoryOverview, s.OverviewPending = cp.RepositoryOverview, cp.OverviewPending
+		s.Metrics, s.Limitations = cp.Metrics, cp.Limitations
+		return nil
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		err := r.Run(context.Background(), Input{Session: s}, emit)
+		if err == nil || err.Error() != "ai_token_budget_exceeded" || !s.OverviewPending || s.RepositoryOverview != nil || calls != 0 {
+			t.Fatalf("overview settled before budget increase: err=%v pending=%v overview=%+v calls=%d", err, s.OverviewPending, s.RepositoryOverview, calls)
+		}
+		if len(s.Limitations) != 0 || s.Metrics.InputTokens != 10 || s.Metrics.ToolCalls != attempt+1 {
+			t.Fatalf("budget stop lost metrics or added fallback: %+v %v", s.Metrics, s.Limitations)
+		}
+	}
+	s.TokenBudget = 20
+	if err := r.Run(context.Background(), Input{Session: s}, emit); err != nil {
+		t.Fatal(err)
+	}
+	if s.OverviewPending || s.RepositoryOverview == nil || s.RepositoryOverview.Text != "backend: API" || calls != 2 || s.Metrics.InputTokens != 12 || s.Metrics.Phases["overview"].Calls != 1 {
+		t.Fatalf("overview did not resume: %+v calls=%d", s, calls)
+	}
+}

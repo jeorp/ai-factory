@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"ai-factory/backend/internal/domain"
 	"cloud.google.com/go/firestore"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ReadCache stores only successful reads of content fixed to a commit.
@@ -45,13 +48,43 @@ func (c *FirestoreReadCache) Get(ctx context.Context, key string) (string, bool)
 }
 
 func (c *FirestoreReadCache) Put(ctx context.Context, key, content string) {
+	c.PutWithTTL(ctx, key, content, time.Hour)
+}
+
+func (c *FirestoreReadCache) PutWithTTL(ctx context.Context, key, content string, ttl time.Duration) {
 	// Firestore has a document size limit; a failed cache write must not fail the read.
 	if len(content) > domain.MaxFetchBytes {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	_, _ = c.DB.Collection("githubReadCache").Doc(key).Set(ctx, cacheEntry{Content: content, ExpiresAt: time.Now().Add(time.Hour)})
+	_, _ = c.DB.Collection("githubReadCache").Doc(key).Set(ctx, cacheEntry{Content: content, ExpiresAt: time.Now().Add(ttl)})
+}
+
+// Extend changes only expiry metadata. A concurrent editor cannot have its
+// new contents overwritten by a stale renewal. All files must still exist.
+func (c *FirestoreReadCache) Extend(ctx context.Context, keys []string, until time.Time) error {
+	return c.DB.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		for _, key := range keys {
+			snap, err := tx.Get(c.DB.Collection("githubReadCache").Doc(key))
+			if err != nil {
+				if status.Code(err) == codes.NotFound {
+					return errors.New("implementation_changes_expired")
+				}
+				return err
+			}
+			var entry cacheEntry
+			if snap.DataTo(&entry) != nil || !time.Now().Before(entry.ExpiresAt) {
+				return errors.New("implementation_changes_expired")
+			}
+		}
+		for _, key := range keys {
+			if err := tx.Update(c.DB.Collection("githubReadCache").Doc(key), []firestore.Update{{Path: "ExpiresAt", Value: until}}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // GetOverview checks current repository access before returning a shared summary.

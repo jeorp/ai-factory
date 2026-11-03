@@ -177,6 +177,14 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 		}
 	}
 	wait(func(s domain.Session) bool { return s.ID == session.ID }, "")
+	ws.WriteJSON(command{Type: "set_budget", TokenBudget: -1})
+	wait(func(domain.Session) bool { return false }, "invalid_token_budget")
+	ws.WriteJSON(command{Type: "set_budget", TokenBudget: 1000000})
+	wait(func(s domain.Session) bool { return s.TokenBudget == 1000000 }, "")
+	storedBudget, err := storage.Get(ctx, uid, session.ID)
+	if err != nil || storedBudget.TokenBudget != 1000000 {
+		t.Fatalf("budget not saved: %v %+v", err, storedBudget)
+	}
 	// Each instruction is bounded individually; old instructions must not block
 	// a newer one after their combined size exceeds the model's pinned budget.
 	for _, text := range []string{strings.Repeat("旧", 1000), strings.Repeat("新", 1000)} {
@@ -254,6 +262,20 @@ func TestEmulatorImplementationLifecycle(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 || change.Original == "" || !strings.Contains(change.Content, "固定デモで追加") || !strings.HasPrefix(change.Content, strings.SplitN(change.Original, "\n", 2)[0]) {
 		t.Fatalf("change diff: %d %+v", resp.StatusCode, change)
+	}
+	resp = request("GET", "/api/v1/sessions/"+session.ID+"/change?path=other.md", nil)
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("unplanned diff: %d", resp.StatusCode)
+	}
+	resp = request("POST", "/api/v1/sessions/"+session.ID+"/changes/extend", nil)
+	var renewed struct {
+		ExpiresAt time.Time `json:"expiresAt"`
+	}
+	json.NewDecoder(resp.Body).Decode(&renewed)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || renewed.ExpiresAt.Before(time.Now().Add(23*time.Hour)) {
+		t.Fatalf("renewal: %d %+v", resp.StatusCode, renewed)
 	}
 	resp = request("GET", "/api/v1/sessions/"+session.ID+"/change?path=other.md", nil)
 	resp.Body.Close()

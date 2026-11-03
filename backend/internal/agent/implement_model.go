@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"ai-factory/backend/internal/domain"
@@ -89,7 +90,17 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 		log = log.With("verification_knowledge_version", knowledge.Version, "verification_languages", languages)
 	}
 	log.Info("implement_model_call_started", "input_bytes", len(body))
-	d, usage, err := run.r.next(withDebugAttrs(ctx, "call", run.calls, "attempt", max(1, task.Attempt), "retry_count", task.RetryCount), run.in, string(body))
+	d, usage, err := run.r.next(withDebugAttrs(ctx, "step", task.Step, "call", run.calls, "attempt", max(1, task.Attempt), "retry_count", task.RetryCount), run.in, string(body), task.Mode)
+	if usage.Phase != "" {
+		if run.lastRetryCounts == nil {
+			run.lastRetryCounts = map[string]int{}
+		}
+		key := fmt.Sprintf("%s/%d", task.Mode, task.Step)
+		if task.RetryCount > run.lastRetryCounts[key] {
+			usage.Phase = task.Mode + "_retry"
+		}
+		run.lastRetryCounts[key] = task.RetryCount
+	}
 	log.Info("implement_model_call", "duration_ms", time.Since(started).Milliseconds(), "outcome", outcome(err), "error_code", implementationErrorCode(err), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 	if implementationErrorCode(err) == "invalid_implementation_result" {
 		var invalid *implementationResultError
@@ -103,6 +114,11 @@ func (run *implementRun) call(ctx context.Context, payload map[string]any) (Deci
 		log.Info("implement_intent_discarded", "reason", d.IntentIssue)
 	}
 	addUsage(&run.cp.Metrics, usage)
+	if usage.Phase != "" && ctx.Err() == nil && run.emit != nil {
+		if saveErr := run.save(ctx, run.cp.Progress); saveErr != nil {
+			return Decision{}, saveErr
+		}
+	}
 	if err != nil {
 		return d, err
 	}

@@ -81,17 +81,25 @@ type Message struct {
 	Applied bool      `json:"applied"`
 }
 type Metrics struct {
-	InputTokens      int   `json:"inputTokens"`
-	LastInputTokens  int   `json:"lastInputTokens"`
-	LastOutputTokens int   `json:"lastOutputTokens"`
-	HasLastUsage     bool  `json:"hasLastUsage"`
-	OutputTokens     int   `json:"outputTokens"`
-	MaxInputBytes    int   `json:"maxInputBytes"`
-	FetchedBytes     int   `json:"fetchedBytes"`
-	ToolCalls        int   `json:"toolCalls"`
-	CacheHits        int   `json:"cacheHits"`
-	DurationMS       int64 `json:"durationMs"`
-	HeapPeakBytes    int64 `json:"heapPeakBytes"`
+	Phases           map[string]PhaseUsage `json:"phases,omitempty"`
+	InputTokens      int                   `json:"inputTokens"`
+	LastInputTokens  int                   `json:"lastInputTokens"`
+	LastOutputTokens int                   `json:"lastOutputTokens"`
+	HasLastUsage     bool                  `json:"hasLastUsage"`
+	OutputTokens     int                   `json:"outputTokens"`
+	MaxInputBytes    int                   `json:"maxInputBytes"`
+	FetchedBytes     int                   `json:"fetchedBytes"`
+	ToolCalls        int                   `json:"toolCalls"`
+	CacheHits        int                   `json:"cacheHits"`
+	DurationMS       int64                 `json:"durationMs"`
+	HeapPeakBytes    int64                 `json:"heapPeakBytes"`
+}
+
+type PhaseUsage struct {
+	Calls        int   `json:"calls"`
+	InputTokens  int   `json:"inputTokens"`
+	OutputTokens int   `json:"outputTokens"`
+	DurationMS   int64 `json:"durationMs"`
 }
 type RepositoryOverview struct {
 	Text      string `json:"text"`
@@ -100,6 +108,7 @@ type RepositoryOverview struct {
 }
 
 type Session struct {
+	TokenBudget        int                 `json:"tokenBudget,omitempty"`
 	ID                 string              `json:"id"`
 	Title              string              `json:"title"`
 	Target             Target              `json:"target"`

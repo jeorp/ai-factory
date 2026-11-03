@@ -25,7 +25,7 @@ func TestDebugLoggingRequiresExplicitRunOptIn(t *testing.T) {
 		r := &Runner{AI: providerFunc(func(context.Context, string, string, string) (Decision, Usage, error) {
 			return Decision{Answer: "generated-code active-api-secret"}, Usage{}, nil
 		})}
-		_, _, err := r.next(ctx, Input{}, "private-source active-api-secret active-gh-secret")
+		_, _, err := r.next(ctx, Input{}, "private-source active-api-secret active-gh-secret", "chat")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -52,7 +52,7 @@ func TestDebugCapturesInvalidProviderResponseWithoutCredentials(t *testing.T) {
 		return `{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"not-json active-api-secret"}]}}]}`
 	})}
 	r := &Runner{AI: p}
-	_, _, err := r.next(debugTestContext(&logs, true), Input{Key: "active-api-secret", Session: domain.Session{Model: "gemini-3.5-flash-lite"}}, "source-code")
+	_, _, err := r.next(debugTestContext(&logs, true), Input{Key: "active-api-secret", Session: domain.Session{Model: "gemini-3.5-flash-lite"}}, "source-code", "chat")
 	if err == nil || err.Error() != "gemini_invalid_output" {
 		t.Fatalf("expected parsing failure: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestDebugAttemptUsesServerMetadata(t *testing.T) {
 	if strings.Contains(string(raw), "attempt") {
 		t.Fatal("server retry metadata leaked into model input")
 	}
-	r.next(ctx, Input{}, string(raw))
+	r.next(ctx, Input{}, string(raw), "edit")
 	for _, event := range decodeDebugEvents(t, logs.Bytes()) {
 		if event["attempt"] != float64(3) || event["retry_count"] != float64(2) {
 			t.Fatalf("incorrect retry metadata: %+v", event)

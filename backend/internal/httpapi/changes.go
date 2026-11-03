@@ -1,10 +1,55 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
+	"time"
 
 	"ai-factory/backend/internal/domain"
+	"ai-factory/backend/internal/github"
 )
+
+func (s *Server) extendChanges(w http.ResponseWriter, r *http.Request, c credential) {
+	if !idPattern.MatchString(r.PathValue("id")) {
+		fail(w, 404, "not_found")
+		return
+	}
+	session, err := s.Store.Get(r.Context(), c.UID, r.PathValue("id"))
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	i := session.Implementation
+	if i == nil || len(i.Changes) == 0 {
+		fail(w, 422, "change_not_found")
+		return
+	}
+	if _, err := s.GitHub.Authorize(r.Context(), c.Token, session.Target.Repository); err != nil {
+		fail(w, 403, "repository_forbidden")
+		return
+	}
+	id, version := i.CacheID, i.Version
+	if i.DraftSource != nil {
+		id, version = i.DraftSource.CacheID, i.DraftSource.Version
+	}
+	paths := make([]string, 0, len(i.Changes))
+	for _, f := range i.Changes {
+		paths = append(paths, f.Path)
+	}
+	until := time.Now().Add(github.DraftTTL)
+	if session.ExpiresAt.Before(until) {
+		until = session.ExpiresAt
+	}
+	if err := s.GitHub.ExtendChanges(r.Context(), id, version, paths, until); err != nil {
+		if errors.Is(err, domain.ErrNotFound) || err.Error() == "implementation_changes_expired" {
+			fail(w, 410, "implementation_changes_expired")
+		} else {
+			fail(w, 503, "change_store_unavailable")
+		}
+		return
+	}
+	reply(w, 200, map[string]any{"expiresAt": until})
+}
 
 // sessionChange returns one AI-generated file and its original at the base
 // commit so the browser can render a diff before the user creates the PR.

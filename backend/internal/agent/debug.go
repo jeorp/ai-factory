@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"ai-factory/backend/internal/domain"
 )
@@ -107,20 +109,24 @@ func debugJSON(ctx context.Context, event string, value any) {
 	debugText(ctx, event, string(raw))
 }
 
-func (r *Runner) next(ctx context.Context, in Input, input string) (Decision, Usage, error) {
+func (r *Runner) next(ctx context.Context, in Input, input, phase string) (Decision, Usage, error) {
+	budget, _ := ctx.Value(tokenBudgetKey{}).(*tokenBudget)
+	if budget != nil && budget.limit > 0 && budget.used >= budget.limit {
+		return Decision{}, Usage{}, errors.New("ai_token_budget_exceeded")
+	}
 	if trace := debugTrace(ctx); trace != nil {
 		callTrace := *trace
-		callTrace.logger = trace.logger.With("ai_call_id", debugCallSequence.Add(1))
-		var body struct {
-			Task *implementTask `json:"implementTask"`
-		}
-		if json.Unmarshal([]byte(input), &body) == nil && body.Task != nil {
-			callTrace.logger = callTrace.logger.With("phase", body.Task.Mode, "step", body.Task.Step)
-		}
+		callTrace.logger = trace.logger.With("ai_call_id", debugCallSequence.Add(1), "phase", phase)
 		ctx = context.WithValue(ctx, agentDebugKey{}, &callTrace)
 	}
 	debugText(ctx, "model_input", input)
+	started := time.Now()
 	d, usage, err := r.AI.Next(ctx, in.Key, in.Session.Model, input)
+	usage.DurationMS = time.Since(started).Milliseconds()
+	usage.Phase = phase
+	if budget != nil {
+		budget.used += usage.InputTokens + usage.OutputTokens
+	}
 	debugJSON(ctx, "model_output", d)
 	reason := ""
 	if err != nil {

@@ -1,10 +1,11 @@
 export interface Source { label: string; url: string }
 export interface Message { id: string; role: 'user' | 'assistant' | 'instruction'; text: string; at: string; applied: boolean }
 export interface Session {
+ tokenBudget?: number;
  id: string; title: string; target: { repository: string; commit: string; kind: string; number: number }; model: string; effort?: string;
  runKind?: string; activePullRequest?: number; review?: Review; implementation?: Implementation;
  state: string; messages: Message[]; summary: string; sources: Source[]; limitations: string[];
- metrics: { inputTokens: number; outputTokens: number; lastInputTokens?: number; lastOutputTokens?: number; hasLastUsage?: boolean; maxInputBytes: number; fetchedBytes: number; toolCalls: number; cacheHits: number; durationMs: number; heapPeakBytes: number };
+ metrics: { phases?: Record<string, { calls: number; inputTokens: number; outputTokens: number; durationMs: number }>; inputTokens: number; outputTokens: number; lastInputTokens?: number; lastOutputTokens?: number; hasLastUsage?: boolean; maxInputBytes: number; fetchedBytes: number; toolCalls: number; cacheHits: number; durationMs: number; heapPeakBytes: number };
  updatedAt: string; expiresAt: string;
 }
 export interface Repository { full_name: string; default_branch: string; private: boolean; html_url: string }
