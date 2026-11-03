@@ -50,7 +50,7 @@ To stop, press `Ctrl+C` in the web terminal and run `docker compose down` from t
 - The GitHub MCP connection is read-only. The server pins the target repository, commit, and permitted operations. With OpenAI, the app uses structured output from the Responses API to fetch information and answer in stages.
 - WebSocket supports questions, follow-up instructions, stopping, and progress updates. A disconnect interrupts the run; after reconnecting, you can restore the conversation and resume manually.
 - The model receives recent conversation turns and a summary. Retrieved results are kept separate from saved history, and duplicate reads within a run are suppressed. The UI shows read counts, byte counts, input and output tokens, elapsed time, and observed process heap usage.
-- OpenAI API keys stay in browser and server memory for at most one hour and are discarded when the session ends, the user logs out, or the page closes. Firestore data is separated by user, connection leases prevent duplicate runs, and records expire after 30 days. Users can also delete their data.
+- Active AI API keys and Vertex AI access tokens stay in memory for at most one hour and are discarded when the session ends, the user logs out, or the page closes. If the user opts to save a key, a separate copy remains in the browser's IndexedDB until explicitly deleted; it is stored without encryption and survives logout. Firestore sessions are separated by user, connection leases prevent duplicate runs, and sessions expire after 30 days. Users can also delete sessions.
 
 ### Pull request review
 
@@ -66,17 +66,21 @@ The review processes up to 10 related files and roughly 20,000 tokens per batch,
 
 For an implementation request, the app presents a plan. After the user approves it, the agent creates changes. The user reviews the diff before the server opens a draft pull request on a new `ai-factory/` branch. Only dedicated server-side code writes to GitHub. The app does not run the target repository's code or tests; it checks GitHub CI after the PR is published. See the [development guide](docs/development.md) and [architecture and limits](docs/architecture.md) for details.
 
-## Current limitations
-
-Selecting or editing review findings, posting them to GitHub, checking the head at posting time, and preventing duplicate posts are not implemented. The app also does not include billing or credit management, or execution of target repository code.
-
 ## Connect to live services
 
-To use your own repositories and receive live AI responses, configure a GitHub App you own and an API key for the selected AI provider. Follow the [development guide](docs/development.md) for setup, [architecture and limits](docs/architecture.md) for the design, and [Cloud Run deployment guide](docs/deployment.md) to deploy your own instance.
+To use your own repositories and receive live AI responses, configure a GitHub App you own and an API key for the selected AI provider. Set both `PROVIDER=live` and `AI_PROVIDER=openai`, `gemini`, `anthropic`, or `vertex` in `.env`, then restart the API.
 
-To try the Gemini Developer API, set `AI_PROVIDER=gemini` in `.env` and restart with `docker compose up --build -d`. For example, set `GEMINI_MODELS=gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.1-pro-preview` to choose the available models (Pro has no free tier). Enter a Gemini API key from Google AI Studio in the app. The key is not stored in an environment variable; it is used temporarily for each session. Set `PROVIDER=demo` to keep GitHub in fixed-demo mode.
+To use a live AI provider with sample GitHub data, keep `PROVIDER=demo` and set `AI_PROVIDER=openai`, `gemini`, `anthropic`, or `vertex`. Enter the provider's API key in the app. Model choices come from `OPENAI_MODELS`, `GEMINI_MODELS`, `ANTHROPIC_MODELS`, or `CLAUDE_MODELS` in the server configuration.
 
-Gemini free-tier availability and limits depend on the Google project and model. A project with billing enabled may incur charges. On the free tier, submitted information may be used to improve Google's services, so check the terms before sending private code. This API is separate from Vertex AI.
+| Documentation | Contents |
+| --- | --- |
+| [Documentation index](docs/README.md) | Guides for users and contributors |
+| [Product specification](docs/product/specification.md) | Current features and user workflows |
+| [Development guide](docs/development.md) | Live-service setup, API, checks, and logs |
+| [Architecture and limits](docs/architecture.md) | Storage, resumption, approval rules, budgets, and source-code references |
+| [Cloud Run deployment](docs/deployment.md) | Container, authentication, secrets, and Firestore configuration |
+
+Documentation is in Japanese. Check the provider's current service terms before sending private code. Cost estimates use the rates registered in the app and do not impose a spending limit.
 
 ## Verify
 

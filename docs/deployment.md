@@ -1,46 +1,50 @@
 # Cloud Run配置
 
-公開・クラウドリソース作成は未実施です。以下は利用するGCPプロジェクトと認証情報を決めた後の設定手順です。公開済みのToCサービスとして運用開始した状態ではありません。
+[Dockerfile](../backend/Dockerfile) でVueの成果物とGo APIを1つのコンテナにまとめ、[Cloud Runのテンプレート](../infra/cloud-run/service.yaml) で配信する。OAuth callback、Cookie、WebSocketは同一Originを使う。
 
-## 構成
+## 認証と保存先
 
-Vueの成果物とGo APIを一つのCloud Runサービスで配信し、OAuth callback・Cookie・WebSocketを同一Originにそろえます。ローカルではViteが `/api`（WebSocket含む）と `/auth` をGoへproxyします。
+1. Firebaseプロジェクト、Firestore Native、Firebase Authenticationを用意する。認証はサーバーが発行するFirebaseカスタムトークンを使う。
+2. 実行用サービスアカウントにFirestoreの読み書きと、カスタムトークン署名に必要な `iam.serviceAccounts.signBlob` を与える。ロールは `roles/datastore.user` と、対象サービスアカウント自身への `roles/iam.serviceAccountTokenCreator` を使う。
+3. GitHub Appのcallbackを `https://APP_DOMAIN/auth/callback` にする。権限とインストールの設定は[開発ガイド](development.md#github-app)に従う。
+4. GitHub client secretとCookie暗号化鍵をSecret Managerへ登録し、実行用サービスアカウントに読み取りを許可する。テンプレートのSecret名は `github-client-secret` と `cookie-key`。Cookie鍵には `openssl rand -base64 32` の出力を使う。
 
-Firebase HostingをWebSocket経路の前提にしない構成です。隣のプロジェクトからVue・Go・Firebase Auth・Firestoreを合わせつつ、接続型MVPの配信方式を変更しています。Firebase HostingへのWeb配信設定は含めません。
+GitHub user access tokenは暗号化Cookieに保持する。サービスアカウントの秘密鍵JSONや利用者のAIキーをコンテナへ配布しない。AIキーは画面から受け取る。
 
-## 設定
+## コンテナのビルド
 
-1. Firebaseプロジェクト・Firestore Nativeを作成し、Firebase Authenticationを有効にする。GitHub providerは使わず、サーバーからのカスタムトークン認証を使う。
-2. 専用サービスアカウントにFirestore読み書きと、Firebaseカスタムトークン署名に必要な自身への `iam.serviceAccounts.signBlob` 権限を与える。一般的には `roles/datastore.user` と、対象サービスアカウント自身への `roles/iam.serviceAccountTokenCreator` を使用する。秘密鍵JSONを配布しない。
-3. GitHub Appの権限とcallbackを設定し、選択したリポジトリにインストールする。
-   - callbackは `https://APP_DOMAIN/auth/callback`。
-   - 実装・PR作成を使う場合はContentsとPull requestsをRead and writeにする（Workflowsは付けない）。
-   - PRのCI確認および失敗ログ参照のためにChecks (Read) と Actions (Read) を追加する（書き込み権限は不要）。
-   - 権限を追加した場合、既存のインストールでは利用者による承認が必要。
-4. GitHub client secretと `openssl rand -base64 32` で生成したCookie鍵をSecret Managerに保存し、実行サービスアカウントだけに読み取りを許可する。
-5. Dockerビルド時に `VITE_FIREBASE_PROJECT_ID`、`VITE_FIREBASE_API_KEY`、`VITE_FIREBASE_AUTH_DOMAIN` をbuild argsで渡す。これらはブラウザー公開設定であり、OpenAIキーやGitHub secretを渡さない。既定の `WEB_BUILD_MODE=production` のままビルドする。
-6. `infra/cloud-run/service.yaml` の `REPLACE_*` を置換し、WEB_ORIGINを実際のHTTPS Originへ設定する。timeoutは3600秒。Goは55分でWebSocketを更新する。コンテナは非rootで起動する。
-7. Firestoreルール・TTL設定を反映する。CLI例: `firebase deploy --only firestore --project PROJECT_ID`。sessions と githubReadCache の ExpiresAt のTTLが有効か管理画面でも確認する。
+リポジトリルートをビルドコンテキストにし、`backend/Dockerfile` を使う。ビルド引数には次のFirebase公開設定を渡す。
+
+| ビルド引数 | 内容 |
+| --- | --- |
+| `VITE_FIREBASE_PROJECT_ID` | FirebaseプロジェクトID |
+| `VITE_FIREBASE_API_KEY` | WebアプリのFirebase APIキー |
+| `VITE_FIREBASE_AUTH_DOMAIN` | Firebase Authドメイン |
+
+`WEB_BUILD_MODE` は既定の `production` を使う。GitHub client secret、Cookie鍵、AIキーはビルド引数に渡さない。実行コンテナはnonrootで、`WEB_DIR=/app/web` からWebを配信する。
+
+## Cloud Runの設定
+
+`infra/cloud-run/service.yaml` の `REPLACE_*` を環境に合わせて置き換える。`WEB_ORIGIN` はcallbackと同じHTTPS Originにし、パスや末尾の `/` を付けない。
+
+テンプレートは `PROVIDER=live`、OpenAI接続を使う。Gemini Developer APIを使う場合は `AI_PROVIDER=gemini` を設定し、必要に応じて `GEMINI_MODELS` と `GEMINI_REQUEST_TIMEOUT` を追加する。Anthropic APIは `AI_PROVIDER=anthropic`、Vertex AIは `AI_PROVIDER=vertex` と `VERTEX_PROJECT_ID` を設定する。複数プロバイダーも開発ガイドと同じ方法で併用できる。本番では `demo-` プロジェクト、Emulator、固定デモの設定を起動時に拒否する。
+
+テンプレートのリクエスト期限は3,600秒、コンテナ同時実行数は16、最大インスタンス数は3。アプリ自身のWebSocket上限は1インスタンス4接続で、接続期限は最大55分である。これらは別々の設定なので、負荷に応じて確認する。
+
+## Firestoreの設定
+
+リポジトリルートからルールとインデックス設定を反映する。
+
+```sh
+firebase deploy --only firestore --project PROJECT_ID
+```
+
+[firestore.indexes.json](../firestore.indexes.json) に定義した `sessions`・`githubReadCache` の `ExpiresAt` のTTLが有効か確認する。ブラウザーからのFirestore直接読み書きはルールで拒否し、APIのサービスアカウントからアクセスする。
+
+セッションのアクセス期限は作成から30日、読み取りキャッシュは1時間、生成内容のキャッシュは24時間。TTLによる物理削除は非同期であり、API側でも期限切れを拒否する。
 
 ## 配置後の確認
 
-次の項目を実接続で検証してください。
+同一OriginでのWeb表示、GitHubログイン、許可したリポジトリの参照、選択したAIでの回答を確認する。停止・切断・再接続・手動再開、キー期限、他ユーザーからのアクセス拒否も確認する。
 
-- 同一OriginのWeb表示
-- GitHubログイン
-- Appの許可リポジトリだけの参照
-- OpenAI回答
-- 停止・切断・再接続
-- キー期限
-- 別ユーザーからのアクセス拒否
-
-認証Cookieは最大8時間で再ログインし、GitHub refresh tokenは保存しません。
-
-## 公開前に残る作業
-
-- 実GitHub App + GitHub remote MCP + OpenAIでの権限・応答互換性の確認。
-- 大きなリポジトリ・長い会話でのピークメモリ、入力トークン、料金の測定。
-- 利用規約、プライバシー説明、OpenAIへのデータ提供条件、削除対応の整備。
-- 必要な監視・リクエスト数制限・不正利用対策・バックアップ／TTL運用の確認。
-- レビュー指摘のGitHub投稿（指摘選択・編集、ヘッド再確認、冪等投稿）。
-- 実GitHub Appでの実装・PR作成の確認（書き込み権限の承認フロー、ブランチ保護、大きなファイル・多数ファイルの変更、AIの検索・置換の適用率）。
+実装機能は計画承認と差分確認の後にDraft PRを作成し、対象コミットのCIを確認する。ブラウザーへ保存したAPIキーは実行用キーの期限切れやログアウトでは消えないため、保存済みキーの削除操作も確認する。
