@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-// Limits for AI-authored change sets (specification section 13; provisional values).
+// Limits for AI-authored change sets.
 const (
 	MaxChangeFiles     = 20
 	MaxChangeFileBytes = 100 * 1024

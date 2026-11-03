@@ -26,7 +26,7 @@ type Decision struct {
 	Review      *domain.ReviewResult        `json:"review"`
 	StartReview *ReviewRequest              `json:"startReview"`
 	Priorities  []PriorityAssessment        `json:"priorities,omitempty"`
-	// Implementation workflow (specification section 13).
+	// Implementation workflow.
 	StartImplementation *ImplementRequest                  `json:"startImplementation"`
 	Plan                *domain.ImplementationPlan         `json:"plan"`
 	Implementation      *ImplementResult                   `json:"implementation"`

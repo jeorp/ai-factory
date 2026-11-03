@@ -6,7 +6,7 @@ import (
 )
 
 // Implementation is the durable state of an AI implementation and PR creation
-// run (specification section 13). Changed file contents are never stored here;
+// run. Changed file contents are never stored here;
 // they live in an expiring cache addressed by CacheID.
 type Implementation struct {
 	Request            string                      `json:"request"`
